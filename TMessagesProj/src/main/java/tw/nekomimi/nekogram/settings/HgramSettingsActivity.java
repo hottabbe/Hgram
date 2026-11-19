@@ -471,28 +471,64 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             final String engine = HgramConfig.getSttEngine();
             final int[] oldRows = visibleRows;
             final int[] newRows = computeVisibleRows(engine, query);
+            if (Arrays.equals(oldRows, newRows)) return;
+            final int anchorRow = firstVisible >= 0 && firstVisible < oldRows.length
+                    ? oldRows[firstVisible] : -1;
+            final View anchorView = layoutManager != null
+                    ? layoutManager.findViewByPosition(firstVisible) : null;
+            final int anchorOffset = anchorView != null
+                    ? layoutManager.getDecoratedTop(anchorView) - listView.getPaddingTop() : 0;
+            int targetIndex = findRowIndex(newRows, anchorRow);
+            final boolean targetIndexWasFallback = targetIndex < 0;
+            if (targetIndexWasFallback) {
+                targetIndex = nearestSurvivingRow(oldRows, newRows, firstVisible);
+            }
             final int singleDiff = singleInsertOrRemoveIndex(oldRows, newRows);
-            int restorePosition = firstVisible;
-            if (singleDiff >= 0) {
+            final boolean singleDiffApplied = singleDiff >= 0;
+            visibleRows = newRows;
+            rowCount = newRows.length;
+            if (singleDiffApplied) {
                 final boolean inserted = newRows.length > oldRows.length;
-                visibleRows = newRows;
-                rowCount = newRows.length;
                 if (inserted) {
                     listAdapter.notifyItemInserted(singleDiff);
-                    if (singleDiff <= firstVisible) restorePosition++;
                 } else {
                     listAdapter.notifyItemRemoved(singleDiff);
-                    if (singleDiff < firstVisible) restorePosition--;
                 }
-            } else if (!Arrays.equals(oldRows, newRows)) {
-                visibleRows = newRows;
-                rowCount = newRows.length;
+            } else {
                 listAdapter.notifyDataSetChanged();
             }
-            if (restorePosition >= 0 && restorePosition < rowCount) {
-                listView.scrollToPosition(restorePosition);
+            if (targetIndex >= 0
+                    && (targetIndex != firstVisible || targetIndexWasFallback || !singleDiffApplied)) {
+                layoutManager.scrollToPositionWithOffset(targetIndex,
+                        targetIndexWasFallback ? 0 : anchorOffset);
             }
         });
+    }
+
+    static int findRowIndex(int[] rows, int row) {
+        if (rows == null || row < 0) return -1;
+        for (int i = 0; i < rows.length; i++) {
+            if (rows[i] == row) return i;
+        }
+        return -1;
+    }
+
+    static int nearestSurvivingRow(int[] oldRows, int[] newRows, int oldIndex) {
+        if (oldRows == null || newRows == null || oldIndex < 0 || oldIndex >= oldRows.length) {
+            return -1;
+        }
+        for (int distance = 0; distance < oldRows.length; distance++) {
+            final int left = oldIndex - distance;
+            if (left >= 0 && findRowIndex(newRows, oldRows[left]) >= 0) {
+                return oldRows[left];
+            }
+            final int right = oldIndex + distance;
+            if (distance > 0 && right < oldRows.length
+                    && findRowIndex(newRows, oldRows[right]) >= 0) {
+                return oldRows[right];
+            }
+        }
+        return -1;
     }
 
     private static int singleInsertOrRemoveIndex(int[] oldRows, int[] newRows) {
@@ -607,6 +643,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_VOSK_MODELS: return LocaleController.getString(R.string.HgramVoskModels);
             case ROW_SHERPA_MODEL: return LocaleController.getString(R.string.HgramSherpaModel);
             case ROW_GIGAAM_MODEL: return LocaleController.getString(R.string.HgramGigaAmModel);
+            case ROW_GIGAAM_INFO: return gigaAmInfoText();
             case ROW_SHERPA_DEVICE: return LocaleController.getString(R.string.HgramSherpaDevice);
             case ROW_ANTI_PEEK: return LocaleController.getString(R.string.HgramRoadmapAntiPeek);
             case ROW_ALLOW_SCREENSHOTS: return LocaleController.getString(R.string.HgramAllowScreenshots);
@@ -1182,7 +1219,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                     break;
                 case ROW_GIGAAM_INFO:
                     ((TextInfoPrivacyCell) holder.itemView).setText(
-                            LocaleController.getString(R.string.HgramGigaAmInfo));
+                            gigaAmInfoText());
                     break;
                 default:
                     break;
@@ -1366,6 +1403,10 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             cachedSherpaInstalledStatus = LocaleController.getString(HgramSherpaRecognizer.isInstalled() ? R.string.HgramModelInstalled : R.string.HgramModelNotInstalled);
         }
         return cachedSherpaInstalledStatus;
+    }
+
+    private static String gigaAmInfoText() {
+        return LocaleController.getString(R.string.HgramGigaAmInfo);
     }
 
     private String gigaAmStatusText() {
