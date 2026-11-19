@@ -44,6 +44,7 @@ import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.Emoji;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.ImageLoader;
+import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.ImageReceiver;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
@@ -72,6 +73,7 @@ import me.vkryl.android.animator.BoolAnimator;
 import me.vkryl.android.animator.FactorAnimator;
 
 import xyz.nextalone.nagram.helper.MessageHelper;
+import xyz.nextalone.nagram.hgram.HgramConfig;
 
 public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.Target, NotificationCenter.NotificationCenterDelegate {
 
@@ -116,6 +118,18 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
     private int currentConnectionState;
     private CharSequence lastSubtitle;
     private int lastSubtitleColorKey = -1;
+    private boolean antiPeekMasked;
+    private boolean subtitleHiddenByAntiPeek;
+    private CharSequence hgramRealTitle;
+    private boolean hgramTitleMaskedByAntiPeek;
+    private Drawable hgramRealAvatar;
+    private ImageLocation hgramRealImageLocation;
+    private int hgramRealRoundRadius = -1;
+    private TLRPC.Chat hgramRealChat;
+    private TLRPC.User hgramRealUser;
+    private boolean hgramRealUserShowSelf;
+    private boolean hgramAvatarMaskedByAntiPeek;
+    private AvatarDrawable hgramMaskAvatarDrawable;
     private Integer overrideSubtitleColor;
 
     private SharedMediaLayout.SharedMediaPreloader sharedMediaPreloader;
@@ -917,7 +931,71 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
     private String rightDrawableContentDescription = null;
     private String rightDrawable2ContentDescription = null;
 
+    private void applyAntiPeekTitleMask() {
+        if (titleTextView == null) {
+            return;
+        }
+        if (titleTextView.getRightDrawable() instanceof AnimatedEmojiDrawable.WrapSizeDrawable &&
+                ((AnimatedEmojiDrawable.WrapSizeDrawable) titleTextView.getRightDrawable()).getDrawable() instanceof AnimatedEmojiDrawable) {
+            ((AnimatedEmojiDrawable) ((AnimatedEmojiDrawable.WrapSizeDrawable) titleTextView.getRightDrawable()).getDrawable()).removeView(titleTextView);
+        }
+        titleTextView.setRightDrawable(null);
+        titleTextView.setRightDrawable2(null);
+        rightDrawableContentDescription = null;
+        rightDrawable2ContentDescription = null;
+        rightDrawableIsScam = false;
+        rightDrawableIsScamOrVerified = false;
+        titleTextView.setText(LocaleController.getString(R.string.HgramAntiPeekHidden));
+    }
+
+    private void showAntiPeekAvatar() {
+        if (avatarImageView == null) {
+            return;
+        }
+        if (hgramMaskAvatarDrawable == null) {
+            hgramMaskAvatarDrawable = new AvatarDrawable();
+        }
+        hgramMaskAvatarDrawable.setInfo(0L);
+        hgramMaskAvatarDrawable.setScaleSize(1f);
+        hgramMaskAvatarDrawable.setColor(Theme.getColor(Theme.key_avatar_backgroundGray));
+        avatarImageView.setAnimatedEmojiDrawable(null);
+        avatarImageView.setImage(null, null, hgramMaskAvatarDrawable, null);
+        avatarImageView.setRoundRadius(dp(21));
+    }
+
+    private void restoreAntiPeekAvatar() {
+        if (avatarImageView == null) {
+            return;
+        }
+        avatarImageView.setAnimatedEmojiDrawable(null);
+        if (hgramRealChat != null) {
+            avatarImageView.setForUserOrChat(hgramRealChat, avatarDrawable);
+        } else if (hgramRealUser != null) {
+            final boolean special = UserObject.isReplyUser(hgramRealUser)
+                    || UserObject.isAnonymous(hgramRealUser)
+                    || (UserObject.isUserSelf(hgramRealUser) && !hgramRealUserShowSelf);
+            if (special) {
+                avatarImageView.setImage(null, null, avatarDrawable, hgramRealUser);
+            } else {
+                avatarImageView.setForUserOrChat(hgramRealUser, avatarDrawable);
+            }
+        } else if (hgramRealImageLocation != null) {
+            avatarImageView.setImage(hgramRealImageLocation, "50_50", hgramRealAvatar, null);
+        } else if (hgramRealAvatar != null) {
+            avatarImageView.setImageDrawable(hgramRealAvatar);
+        }
+        if (hgramRealRoundRadius >= 0) {
+            avatarImageView.setRoundRadius(hgramRealRoundRadius);
+        }
+    }
+
     public void setTitleIcons(Drawable leftIcon, Drawable mutedIcon) {
+        setAntiPeekMasked(HgramConfig.isAntiPeekActive());
+        if (antiPeekMasked) {
+            Drawable indicator = getResources().getDrawable(R.drawable.msg_views).mutate();
+            indicator.setColorFilter(new PorterDuffColorFilter(getThemedColor(Theme.key_actionBarDefaultSubtitle), PorterDuff.Mode.SRC_IN));
+            leftIcon = indicator;
+        }
         titleTextView.setLeftDrawable(leftIcon);
         if (!rightDrawableIsScamOrVerified && !rightDrawableIsScam) {
             if (mutedIcon != null) {
@@ -945,6 +1023,22 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
     }
 
     public void setTitle(CharSequence value, boolean scam, boolean fake, boolean verified, boolean premium, TLRPC.EmojiStatus emojiStatus, boolean animated) {
+        setAntiPeekMasked(HgramConfig.isAntiPeekActive());
+        if (antiPeekMasked) {
+            if (value != null) {
+                CharSequence realTitle = MessageHelper.INSTANCE.zalgoFilter(value);
+                realTitle = Emoji.replaceEmoji(realTitle, titleTextView.getPaint().getFontMetricsInt(), false);
+                hgramRealTitle = realTitle.toString().equals(LocaleController.getString(R.string.HgramAntiPeekHidden)) ? null : realTitle;
+            } else {
+                hgramRealTitle = null;
+            }
+            hgramTitleMaskedByAntiPeek = true;
+            applyAntiPeekTitleMask();
+            checkActionBar(animated);
+            return;
+        }
+        hgramRealTitle = null;
+        hgramTitleMaskedByAntiPeek = false;
         if (value != null) {
             value = MessageHelper.INSTANCE.zalgoFilter(value);
             value = Emoji.replaceEmoji(value, titleTextView.getPaint().getFontMetricsInt(), false);
@@ -1006,6 +1100,19 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
 
 
     public void setSubtitle(CharSequence value) {
+        setAntiPeekMasked(HgramConfig.isAntiPeekActive());
+        if (antiPeekMasked) {
+            subtitleHiddenByAntiPeek = true;
+            if (subtitleTextView != null) {
+                subtitleTextView.setText("");
+                subtitleTextView.setVisibility(GONE);
+            } else if (animatedSubtitleTextView != null) {
+                animatedSubtitleTextView.setText("");
+                animatedSubtitleTextView.setVisibility(GONE);
+            }
+            checkActionBar(true);
+            return;
+        }
         if (lastSubtitle == null) {
             if (subtitleTextView != null) {
                 subtitleTextView.setText(value);
@@ -1016,6 +1123,86 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
             lastSubtitle = value;
         }
         checkActionBar(true);
+    }
+
+    public void setAntiPeekMasked(boolean masked) {
+        if (antiPeekMasked == masked) {
+            return;
+        }
+        if (titleAnimation != null) {
+            titleAnimation.cancel();
+            titleAnimation = null;
+        }
+        antiPeekMasked = masked;
+        lastSubtitle = null;
+        setTypingAnimation(false);
+        if (masked) {
+            if (!hgramTitleMaskedByAntiPeek) {
+                hgramRealTitle = titleTextView != null ? titleTextView.getText() : null;
+                hgramTitleMaskedByAntiPeek = true;
+            }
+            applyAntiPeekTitleMask();
+            if (!hgramAvatarMaskedByAntiPeek) {
+                if (hgramRealChat == null && hgramRealUser == null && hgramRealImageLocation == null && avatarImageView != null) {
+                    hgramRealImageLocation = avatarImageView.getImageReceiver().getImageLocation();
+                    final int[] radius = avatarImageView.getRoundRadius();
+                    if (radius != null && radius.length > 0) {
+                        hgramRealRoundRadius = radius[0];
+                    }
+                    if (hgramRealChat == null && hgramRealUser == null && parentFragment != null) {
+                        hgramRealChat = parentFragment.getCurrentChat();
+                        hgramRealUser = parentFragment.getCurrentUser();
+                    }
+                }
+                hgramRealAvatar = avatarDrawable;
+                hgramAvatarMaskedByAntiPeek = true;
+            }
+            showAntiPeekAvatar();
+            subtitleHiddenByAntiPeek = true;
+            if (subtitleTextView != null) {
+                subtitleTextView.setText("");
+                subtitleTextView.setVisibility(GONE);
+            }
+            if (animatedSubtitleTextView != null) {
+                animatedSubtitleTextView.setText("");
+                animatedSubtitleTextView.setVisibility(GONE);
+            }
+            checkActionBar(true);
+        } else {
+            if (hgramTitleMaskedByAntiPeek && titleTextView != null) {
+                titleTextView.setText(hgramRealTitle != null ? hgramRealTitle : "");
+            }
+            hgramRealTitle = null;
+            hgramTitleMaskedByAntiPeek = false;
+            if (hgramAvatarMaskedByAntiPeek) {
+                restoreAntiPeekAvatar();
+            }
+            hgramRealAvatar = null;
+            hgramRealImageLocation = null;
+            hgramRealRoundRadius = -1;
+            hgramRealChat = null;
+            hgramRealUser = null;
+            hgramRealUserShowSelf = false;
+            hgramAvatarMaskedByAntiPeek = false;
+            if (parentFragment != null && parentFragment.isThreadChat() && !parentFragment.isTopic && titleTextView != null) {
+                titleTextView.setTag(null);
+                titleTextView.setTranslationY(0);
+            }
+            if (subtitleHiddenByAntiPeek) {
+                View subtitleView = getSubtitleTextView();
+                if (subtitleView != null) {
+                    subtitleView.setVisibility(VISIBLE);
+                    subtitleView.setAlpha(1f);
+                }
+                subtitleHiddenByAntiPeek = false;
+            }
+            updateSubtitle(true);
+            updateCurrentConnectionState();
+        }
+    }
+
+    public boolean isAntiPeekMasked() {
+        return antiPeekMasked;
     }
 
     public ImageView getTimeItem() {
@@ -1095,6 +1282,20 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
 
     public void updateSubtitle(boolean animated) {
         if (parentFragment == null) {
+            return;
+        }
+        setAntiPeekMasked(HgramConfig.isAntiPeekActive());
+        if (antiPeekMasked) {
+            subtitleHiddenByAntiPeek = true;
+            setTypingAnimation(false);
+            if (subtitleTextView != null) {
+                subtitleTextView.setText("");
+                subtitleTextView.setVisibility(GONE);
+            }
+            if (animatedSubtitleTextView != null) {
+                animatedSubtitleTextView.setText("");
+                animatedSubtitleTextView.setVisibility(GONE);
+            }
             return;
         }
         if (parentFragment.getChatMode() == ChatActivity.MODE_EDIT_BUSINESS_LINK) {
@@ -1381,11 +1582,37 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
         return lastSubtitleColorKey;
     }
 
+    private boolean maskAvatarIfNeeded() {
+        setAntiPeekMasked(HgramConfig.isAntiPeekActive());
+        if (!antiPeekMasked) {
+            return false;
+        }
+        if (!hgramAvatarMaskedByAntiPeek) {
+            hgramRealAvatar = avatarDrawable;
+            hgramAvatarMaskedByAntiPeek = true;
+        }
+        showAntiPeekAvatar();
+        return true;
+    }
+
     public void setChatAvatar(TLRPC.Chat chat) {
+        setAntiPeekMasked(HgramConfig.isAntiPeekActive());
+        hgramRealChat = chat;
+        hgramRealUser = null;
+        hgramRealUserShowSelf = false;
+        hgramRealImageLocation = null;
+        hgramRealRoundRadius = ChatObject.isForum(chat) ? dp(ChatObject.hasStories(chat) ? 11 : 16) : dp(21);
+        if (antiPeekMasked) {
+            avatarDrawable.setInfo(currentAccount, chat);
+            hgramRealAvatar = avatarDrawable;
+            hgramAvatarMaskedByAntiPeek = true;
+            showAntiPeekAvatar();
+            return;
+        }
         avatarDrawable.setInfo(currentAccount, chat);
         if (avatarImageView != null) {
             avatarImageView.setForUserOrChat(chat, avatarDrawable);
-            avatarImageView.setRoundRadius(ChatObject.isForum(chat) ? dp(ChatObject.hasStories(chat) ? 11 : 16) : dp(21));
+            avatarImageView.setRoundRadius(hgramRealRoundRadius);
         }
     }
 
@@ -1394,6 +1621,31 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
     }
 
     public void setUserAvatar(TLRPC.User user, boolean showSelf) {
+        setAntiPeekMasked(HgramConfig.isAntiPeekActive());
+        hgramRealUser = user;
+        hgramRealUserShowSelf = showSelf;
+        hgramRealChat = null;
+        hgramRealImageLocation = null;
+        hgramRealRoundRadius = dp(21);
+        if (antiPeekMasked) {
+            avatarDrawable.setInfo(currentAccount, user);
+            if (UserObject.isReplyUser(user)) {
+                avatarDrawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_REPLIES);
+                avatarDrawable.setScaleSize(.8f);
+            } else if (UserObject.isAnonymous(user)) {
+                avatarDrawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_ANONYMOUS);
+                avatarDrawable.setScaleSize(.8f);
+            } else if (UserObject.isUserSelf(user) && !showSelf) {
+                avatarDrawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_SAVED);
+                avatarDrawable.setScaleSize(.8f);
+            } else {
+                avatarDrawable.setScaleSize(1f);
+            }
+            hgramRealAvatar = avatarDrawable;
+            hgramAvatarMaskedByAntiPeek = true;
+            showAntiPeekAvatar();
+            return;
+        }
         avatarDrawable.setInfo(currentAccount, user);
         if (UserObject.isReplyUser(user)) {
             avatarDrawable.setAvatarType(AvatarDrawable.AVATAR_TYPE_REPLIES);
@@ -1419,10 +1671,16 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
                 avatarImageView.setForUserOrChat(user, avatarDrawable);
             }
         }
+        if (avatarImageView != null) {
+            avatarImageView.setRoundRadius(hgramRealRoundRadius);
+        }
     }
 
     public void checkAndUpdateAvatar() {
         if (parentFragment == null) {
+            return;
+        }
+        if (maskAvatarIfNeeded()) {
             return;
         }
 
@@ -1589,6 +1847,13 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
     }
 
     private void updateCurrentConnectionState() {
+        if (antiPeekMasked) {
+            return;
+        }
+        final View subtitleView = getSubtitleTextView();
+        if (subtitleView == null || subtitleView.getVisibility() != VISIBLE) {
+            return;
+        }
         String title = null;
         if (currentConnectionState == ConnectionsManager.ConnectionStateWaitingForNetwork) {
             title = getString(R.string.WaitingForNetwork);
@@ -1652,6 +1917,10 @@ public class ChatAvatarContainer extends FrameLayout implements FactorAnimator.T
     @Override
     public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
         super.onInitializeAccessibilityNodeInfo(info);
+        if (antiPeekMasked) {
+            info.setContentDescription(LocaleController.getString(R.string.HgramAntiPeekHidden));
+            return;
+        }
         StringBuilder sb = new StringBuilder();
         sb.append(titleTextView.getText());
         if (rightDrawableContentDescription != null) {

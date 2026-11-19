@@ -34,7 +34,7 @@
     <string name="DevModeTitle">** Ваш аккаунт может быть заблокирован **</string>
     <string name="DevModeNotice">Мы не несём ответственности за использование функций разработчика.</string>
     <string name="TapToDisable">Нажмите, чтобы скрыть уведомление.</string>
-    <string name="PlaceHolder">Бесполезное уведомление - пожалуйста, отключите</string>
+    <string name="PlaceHolder">Заглушка — отключите</string>
     <string name="CustomBackend">Выбрать DC</string>
     <string name="CustomBackendNotice">Только для опытных пользователей! При одновременном логине на разных DC ваш аккаунт может быть удалён, а номер заблокирован.</string>
     <string name="CustomBackendProduction">Основной DC</string>
@@ -52,9 +52,9 @@
     <string name="UseDefaultTheme">Использовать тему по умолчанию *</string>
     <string name="NightMode">Ночной режим</string>
     <string name="PrivacyNotice">Предупреждение</string>
-    <string name="PrivacyNoticePhoneVisible">Номер вашего мобильного телефона виден всем, что позволяет хакерам узнать вашу истинную личность. Пожалуйста, отключите его!</string>
+    <string name="PrivacyNoticePhoneVisible">Номер вашего телефона виден всем. Злоумышленники могут связать его с вами — отключите показ номера!</string>
     <string name="PrivacyNoticeAddByPhone">Вас можно найти по номеру телефона. Мы рекомендуем отключить это для повышения конфиденциальности.</string>
-    <string name="PrivacyNoticeP2p">Вы не отключили функцию «Разрешить P2P-вызовы», позволяющая хакерам узнать вашу настоящую личность. Пожалуйста, отключите эту функцию!</string>
+    <string name="PrivacyNoticeP2p">У вас включена функция «Разрешить P2P-вызовы». Она позволяет злоумышленникам узнать вашу настоящую личность — отключите её!</string>
     <string name="PrivacyNotice2fa">Для повышения защиты аккаунта рекомендуем включить двухэтапную аутентификацию.</string>
     <string name="ApplySuggestion">Ок</string>
     <string name="DoNotRemindAgain">Не напоминать</string>
@@ -79,7 +79,7 @@
     <string name="FilterNameUnread2">Непрочитанные</string>
     <string name="FilterNameUnreadDescription">Только непрочитанные сообщения</string>
     <string name="FilterNameUnmutedAndUnread">Новые со звуком</string>
-    <string name="FilterNameUnmutedAndUnreadDescription">Только непрочитанные сообщения из включенных чатов</string>
+    <string name="FilterNameUnmutedAndUnreadDescription">Только непрочитанные сообщения из чатов со включённым звуком</string>
     <string name="IgnoreMutedCount">Не считать приглушенные во вкладках</string>
     <string name="DialogsSettings">Настройки чатов</string>
     <string name="SortMenu">Сортировка чатов</string>
@@ -219,8 +219,7 @@
     <string name="Win32ExecutableFiles">Исполняемые файлы Win32</string>
     <string name="ArchiveFiles">Архивы</string>
     <string name="EnableStickerPin">Включить закрепление стикера</string>
-    <string name="EnableStickerPinAbout">Закрепляйте стикеры и синхронизируйте их с облаком даже при добавлении новых стикеров.
-\nВ паре с «Отключить» «Избранное» и «Недавнее».</string>
+    <string name="EnableStickerPinAbout">Закрепляйте стикеры и синхронизируйте их с облаком, даже когда добавляете новые. Работает вместе с отключением «Избранного» и «Недавних».</string>
     <string name="EnableStickerPinTip">Функция в разработке, облачная синхронизация может работать с ошибками.</string>
     <string name="PinSticker">Закрепить</string>
     <string name="UnpinSticker">Открепить</string>
@@ -251,7 +250,7 @@
     <string name="AutoCheckUpdatePreview">Preview (предварительные сборки)</string>
     <string name="unreadBadgeOnBackButton">Счётчик непрочтённых рядом с кнопкой «Назад»</string>
     <string name="customPublicProxyIP">Добавить IP открытого прокси</string>
-    <string name="customPublicProxyIPNotice">Иногда установка открытого прокси (например, Cloudflare) может ускорить доступ.</string>
+    <string name="customPublicProxyIPNotice">В некоторых регионах указание IP публичного прокси-CDN (например, Cloudflare) ускоряет доступ.</string>
     <string name="DeleteDownloadedFileConfirm">Удалить загруженный файл\?</string>
     <string name="DeleteDownloadedFileSucceed">Удалено</string>
     <string name="DeleteDownloadedFileExternal">Внешний файл пропущен.</string>
@@ -270,11 +269,11 @@
     <string name="AppUpdateNekoX">Обновить Nagram</string>
     <string name="NekoXUpdateTranslationHint">Нажмите, чтобы перевести журнал изменений</string>
     <string name="Name">Имя</string>
-    <string name="channelAlias">Свои личные сообщения для сообщений от каналов</string>
-    <string name="channelAliasDetails">Сначала включите «Помечать сообщения от каналов».</string>
+    <string name="channelAlias">Своя подпись для сообщений из каналов</string>
+    <string name="channelAliasDetails">Требует включённой пометки сообщений от каналов.</string>
     <string name="setChannelAliasName">Добавить лычку</string>
     <string name="labelChannelUser">Помечать сообщения от каналов</string>
-    <string name="labelChannelUserDetails">Если отправителем является «Канал», оно будет помечено как «Канал».</string>
+    <string name="labelChannelUserDetails">Если отправитель сообщения — «Канал», оно будет помечено как «Канал».</string>
     <string name="StickerSettings">Стикеры</string>
     <string name="ConfirmSettings">Подтверждение</string>
     <string name="InteractionSettings">Взаимодействие</string>
@@ -289,7 +288,7 @@
     <string name="UpgradeGroup">Обновить группу</string>
     <string name="AccDescrShowKeyboard">Показать клавиатуру</string>
     <string name="ConvertGroupAlertWarning">Предупреждение</string>
-    <string name="ConvertGroupAlert">Это действие необратимо. Невозможно понизить группу до обычной группы.</string>
+    <string name="ConvertGroupAlert">Это действие необратимо. Супергруппу нельзя превратить обратно в обычную группу.</string>
     <string name="SharedPhotosAndVideos">Фотографии и видео</string>
     <string name="StickersAndMasks">Наклейки и маски</string>
     <string name="UnofficialApp">неофициальное приложение</string>

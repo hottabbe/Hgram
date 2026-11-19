@@ -444,6 +444,8 @@ public class ExternalActionActivity extends Activity implements INavigationLayou
             lockRunnable = null;
         }
         finished = true;
+        mainFragmentsStack.clear();
+        layerFragmentsStack.clear();
     }
 
     public void presentFragment(BaseFragment fragment) {

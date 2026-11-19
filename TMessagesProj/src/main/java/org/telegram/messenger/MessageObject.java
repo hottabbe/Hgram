@@ -52,6 +52,7 @@ import androidx.core.graphics.ColorUtils;
 import top.qwq2333.nullgram.utils.StringUtils;
 import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.helper.MessageHelper;
+import xyz.nextalone.nagram.hgram.HgramConfig;
 import xyz.nextalone.nagram.ui.syntaxhighlight.SyntaxHighlight;
 
 import org.telegram.PhoneFormat.PhoneFormat;
@@ -64,6 +65,7 @@ import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.SerializedData;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
+import xyz.nextalone.nagram.hgram.HgramShortMessageMerger;
 import org.telegram.tgnet.tl.TL_keyboard;
 import org.telegram.tgnet.tl.TL_iv;
 import org.telegram.tgnet.tl.TL_stories;
@@ -1284,6 +1286,7 @@ public class MessageObject {
         public int cachedWidthForCaption = -1;
 
         public GroupedMessagePosition getPosition(MessageObject msg) {
+            ensureLayoutCurrent();
             if (msg == null) {
                 return null;
             }
@@ -1295,6 +1298,7 @@ public class MessageObject {
         }
 
         private int maxSizeWidth = 800;
+        private int compactAlbumLayoutVersion = -1;
 
         public final TransitionParams transitionParams = new TransitionParams();
 
@@ -1330,6 +1334,7 @@ public class MessageObject {
         public boolean reversed;
 
         public void calculate() {
+            compactAlbumLayoutVersion = HgramConfig.getCompactMediaAlbumsVersion();
             posArray.clear();
             positions.clear();
             positionsArray.clear();
@@ -1445,6 +1450,64 @@ public class MessageObject {
             if (needShare) {
                 maxSizeWidth -= 50;
                 firstSpanAdditionalSize += 50;
+            }
+
+            if (HgramConfig.isCompactMediaAlbumsEnabled() && count >= 3) {
+                final int thumbnailCount = count - 1;
+                final int thumbnailWidth = maxSizeWidth / thumbnailCount;
+                maxX = thumbnailCount - 1;
+
+                GroupedMessagePosition hero = posArray.get(0);
+                hero.set(0, maxX, 0, 0, maxSizeWidth, 1f, POSITION_FLAG_LEFT | POSITION_FLAG_RIGHT | POSITION_FLAG_TOP);
+
+                for (int i = 0; i < thumbnailCount; i++) {
+                    int x = i;
+                    int width = i == thumbnailCount - 1 ? maxSizeWidth - thumbnailWidth * i : thumbnailWidth;
+                    int flags = POSITION_FLAG_BOTTOM;
+                    if (i == 0) {
+                        flags |= POSITION_FLAG_LEFT;
+                    }
+                    if (i == thumbnailCount - 1) {
+                        flags |= POSITION_FLAG_RIGHT;
+                    }
+                    posArray.get(i + 1).set(x, x, 1, 1, width, 0.01f, flags);
+                }
+
+                final int avatarOffset = 108;
+                for (int i = 0; i < count; i++) {
+                    GroupedMessagePosition position = posArray.get(i);
+                    if (isOut) {
+                        if (position.minX == 0) {
+                            position.spanSize += firstSpanAdditionalSize;
+                        }
+                        if ((position.flags & POSITION_FLAG_RIGHT) != 0) {
+                            position.edge = true;
+                        }
+                    } else {
+                        if (position.maxX == maxX || (position.flags & POSITION_FLAG_RIGHT) != 0) {
+                            position.spanSize += firstSpanAdditionalSize;
+                        }
+                        if ((position.flags & POSITION_FLAG_LEFT) != 0) {
+                            position.edge = true;
+                        }
+                    }
+                    MessageObject messageObject = messages.get(reversed ? count - i - 1 : i);
+                    if (!isOut && messageObject.needDrawAvatarInternal()) {
+                        if (position.edge) {
+                            if (position.spanSize != 1000) {
+                                position.spanSize += avatarOffset;
+                            }
+                            position.pw += avatarOffset;
+                        } else if ((position.flags & POSITION_FLAG_RIGHT) != 0) {
+                            if (position.spanSize != 1000) {
+                                position.spanSize -= avatarOffset;
+                            } else if (position.leftSpanOffset != 0) {
+                                position.leftSpanOffset += avatarOffset;
+                            }
+                        }
+                    }
+                }
+                return;
             }
 
             int minHeight = dp(120);
@@ -1759,9 +1822,7 @@ public class MessageObject {
         }
 
         public MessageObject findCaptionMessageObject() {
-            if (!messages.isEmpty() && positions.isEmpty()) {
-                calculate();
-            }
+            ensureLayoutCurrent();
 
             MessageObject result = null;
             for (int i = 0; i < messages.size(); ++i) {
@@ -1778,9 +1839,7 @@ public class MessageObject {
         }
 
         public MessageObject findMessageWithFlags(int flags) {
-            if (!messages.isEmpty() && positions.isEmpty()) {
-                calculate();
-            }
+            ensureLayoutCurrent();
             for (int i = 0; i < messages.size(); i++) {
                 MessageObject object = messages.get(i);
                 MessageObject.GroupedMessagePosition position = positions.get(object);
@@ -1789,6 +1848,12 @@ public class MessageObject {
                 }
             }
             return null;
+        }
+
+        private void ensureLayoutCurrent() {
+            if (!messages.isEmpty() && (compactAlbumLayoutVersion != HgramConfig.getCompactMediaAlbumsVersion() || positions.isEmpty() && messages.size() > 1)) {
+                calculate();
+            }
         }
 
         public static class TransitionParams {
@@ -3707,6 +3772,20 @@ public class MessageObject {
         final TLRPC.TL_textWithEntities translatedText = messageOwner != null ? (messageOwner.voiceTranscriptionOpen ? messageOwner.translatedVoiceTranscription : messageOwner.translatedText) : null;
         final TLRPC.TL_textWithEntities summarizedText = messageOwner != null && messageOwner.summarizedOpen ? messageOwner.summaryText : null;
         final TLRPC.TL_textWithEntities summarizeTranslatedText = messageOwner != null && messageOwner.summarizedOpen ? messageOwner.translatedSummaryText : null;
+        if (messageOwner != null && messageOwner.summarizedOpen && messageOwner.summaryText != null
+                && messageOwner.summary_from_language == null
+                && xyz.nextalone.nagram.hgram.HgramConfig.isSummarizerEnabled()) {
+            if (summarized && !translated) return replyUpdated || false;
+            summarized = true;
+            translated = false;
+            if (type == TYPE_ARTICLE) {
+                generateLayout(null);
+            } else {
+                applyNewText(messageOwner.summaryText.text);
+                generateCaption();
+            }
+            return replyUpdated || true;
+        }
         if (
             summarizeTranslatedText != null &&
             messageOwner != null &&
@@ -8752,6 +8831,20 @@ public class MessageObject {
             return messageOwner.translatedRichMessage;
         }
         return messageOwner.rich_message;
+    }
+
+    public void releaseLayouts() {
+        if (textLayoutBlocks == null) {
+            return;
+        }
+        for (TextLayoutBlock block : textLayoutBlocks) {
+            if (block == null) {
+                continue;
+            }
+            block.spoilersPatchedTextLayout.set(null);
+            block.textLayout = null;
+        }
+        textLayoutBlocks = null;
     }
 
     public void generateLayout(TLRPC.User fromUser) {

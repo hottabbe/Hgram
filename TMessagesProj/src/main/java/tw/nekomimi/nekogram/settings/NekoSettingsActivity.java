@@ -21,7 +21,6 @@ import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SendMessagesHelper;
-import org.telegram.messenger.browser.Browser;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.Cells.HeaderCell;
 import org.telegram.ui.Cells.TextCell;
@@ -65,13 +64,12 @@ public class NekoSettingsActivity extends BaseNekoSettingsActivity {
     private int passcodeRow;
     private int experimentRow;
     private int debugRow;
+    private int hgramRow;
     private int categories2Row;
 
     private int aboutRow;
     private int channelRow;
     private int channelTipsRow;
-    private int sourceCodeRow;
-    private int translationRow;
     private int datacenterRow;
     private int networkLogRow;
     private int about2Row;
@@ -107,14 +105,12 @@ public class NekoSettingsActivity extends BaseNekoSettingsActivity {
             presentFragment(new NekoExperimentalSettingsActivity());
         } else if (position == debugRow) {
             presentFragment(new NekoDebugSettingsActivity());
+        } else if (position == hgramRow) {
+            presentFragment(new HgramSettingsActivity());
         } else if (position == channelRow) {
             getMessagesController().openByUserName(channelUsername, this, 1);
         } else if (position == channelTipsRow) {
             getMessagesController().openByUserName(channelUsernameTips, this, 1);
-        } else if (position == sourceCodeRow) {
-            Browser.openUrl(getParentActivity(), "https://github.com/NextAlone/Nagram");
-        } else if (position == translationRow) {
-            Browser.openUrl(getParentActivity(), "https://xtaolabs.crowdin.com/nagram");
         } else if (position == datacenterRow) {
             presentFragment(new DatacenterActivity(0));
         } else if (position == networkLogRow) {
@@ -169,13 +165,12 @@ public class NekoSettingsActivity extends BaseNekoSettingsActivity {
         }
         experimentRow = addRow("experiment");
         debugRow = addRow("debug");
+        hgramRow = addRow("hgram");
         categories2Row = addRow();
 
         aboutRow = addRow("about");
         channelRow = addRow("channel");
         channelTipsRow = addRow("channelTips");
-        sourceCodeRow = addRow("sourceCode");
-        translationRow = addRow("translation");
         datacenterRow = addRow("datacenter");
         networkLogRow = addRow("networkLog");
         about2Row = addRow();
@@ -202,10 +197,6 @@ public class NekoSettingsActivity extends BaseNekoSettingsActivity {
                         textCell.setTextAndValue(LocaleController.getString(R.string.OfficialChannel), "@" + channelUsername, divider);
                     } else if (position == channelTipsRow) {
                         textCell.setTextAndValue(LocaleController.getString(R.string.TipsChannel), "@" + channelUsernameTips, divider);
-                    } else if (position == sourceCodeRow) {
-                        textCell.setText(LocaleController.getString(R.string.SourceCode), divider);
-                    } else if (position == translationRow) {
-                        textCell.setText(LocaleController.getString(R.string.TransSite), divider);
                     } else if (position == datacenterRow) {
                         textCell.setText(LocaleController.getString(R.string.DatacenterStatus), divider);
                     } else if (position == networkLogRow) {
@@ -244,6 +235,8 @@ public class NekoSettingsActivity extends BaseNekoSettingsActivity {
                         textCell.setTextAndIcon(LocaleController.getString(R.string.Experiment), R.drawable.msg_fave, divider);
                     } else if (position == debugRow) {
                         textCell.setTextAndIcon(LocaleController.getString(R.string.DebugMenu), R.drawable.msg_info, divider);
+                    } else if (position == hgramRow) {
+                        textCell.setTextAndIcon(LocaleController.getString(R.string.HgramSettingsTitle), R.drawable.msg_fave, divider);
                     }
                     break;
                 }

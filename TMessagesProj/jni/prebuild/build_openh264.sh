@@ -57,6 +57,7 @@ for abi in $ABIS; do
         V=No \
         OS=android \
         ARCH="$arch" \
+        LLVM_INSTALL_DIR="$NDK_TOOLCHAIN/bin" \
         NDKROOT="$ANDROID_NDK_HOME" \
         TARGET="android-$API" \
         NDKLEVEL="$API" \

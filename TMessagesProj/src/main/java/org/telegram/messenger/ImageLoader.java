@@ -2656,6 +2656,7 @@ public class ImageLoader {
     public void clearMemory() {
         smallImagesMemCache.evictAll();
         memCache.evictAll();
+        wallpaperMemCache.evictAll();
         lottieMemCache.evictAll();
     }
 

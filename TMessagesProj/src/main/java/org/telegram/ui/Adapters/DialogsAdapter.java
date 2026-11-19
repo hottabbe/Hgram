@@ -43,6 +43,7 @@ import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.UserConfig;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
 import org.telegram.messenger.support.LongSparseIntArray;
@@ -84,6 +85,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 
 public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements DialogCell.DialogCellDelegate {
@@ -218,6 +220,21 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
 
     public int getDialogsType() {
         return dialogsType;
+    }
+
+    private boolean hgramHasHiddenArchiveDialogs() {
+        final List<Long> hidden = HgramSecretSpace.hiddenList(currentAccount);
+        if (hidden.isEmpty()) {
+            return false;
+        }
+        final androidx.collection.LongSparseArray<TLRPC.Dialog> dialogs = MessagesController.getInstance(currentAccount).dialogs_dict;
+        for (int i = 0; i < hidden.size(); i++) {
+            final TLRPC.Dialog dialog = dialogs.get(hidden.get(i));
+            if (dialog != null && !(dialog instanceof TLRPC.TL_dialogFolder) && dialog.folder_id != 0) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public int getDialogsCount() {
@@ -776,10 +793,20 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
             }
             case VIEW_TYPE_ARCHIVE_FULLSCREEN:
                 LastEmptyView lastEmptyView = new LastEmptyView(mContext);
-                lastEmptyView.addView(
-                        new ArchiveHelp(mContext, currentAccount, null, DialogsAdapter.this::onArchiveSettingsClick, null),
-                        LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.CENTER, 0, -(int) (DialogStoriesCell.HEIGHT_IN_DP * .5f), 0, 0)
-                );
+                if (!HgramSecretSpace.isActive() && hgramHasHiddenArchiveDialogs()) {
+                    TextView hgramArchiveEmpty = new TextView(mContext);
+                    hgramArchiveEmpty.setText(LocaleController.getString(R.string.HgramSecretArchiveEmpty));
+                    hgramArchiveEmpty.setTextSize(15);
+                    hgramArchiveEmpty.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayText));
+                    hgramArchiveEmpty.setGravity(Gravity.CENTER);
+                    lastEmptyView.addView(hgramArchiveEmpty,
+                            LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 24, 0, 24, 0));
+                } else {
+                    lastEmptyView.addView(
+                            new ArchiveHelp(mContext, currentAccount, null, DialogsAdapter.this::onArchiveSettingsClick, null),
+                            LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, Gravity.CENTER, 0, -(int) (DialogStoriesCell.HEIGHT_IN_DP * .5f), 0, 0)
+                    );
+                }
                 view = lastEmptyView;
                 break;
             case VIEW_TYPE_LAST_EMPTY: {
@@ -1566,7 +1593,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
         MessagesController messagesController = MessagesController.getInstance(currentAccount);
         MessagesController.CommunityPeersDialog communityPeersDialog = messagesController.buildCommunityPeers(communityId);
 
-        dialogsCount = communityPeersDialog.getDialogsCount();
+        dialogsCount = 0;
         isEmpty = false;
 
 
@@ -1589,9 +1616,26 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
             }
 
             if (!array.isEmpty()) {
-                itemInternals.add(new ItemInternal(VIEW_TYPE_HEADER_3, name));
+                boolean headerAdded = false;
                 for (int k = 0; k < array.size(); k++) {
                     MessagesController.CommunityPeerDialog peer = array.get(k);
+                    final long peerId;
+                    if (peer.dialog != null) {
+                        peerId = peer.dialog.id;
+                    } else if (peer.chat != null) {
+                        peerId = -peer.chat.id;
+                    } else if (peer.user != null) {
+                        peerId = peer.user.id;
+                    } else {
+                        peerId = 0;
+                    }
+                    if (peerId != 0 && !HgramSecretSpace.isVisible(currentAccount, peerId)) {
+                        continue;
+                    }
+                    if (!headerAdded) {
+                        itemInternals.add(new ItemInternal(VIEW_TYPE_HEADER_3, name));
+                        headerAdded = true;
+                    }
                     if (peer.dialog != null) {
                         itemInternals.add(new ItemInternal(VIEW_TYPE_DIALOG, peer.dialog));
                     } else if (peer.chat != null) {
@@ -1599,6 +1643,7 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
                     } else if (peer.user != null) {
                         itemInternals.add(new ItemInternal(VIEW_TYPE_DIALOG_COMMUNITY, peer.user));
                     }
+                    dialogsCount++;
                 }
             }
         }
@@ -1625,13 +1670,23 @@ public class DialogsAdapter extends RecyclerListView.SelectionAdapter implements
             }
         }
 
+        if (HgramSecretSpace.hiddenCount(currentAccount) > 0) {
+            ArrayList<TLRPC.Dialog> visible = new ArrayList<>(array.size());
+            for (int i = 0; i < array.size(); i++) {
+                TLRPC.Dialog dialog = array.get(i);
+                if (dialog instanceof TLRPC.TL_dialogFolder || HgramSecretSpace.isVisible(currentAccount, dialog.id)) {
+                    visible.add(dialog);
+                }
+            }
+            array = visible;
+        }
+
         dialogsCount = array.size();
         isEmpty = false;
         if (dialogsCount == 0 && parentFragment.isArchive()) {
             itemInternals.add(new ItemInternal(VIEW_TYPE_ARCHIVE_FULLSCREEN));
             return;
         }
-
         if (!hasHints && dialogsType == 0 && folderId == 0 && messagesController.isDialogsEndReached(folderId) && !forceUpdatingContacts) {
             if (messagesController.getAllFoldersDialogsCount() <= 10 && ContactsController.getInstance(currentAccount).doneLoadingContacts && !ContactsController.getInstance(currentAccount).contacts.isEmpty()) {
                 onlineContacts = new ArrayList<>(ContactsController.getInstance(currentAccount).contacts);

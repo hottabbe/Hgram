@@ -8,6 +8,10 @@
 
 package org.telegram.ui;
 
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+
+import xyz.nextalone.nagram.hgram.HgramHaptics;
+
 import static android.widget.LinearLayout.HORIZONTAL;
 
 import static org.telegram.messenger.AndroidUtilities.dp;
@@ -31,7 +35,6 @@ import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.RemoteException;
-import android.os.Vibrator;
 import android.provider.ContactsContract;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
@@ -1005,26 +1008,17 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
             return;
         }
         if (firstNameField.getEditText().length() == 0) {
-            final Vibrator v = (Vibrator) parentFragment.getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null) {
-                v.vibrate(200);
-            }
+            HgramHaptics.play(HgramHapticProfile.PLACE_LIST_ITEMS);
             AndroidUtilities.shakeView(firstNameField);
             return;
         }
         if (codeField.length() == 0) {
-            final Vibrator v = (Vibrator) parentFragment.getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null) {
-                v.vibrate(200);
-            }
+            HgramHaptics.play(HgramHapticProfile.PLACE_LIST_ITEMS);
             AndroidUtilities.shakeView(codeField);
             return;
         }
         if (phoneField.length() == 0) {
-            final Vibrator v = (Vibrator) parentFragment.getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null) {
-                v.vibrate(200);
-            }
+            HgramHaptics.play(HgramHapticProfile.PLACE_LIST_ITEMS);
             AndroidUtilities.shakeView(phoneField);
             return;
         }

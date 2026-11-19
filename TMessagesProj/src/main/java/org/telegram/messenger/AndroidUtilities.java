@@ -1346,8 +1346,14 @@ public class AndroidUtilities {
         return doSafe(runnable, 200);
     }
 
+    // Nagram: one shared pool instead of a new executor per call (doSafe runs on every message bind).
+    private static final ExecutorService doSafeExecutor = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "doSafe");
+        t.setDaemon(true);
+        return t;
+    });
+
     public static boolean doSafe(Utilities.Callback0Return<Boolean> runnable, int timeout) {
-        ExecutorService executor = Executors.newSingleThreadExecutor();
         Callable<Boolean> task = () -> {
             try {
                 return runnable.run();
@@ -1359,7 +1365,7 @@ public class AndroidUtilities {
         boolean success = false;
         Future<Boolean> future = null;
         try {
-            future = executor.submit(task);
+            future = doSafeExecutor.submit(task);
             success = future.get(timeout, TimeUnit.MILLISECONDS);
         } catch (TimeoutException ex) {
             if (future != null) {
@@ -1367,8 +1373,6 @@ public class AndroidUtilities {
             }
         } catch (Exception ex) {
             FileLog.e(ex);
-        } finally {
-            executor.shutdownNow();
         }
         return success;
     }
@@ -2762,11 +2766,44 @@ public class AndroidUtilities {
         final WindowManager wm = window.getWindowManager();
         if (wm == null) return;
         WindowManager.LayoutParams params = window.getAttributes();
+        // Nagram: updateViewLayout() re-lays out the whole decor view. Calling it on every onResume
+        // (the request is made unconditionally there) caused visible micro-stutters when switching
+        // tabs or activities, so only do it when the requested refresh rate really changes.
+        final boolean rateUnchanged = Math.abs(params.preferredRefreshRate - rate) < 0.2f;
         params.preferredRefreshRate = rate;
-        try {
-            wm.updateViewLayout(window.getDecorView(), params);
-        } catch (Exception e) {
-            FileLog.e(e);
+        // Nagram: some OEM builds ignore preferredRefreshRate alone; also pin the highest-refresh
+        // display mode that has the current resolution.
+        if (Build.VERSION.SDK_INT >= 23 && window.getDecorView() != null) {
+            Display display = window.getDecorView().getDisplay();
+            if (display != null) {
+                Display.Mode current = display.getMode();
+                Display.Mode best = null;
+                for (Display.Mode mode : display.getSupportedModes()) {
+                    if (mode.getPhysicalWidth() != current.getPhysicalWidth() || mode.getPhysicalHeight() != current.getPhysicalHeight()) {
+                        continue;
+                    }
+                    if (best == null || mode.getRefreshRate() > best.getRefreshRate()) {
+                        best = mode;
+                    }
+                }
+                if (best != null) {
+                    params.preferredDisplayModeId = best.getModeId();
+                }
+            }
+        }
+        // Nagram: keep RecyclerView prefetch cadence in sync with the refresh rate we actually request
+        androidx.recyclerview.widget.RecyclerView.updateFrameIntervalForRefreshRate(rate);
+        // Nagram: animations must not run faster than the display can show, otherwise the UI thread
+        // spends time on frames nobody sees and scrolling becomes uneven.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            org.telegram.messenger.utils.Choreographer60FpsContent.setTargetFps(rate);
+        }
+        if (!rateUnchanged) {
+            try {
+                wm.updateViewLayout(window.getDecorView(), params);
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
         }
     }
 
@@ -6060,6 +6097,13 @@ public class AndroidUtilities {
                 if (view instanceof PipRoundVideoView.PipFrameLayout || (exclude != null && exclude.contains(view))) {
                     continue;
                 }
+                // Redrawing a hidden or empty hierarchy costs the same as a visible one, and this
+                // method runs on the UI thread when the chat menu scrim is built, so skip roots
+                // that cannot contribute a single pixel.
+                if (view.getVisibility() != View.VISIBLE || !view.isShown()
+                        || view.getWidth() <= 0 || view.getHeight() <= 0) {
+                    continue;
+                }
 
                 ViewGroup.LayoutParams layoutParams = view.getLayoutParams();
                 if (layoutParams instanceof WindowManager.LayoutParams) {
@@ -6481,23 +6525,15 @@ public class AndroidUtilities {
     }
 
     public static void vibrateCursor(View view) {
-        try {
-            if (view == null || view.getContext() == null) return;
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-            if (!((Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE)).hasAmplitudeControl()) return;
-            if (NekoConfig.disableVibration.Bool()) return;
-            view.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
-        } catch (Exception ignore) {}
+        if (view == null || view.getContext() == null) return;
+        xyz.nextalone.nagram.hgram.HgramHaptics.play(view,
+                xyz.nextalone.nagram.hgram.HgramHapticProfile.PLACE_TEXT_CURSOR);
     }
 
     public static void vibrate(View view) {
-        try {
-            if (view == null || view.getContext() == null) return;
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-            if (!((Vibrator) view.getContext().getSystemService(Context.VIBRATOR_SERVICE)).hasAmplitudeControl()) return;
-            if (NekoConfig.disableVibration.Bool()) return;
-            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
-        } catch (Exception ignore) {}
+        if (view == null || view.getContext() == null) return;
+        xyz.nextalone.nagram.hgram.HgramHaptics.play(view,
+                xyz.nextalone.nagram.hgram.HgramHapticProfile.PLACE_TOGGLES);
     }
 
     public static void applySpring(Animator anim, double stiffness, double damping) {
@@ -6640,7 +6676,7 @@ public class AndroidUtilities {
 
     public static String getBuildVersionInfo() {
         String[] abi = Build.SUPPORTED_ABIS[0].toLowerCase(Locale.ROOT).split("-");
-        return "Nagram v" + BuildConfig.VERSION_NAME + " (" + BuildConfig.BUILD_TIMESTAMP + ") " + abi[abi.length - 1];
+        return "Hgram v" + BuildConfig.VERSION_NAME + " (" + BuildConfig.BUILD_TIMESTAMP + ") " + abi[abi.length - 1];
 //        try {
 //            PackageInfo pInfo = ApplicationLoader.applicationContext.getPackageManager().getPackageInfo(ApplicationLoader.applicationContext.getPackageName(), 0);
 //            int code = pInfo.versionCode / 10;

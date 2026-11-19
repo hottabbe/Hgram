@@ -14,7 +14,6 @@
     <string name="TextUndoRedo">Ångra/Gör om</string>
     <string name="TextUndo">Ångra</string>
     <string name="TextRedo">Gör om</string>
-    <string name="NoiseSuppressAndVoiceEnhance">Ljuddämpning och röstförstärkning</string>
     <string name="RepeatAsCopy">Upprepa som kopia</string>
     <string name="DoubleTapAction">Åtgärd för dubbeltryck</string>
     <string name="DoubleTapActionIncoming">Mottagna meddelanden</string>

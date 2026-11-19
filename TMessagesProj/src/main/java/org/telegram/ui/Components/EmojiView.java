@@ -6200,6 +6200,11 @@ public class EmojiView extends FrameLayout implements
         boolean changed = getVisibility() != visibility;
         super.setVisibility(visibility);
         if (changed) {
+            if (visibility == GONE) {
+                // Nagram: unsubscribe while hidden (observers used to be added on every show and never removed)
+                NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.stickersDidLoad);
+                NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.recentDocumentsDidLoad);
+            }
             if (visibility != GONE) {
                 Emoji.sortEmoji();
                 emojiAdapter.notifyDataSetChanged();
@@ -6229,6 +6234,8 @@ public class EmojiView extends FrameLayout implements
     }
 
     public void onDestroy() {
+        NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.stickersDidLoad);
+        NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.recentDocumentsDidLoad);
         if (observersGroup != null) {
             observersGroup.removeAllObservers();
             observersGroup = null;

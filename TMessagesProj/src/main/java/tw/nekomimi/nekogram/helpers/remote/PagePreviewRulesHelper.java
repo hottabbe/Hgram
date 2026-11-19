@@ -153,7 +153,7 @@ public class PagePreviewRulesHelper extends BaseRemoteHelper {
         var tag = getTag();
         long oldTime = preferences.getLong(tag + "_update_time", 0L);
         long nowTime = System.currentTimeMillis();
-        int TTL = 15 * 60;
+        long TTL = 15 * 60 * 1000L;
         return oldTime + TTL <= nowTime;
     }
 
@@ -162,7 +162,9 @@ public class PagePreviewRulesHelper extends BaseRemoteHelper {
             return;
         }
         loading = true;
-        loadPagePreviewRules();
+        if (domains.isEmpty()) {
+            loadPagePreviewRules();
+        }
         if (needUpdate()) {
             load();
         }
@@ -205,6 +207,7 @@ public class PagePreviewRulesHelper extends BaseRemoteHelper {
     public static class DomainRule {
         public String regex;
         public String replace;
+        private Pattern cachedPattern;
 
         public DomainRule() {}
 
@@ -214,7 +217,10 @@ public class PagePreviewRulesHelper extends BaseRemoteHelper {
         }
 
         public Pattern getRegexPattern() {
-            return Pattern.compile(regex);
+            if (cachedPattern == null && regex != null) {
+                cachedPattern = Pattern.compile(regex);
+            }
+            return cachedPattern;
         }
 
         public static DomainRule deserialize(AbstractSerializedData stream) {

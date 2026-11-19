@@ -118,6 +118,7 @@ public class MessagesStorage extends BaseController {
 
     private static SparseArray<MessagesStorage> Instance = new SparseArray();
     private static final Object lockObject = new Object();
+    private static boolean hgramSttSingletonLogged;
 
     public final static int LAST_DB_VERSION = 179;
     private boolean databaseMigrationInProgress;
@@ -138,6 +139,10 @@ public class MessagesStorage extends BaseController {
                 localInstance = Instance.get(num);
                 if (localInstance == null) {
                     Instance.put(num, localInstance = new MessagesStorage(num));
+                    if (!hgramSttSingletonLogged && ApplicationLoader.isHgramSttProcess()) {
+                        hgramSttSingletonLogged = true;
+                        FileLog.e("HgramSTT: account singleton created in :stt: MessagesStorage");
+                    }
                 }
             }
         }
@@ -328,7 +333,13 @@ public class MessagesStorage extends BaseController {
             database.executeFast("PRAGMA secure_delete = ON").stepThis().dispose();
             database.executeFast("PRAGMA temp_store = MEMORY").stepThis().dispose();
             database.executeFast("PRAGMA journal_mode = WAL").stepThis().dispose();
+            // With WAL, NORMAL keeps the database consistent for the application and removes
+            // a disk flush from every commit; only a power loss can drop the last transactions.
+            database.executeFast("PRAGMA synchronous = NORMAL").stepThis().dispose();
             database.executeFast("PRAGMA journal_size_limit = 10485760").stepThis().dispose();
+            database.executeFast("PRAGMA mmap_size = 134217728").stepThis().dispose();
+            database.executeFast("PRAGMA cache_size = -16384").stepThis().dispose();
+            database.executeFast("PRAGMA wal_autocheckpoint = 1000").stepThis().dispose();
 
             if (createTable) {
                 if (BuildVars.LOGS_ENABLED) {
@@ -440,8 +451,13 @@ public class MessagesStorage extends BaseController {
                 database = new SQLiteDatabase(cacheFile.getPath());
                 database.executeFast("PRAGMA secure_delete = ON").stepThis().dispose();
                 database.executeFast("PRAGMA temp_store = MEMORY").stepThis().dispose();
-                database.executeFast("PRAGMA journal_mode = WAL").stepThis().dispose();
+            database.executeFast("PRAGMA journal_mode = WAL").stepThis().dispose();
+            // Nagram: NORMAL is safe with WAL and avoids an fsync on every commit
+            database.executeFast("PRAGMA synchronous = NORMAL").stepThis().dispose();
                 database.executeFast("PRAGMA journal_size_limit = 10485760").stepThis().dispose();
+                database.executeFast("PRAGMA mmap_size = 134217728").stepThis().dispose();
+                database.executeFast("PRAGMA cache_size = -16384").stepThis().dispose();
+                database.executeFast("PRAGMA wal_autocheckpoint = 1000").stepThis().dispose();
             } catch (SQLiteException e) {
                 FileLog.e(new Exception(e));
                 restored = false;

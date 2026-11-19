@@ -170,6 +170,7 @@ import kotlin.Unit;
 import tw.nekomimi.nekogram.NekoConfig;
 import tw.nekomimi.nekogram.ui.BottomBuilder;
 import tw.nekomimi.nekogram.utils.VibrateUtil;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 
 @SuppressLint("NewApi")
 public class VoIPService extends Service implements SensorEventListener, AudioManager.OnAudioFocusChangeListener, NotificationCenter.NotificationCenterDelegate, VoIPServiceState {
@@ -219,6 +220,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 	private int currentAccount = -1;
 	private static final int PROXIMITY_SCREEN_OFF_WAKE_LOCK = 32;
 	private static VoIPService sharedInstance;
+	private static Bitmap hgramNeutralCallAvatar;
 	private static Runnable setModeRunnable;
 	private static final Object sync = new Object();
 	private NetworkInfo lastNetInfo;
@@ -587,6 +589,10 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 	}
 
 	public String getTitle() {
+		final long dialogId = user != null ? user.id : chat != null ? -chat.id : 0;
+		if (dialogId != 0 && !HgramSecretSpace.isVisible(currentAccount, dialogId)) {
+			return LocaleController.getString(R.string.HgramAntiPeekHidden);
+		}
 		if (user != null) return ContactsController.formatName(user.first_name, user.last_name);
 		if (chat != null) return chat.title;
 		return ""; // TODO
@@ -913,7 +919,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 					extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, addAccountToTelecomManager());
 					myExtras.putInt("call_type", 1);
 					extras.putBundle(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, myExtras);
-					ContactsController.getInstance(currentAccount).createOrUpdateConnectionServiceContact(user.id, user.first_name, user.last_name);
+					createOrUpdateHgramConnectionServiceContact(user);
 					tm.placeCall(Uri.fromParts("tel", "+99084" + user.id, null), extras);
 				} else {
 					delayedStartOutgoingCall = () -> {
@@ -1225,7 +1231,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 				stopSelf();
 			} else {
 				if (USE_CONNECTION_SERVICE) {
-					ContactsController.getInstance(currentAccount).createOrUpdateConnectionServiceContact(user.id, user.first_name, user.last_name);
+					createOrUpdateHgramConnectionServiceContact(user);
 					TelecomManager tm = (TelecomManager) getSystemService(TELECOM_SERVICE);
 					Bundle extras = new Bundle();
 					extras.putInt("call_type", 1);
@@ -4499,7 +4505,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 				AndroidUtilities.runOnUIThread(delayedStartOutgoingCall, 2000);
 			}
 			systemCallConnection.setAddress(Uri.fromParts("tel", "+99084" + user.id, null), TelecomManager.PRESENTATION_ALLOWED);
-			systemCallConnection.setCallerDisplayName(ContactsController.formatName(user.first_name, user.last_name), TelecomManager.PRESENTATION_ALLOWED);
+			systemCallConnection.setCallerDisplayName(isHgramHiddenCall(user) ? LocaleController.getString(R.string.HgramAntiPeekHidden) : ContactsController.formatName(user.first_name, user.last_name), TelecomManager.PRESENTATION_ALLOWED);
 		}
 		return systemCallConnection;
 	}
@@ -5148,6 +5154,19 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 	}
 
 	public static Bitmap getRoundAvatarBitmap(Context context, int currentAccount, TLObject userOrChat) {
+		if (userOrChat != null) {
+			final long dialogId;
+			if (userOrChat instanceof TLRPC.User) {
+				dialogId = ((TLRPC.User) userOrChat).id;
+			} else if (userOrChat instanceof TLRPC.Chat) {
+				dialogId = -((TLRPC.Chat) userOrChat).id;
+			} else {
+				dialogId = 0;
+			}
+			if (dialogId != 0 && !HgramSecretSpace.isVisible(currentAccount, dialogId)) {
+				return getHgramNeutralCallAvatar();
+			}
+		}
 		Bitmap bitmap = null;
 		try {
 			if (userOrChat instanceof TLRPC.User) {
@@ -5209,7 +5228,46 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 		return bitmap;
 	}
 
+	private void createOrUpdateHgramConnectionServiceContact(TLRPC.User user) {
+		final boolean masked = isHgramHiddenCall(user);
+		ContactsController.getInstance(currentAccount).createOrUpdateConnectionServiceContact(
+				user.id,
+				masked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : user.first_name,
+				masked ? "" : user.last_name);
+	}
+
+	private boolean isHgramHiddenCall(TLObject userOrChat) {
+		if (userOrChat == null) {
+			return false;
+		}
+		final long dialogId;
+		if (userOrChat instanceof TLRPC.User) {
+			dialogId = ((TLRPC.User) userOrChat).id;
+		} else if (userOrChat instanceof TLRPC.Chat) {
+			dialogId = -((TLRPC.Chat) userOrChat).id;
+		} else {
+			return false;
+		}
+		return dialogId != 0 && !HgramSecretSpace.isVisible(currentAccount, dialogId);
+	}
+
+	public static synchronized Bitmap getHgramNeutralCallAvatar() {
+		if (hgramNeutralCallAvatar == null) {
+			final Bitmap bitmap = Bitmap.createBitmap(200, 200, Bitmap.Config.ARGB_8888);
+			final Canvas canvas = new Canvas(bitmap);
+			final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+			paint.setColor(0xFF9E9E9E);
+			canvas.drawCircle(100, 100, 100, paint);
+			hgramNeutralCallAvatar = bitmap;
+		}
+		return hgramNeutralCallAvatar;
+	}
+
 	private void showIncomingNotification(String name, TLObject userOrChat, boolean video, int additionalMemberCount) {
+		final boolean hgramMasked = isHgramHiddenCall(userOrChat);
+		if (hgramMasked) {
+			name = LocaleController.getString(R.string.HgramAntiPeekHidden);
+		}
 		Intent intent = new Intent(this, LaunchActivity.class);
 		intent.setAction("voip");
 
@@ -5298,7 +5356,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			builder.setFullScreenIntent(PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_MUTABLE), true);
 			if (userOrChat instanceof TLRPC.User) {
 				TLRPC.User user = (TLRPC.User) userOrChat;
-				if (!TextUtils.isEmpty(user.phone)) {
+				if (!hgramMasked && !TextUtils.isEmpty(user.phone)) {
 					builder.addPerson("tel:" + user.phone);
 				}
 			}
@@ -5306,7 +5364,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 		Notification incomingNotification;
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
 			Bitmap avatar = getRoundAvatarBitmap(this, currentAccount, userOrChat);
-			String personName = ContactsController.formatName(userOrChat);
+			String personName = hgramMasked ? name : ContactsController.formatName(userOrChat);
 			if (TextUtils.isEmpty(personName)) {
 				//java.lang.IllegalArgumentException: person must have a non-empty a name
 				personName = "___";

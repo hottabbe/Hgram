@@ -244,7 +244,9 @@ public class SpoilerEffect2 {
     }
 
     private SpoilerEffect2(int type, ViewGroup container, int width, int height) {
-        MAX_FPS = (int) AndroidUtilities.screenRefreshRate;
+        // Spoiler particles are decorative: rendering them at the panel refresh rate (up to
+        // 120 Hz) doubles or quadruples GPU work with no visible benefit, so cap at 60 fps.
+        MAX_FPS = Math.max(1, Math.min(60, (int) AndroidUtilities.screenRefreshRate));
         MIN_DELTA = 1.0 / MAX_FPS;
         MAX_DELTA = MIN_DELTA * 4;
 

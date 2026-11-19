@@ -177,8 +177,8 @@ public class UpdateHelper extends BaseRemoteHelper {
     }
 
     public void checkNewVersionAvailable(Delegate delegate, boolean updateAlways_) {
-        updateAlways = updateAlways_;
-        load(delegate);
+        // Hgram has no update feed. Never query or offer packages from Nagram.
+        delegate.onTLResponse(null, null);
     }
 
     public static class Update {

@@ -440,6 +440,18 @@ public class DownloadController extends BaseController implements NotificationCe
         }
     }
 
+    /**
+     * Mobile preset used for automatic media decisions. On a weak link the low preset wins
+     * regardless of the user's normal choice: text messages must stay responsive, so videos,
+     * documents and preloads stop competing for the channel.
+     */
+    public Preset getMobilePresetForCurrentNetwork() {
+        if (lowPreset != null && ApplicationLoader.isConnectionSlow()) {
+            return lowPreset;
+        }
+        return getCurrentMobilePreset();
+    }
+
     public static int typeToIndex(int type) {
         if (type == AUTODOWNLOAD_TYPE_PHOTO) {
             return PRESET_SIZE_NUM_PHOTO;
@@ -470,7 +482,7 @@ public class DownloadController extends BaseController implements NotificationCe
         } else if (networkType == StatsController.TYPE_ROAMING) {
             return getCurrentRoamingPreset().maxVideoBitrate;
         } else {
-            return getCurrentMobilePreset().maxVideoBitrate;
+            return getMobilePresetForCurrentNetwork().maxVideoBitrate;
         }
     }
 
@@ -658,11 +670,19 @@ public class DownloadController extends BaseController implements NotificationCe
             if (!mobilePreset.enabled) {
                 return false;
             }
-            preset = getCurrentMobilePreset();
+            preset = getMobilePresetForCurrentNetwork();
         }
         int mask = preset.mask[1];
         long maxSize = preset.sizes[typeToIndex(type)];
-        return (type == AUTODOWNLOAD_TYPE_PHOTO || size != 0 && size <= maxSize) && (type == AUTODOWNLOAD_TYPE_AUDIO || (mask & type) != 0);
+        boolean photo = type == AUTODOWNLOAD_TYPE_PHOTO;
+        if (photo && ApplicationLoader.isConnectionSlow()) {
+            // Full-size photos are normally not limited; on a weak link a multi-megabyte photo
+            // would occupy the channel for minutes, so keep the inline preview and let the user
+            // open the photo explicitly.
+            maxSize = Math.min(maxSize, 1024 * 1024);
+            photo = false;
+        }
+        return (photo || size != 0 && size <= maxSize) && (type == AUTODOWNLOAD_TYPE_AUDIO || (mask & type) != 0);
     }
 
     public int canDownloadMediaType(MessageObject messageObject) {
@@ -767,7 +787,7 @@ public class DownloadController extends BaseController implements NotificationCe
             if (!mobilePreset.enabled) {
                 return 0;
             }
-            preset = getCurrentMobilePreset();
+            preset = getMobilePresetForCurrentNetwork();
         }
         int mask = preset.mask[index];
         long maxSize;
@@ -857,7 +877,7 @@ public class DownloadController extends BaseController implements NotificationCe
             if (!mobilePreset.enabled) {
                 return 0;
             }
-            preset = getCurrentMobilePreset();
+            preset = getMobilePresetForCurrentNetwork();
         }
         final int mask = preset.mask[index];
         final long maxSize;
@@ -948,7 +968,7 @@ public class DownloadController extends BaseController implements NotificationCe
             if (!mobilePreset.enabled) {
                 return 0;
             }
-            preset = getCurrentMobilePreset();
+            preset = getMobilePresetForCurrentNetwork();
         }
         int mask = preset.mask[index];
         long maxSize;
@@ -1030,7 +1050,7 @@ public class DownloadController extends BaseController implements NotificationCe
             if (!mobilePreset.enabled) {
                 return 0;
             }
-            preset = getCurrentMobilePreset();
+            preset = getMobilePresetForCurrentNetwork();
         }
         int mask = preset.mask[index];
         long maxSize;
@@ -1054,7 +1074,7 @@ public class DownloadController extends BaseController implements NotificationCe
         } else if (networkType == StatsController.TYPE_ROAMING) {
             return roamingPreset.enabled && getCurrentRoamingPreset().preloadMusic;
         } else {
-            return mobilePreset.enabled && getCurrentMobilePreset().preloadMusic;
+            return mobilePreset.enabled && getMobilePresetForCurrentNetwork().preloadMusic;
         }
     }
 
@@ -1796,7 +1816,7 @@ public class DownloadController extends BaseController implements NotificationCe
             if (!mobilePreset.enabled) {
                 return false;
             }
-            preset = getCurrentMobilePreset();
+            preset = getMobilePresetForCurrentNetwork();
         }
         return preset.preloadStories;
     }

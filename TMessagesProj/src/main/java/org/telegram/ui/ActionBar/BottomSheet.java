@@ -2015,9 +2015,25 @@ public class BottomSheet extends Dialog implements BaseFragment.AttachedSheet {
 
     @Override
     public void dismiss() {
-        if (delegate != null && !delegate.canDismiss()) {
+        if (!canDismissNow()) {
             return;
         }
+        dismissAccepted();
+    }
+
+    /**
+     * Single delegate decision for callers that need to run coordinated effects between the
+     * acceptance and the actual dismissal. This method must not mutate any state.
+     */
+    protected boolean canDismissNow() {
+        return delegate == null || delegate.canDismiss();
+    }
+
+    /**
+     * Performs the already accepted dismissal. Does not ask the delegate again; callers must
+     * have obtained a positive {@link #canDismissNow()} immediately before this call.
+     */
+    protected void dismissAccepted() {
         if (dismissed) {
             return;
         }

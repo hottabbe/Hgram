@@ -26,16 +26,23 @@ import org.telegram.ui.Components.TranscribeButton;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import xyz.nextalone.nagram.NaConfig;
 
 public class AyuFilter {
+    private static final Gson GSON = new Gson();
+    private static final Object CACHE_LOCK = new Object();
+
     public static ArrayList<FilterModel> getRegexFilters() {
         var str = NaConfig.INSTANCE.getRegexFiltersData().String();
 
-        FilterModel[] arr = new Gson().fromJson(str, FilterModel[].class);
+        FilterModel[] arr = GSON.fromJson(str, FilterModel[].class);
+        if (arr == null) {
+            return new ArrayList<>();
+        }
 
         return new ArrayList<>(Arrays.stream(arr).filter(f -> f != null && f.regex != null).collect(Collectors.toList()));
     }
@@ -50,7 +57,7 @@ public class AyuFilter {
         filterModel.disabledGroups = new ArrayList<>();
         filterModel.enabledGroups.add(0L);
         list.add(0, filterModel);
-        var str = new Gson().toJson(list);
+        var str = GSON.toJson(list);
         NaConfig.INSTANCE.getRegexFiltersData().setConfigString(str);
 
         AyuFilter.rebuildCache();
@@ -63,14 +70,14 @@ public class AyuFilter {
         filterModel.regex = text;
         filterModel.caseInsensitive = caseInsensitive;
 
-        var str = new Gson().toJson(list);
+        var str = GSON.toJson(list);
         NaConfig.INSTANCE.getRegexFiltersData().setConfigString(str);
 
         AyuFilter.rebuildCache();
     }
 
     public static void saveFilter(ArrayList<FilterModel> filterModels1) {
-        var str = new Gson().toJson(filterModels1);
+        var str = GSON.toJson(filterModels1);
         NaConfig.INSTANCE.getRegexFiltersData().setConfigString(str);
 
         AyuFilter.rebuildCache();
@@ -80,7 +87,7 @@ public class AyuFilter {
         var list = getRegexFilters();
         list.remove(filterIdx);
 
-        var str = new Gson().toJson(list);
+        var str = GSON.toJson(list);
         NaConfig.INSTANCE.getRegexFiltersData().setConfigString(str);
 
         AyuFilter.rebuildCache();
@@ -153,8 +160,14 @@ public class AyuFilter {
         return str.toString();
     }
 
-    private static ArrayList<FilterModel> filterModels;
-    private static LongSparseArray<HashMap<Integer, Boolean>> filteredCache;
+    private static volatile ArrayList<FilterModel> filterModels;
+    private static final ConcurrentHashMap<Long, ConcurrentHashMap<Integer, Boolean>> filteredCache = new ConcurrentHashMap<>();
+
+    public static void clearCache() {
+        synchronized (CACHE_LOCK) {
+            filteredCache.clear();
+        }
+    }
 
     public static void rebuildCache() {
         ArrayList<FilterModel> loaded = getRegexFilters();
@@ -171,8 +184,10 @@ public class AyuFilter {
             }
         }
 
-        filterModels = ready;
-        filteredCache = new LongSparseArray<>();
+        synchronized (CACHE_LOCK) {
+            filterModels = ready;
+            filteredCache.clear();
+        }
     }
 
     private static boolean isFiltered(CharSequence text, long dialogId) {
@@ -209,26 +224,20 @@ public class AyuFilter {
             rebuildCache();
         }
 
-        Boolean res;
-
         long dialogId = msg.getDialogId();
+        // Nagram: lock-free reads/writes (ConcurrentHashMap); this runs on every getItemViewType()/bind
         var cached = filteredCache.get(dialogId);
         if (cached != null) {
-            res = cached.get(msg.getId());
+            Boolean res = cached.get(msg.getId());
             if (res != null) {
                 return res;
             }
         }
 
-        res = isFiltered(getMessageText(msg, group), dialogId);
+        boolean res = isFiltered(getMessageText(msg, group), dialogId);
 
-        if (cached == null) {
-            cached = new HashMap<>();
-            filteredCache.put(dialogId, cached);
-        }
-
+        cached = filteredCache.computeIfAbsent(dialogId, k -> new ConcurrentHashMap<>());
         cached.put(msg.getId(), res);
-
         if (group != null && group.messages != null && !group.messages.isEmpty()) {
             for (var m : group.messages) {
                 cached.put(m.getId(), res);

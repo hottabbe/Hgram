@@ -1,5 +1,9 @@
 package org.telegram.ui;
 
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+
+import xyz.nextalone.nagram.hgram.HgramHaptics;
+
 import static org.telegram.messenger.AndroidUtilities.dp;
 import static org.telegram.messenger.LocaleController.formatString;
 import static org.telegram.messenger.LocaleController.getString;
@@ -13,7 +17,6 @@ import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.Drawable;
 import android.icu.number.Scale;
-import android.os.Vibrator;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
@@ -704,10 +707,7 @@ public class LinkEditActivity extends BaseFragment {
         int timeIndex = timeChooseView.getSelectedIndex();
         if (timeIndex < dispalyedDates.size() && dispalyedDates.get(timeIndex) < 0) {
             AndroidUtilities.shakeView(timeEditText);
-            Vibrator vibrator = (Vibrator) timeEditText.getContext().getSystemService(Context.VIBRATOR_SERVICE);
-            if (vibrator != null) {
-                vibrator.vibrate(200);
-            }
+            HgramHaptics.play(HgramHapticProfile.PLACE_LIST_ITEMS);
             return;
         }
 

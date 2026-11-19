@@ -2337,13 +2337,12 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
                         } else {
                             timestamp = audioPresentationTimeUs;
                         }
-                        buffer.offset[a] = timestamp;
+                        if (audioPresentationTimeUs == -1) audioPresentationTimeUs = timestamp;
+                        buffer.offset[a] = Math.max(0, audioPresentationTimeUs);
 
                         buffer.read[a] = readResult;
                         int bufferDurationUs = 1000000 * readResult / audioSampleRate / 2;
-                        if (!shouldUseTimestamp) {
-                            audioPresentationTimeUs += bufferDurationUs;
-                        }
+                        audioPresentationTimeUs += bufferDurationUs;
                     }
                     if (buffer.results >= 0 || buffer.last) {
                         if (!running && buffer.results < AudioBufferInfo.MAX_SAMPLES) {
@@ -3244,7 +3243,8 @@ public class InstantCameraView extends InstantCameraViewBase implements Notifica
                 skippedFirst = false;
                 skippedTime = 0;
 
-                audioRecorder = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+                audioRecorder = new AudioRecord(MediaRecorder.AudioSource.MIC, audioSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                        bufferSize);
                 audioRecorder.startRecording();
                 if (BuildVars.LOGS_ENABLED) {
                     FileLog.d("InstantCamera initied audio record with channels " + audioRecorder.getChannelCount() + " sample rate = " + audioRecorder.getSampleRate() + " bufferSize = " + bufferSize);

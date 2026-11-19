@@ -9,6 +9,8 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.utils.PerfLogger;
+import org.telegram.ui.LaunchActivity;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.LocaleController;
@@ -73,6 +75,12 @@ public class NekoDebugSettingsActivity extends BaseNekoXSettingsActivity {
             null,
             LocaleController.getString(R.string.DebugMenuEnableLogs)));
 
+    // Nagram: local performance log (FPS/jank, CPU, battery) written to Download/NagramLogs. Nothing is sent.
+    private final AbstractConfigCell perfLogRow = cellGroup.appendCell(new ConfigCellTextCheck(
+            new PerfLogConfigItem(),
+            null,
+            "Performance log (Download/NagramLogs)"));
+
     // 切换版本
     private final AbstractConfigCell switchVersionRow = cellGroup.appendCell(new ConfigCellText("SwitchVersion", () -> {
         if (getParentActivity() == null) return;
@@ -83,7 +91,7 @@ public class NekoDebugSettingsActivity extends BaseNekoXSettingsActivity {
     private final AbstractConfigCell checkUpdateRow = cellGroup.appendCell(new ConfigCellText("CheckUpdate", () -> {
         if (getParentActivity() == null) return;
         Browser.openUrl(getParentActivity(), "tg://update");
-    }));
+    }), false);
 
     // 自动更新通道
     private final String[] autoUpdateChannelOptions = new String[]{
@@ -96,7 +104,7 @@ public class NekoDebugSettingsActivity extends BaseNekoXSettingsActivity {
             "AutoCheckUpdateSwitch",
             new AutoUpdateChannelConfigItem(),
             autoUpdateChannelOptions,
-            null));
+            null), false);
 
     private final AbstractConfigCell restartAppRow = cellGroup.appendCell(new ConfigCellText("RestartApp", AppRestartHelper::triggerRebirth));
 
@@ -273,6 +281,22 @@ public class NekoDebugSettingsActivity extends BaseNekoXSettingsActivity {
             BuildVars.LOGS_ENABLED = BuildVars.DEBUG_VERSION = BuildVars.DEBUG_PRIVATE_VERSION = (boolean) value;
             SharedPreferences sharedPreferences = ApplicationLoader.applicationContext.getSharedPreferences("systemConfig", Context.MODE_PRIVATE);
             sharedPreferences.edit().putBoolean("logsEnabled", BuildVars.LOGS_ENABLED).apply();
+        }
+    }
+
+    private static class PerfLogConfigItem extends ConfigItem {
+        PerfLogConfigItem() {
+            super("PerfLogEnabled", configTypeBool, false);
+            value = PerfLogger.isEnabled(ApplicationLoader.applicationContext);
+        }
+
+        @Override
+        public void saveConfig() {
+            boolean enabled = (boolean) value;
+            PerfLogger.setEnabled(ApplicationLoader.applicationContext, enabled);
+            if (enabled && LaunchActivity.instance != null) {
+                PerfLogger.attachWindow(LaunchActivity.instance.getWindow());
+            }
         }
     }
 

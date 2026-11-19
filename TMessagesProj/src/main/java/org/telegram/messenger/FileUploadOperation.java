@@ -42,7 +42,6 @@ public class FileUploadOperation {
     private static final int minUploadChunkSize = 128;
     private static final int minUploadChunkSizeBoost = 512;
     private static final int minUploadChunkSlowNetworkSize = 32;
-    private static final int initialRequestsCount = 8;
     private static final int initialRequestsSlowNetworkCount = 1;
     private static final int maxUploadingKBytes = 1024 * 2;
     private static final int maxUploadingSlowNetworkKBytes = 32;
@@ -124,7 +123,7 @@ public class FileUploadOperation {
             if (BuildVars.LOGS_ENABLED) {
                 FileLog.d("start upload on slow network = " + slowNetwork);
             }
-            for (int a = 0, count = (slowNetwork ? initialRequestsSlowNetworkCount : initialRequestsCount); a < count; a++) {
+            for (int a = 0, count = slowNetwork ? initialRequestsSlowNetworkCount : Math.max(1, Math.min(16, xyz.nextalone.nagram.hgram.HgramConfig.getUploadThreads())); a < count; a++) {
                 startUploadRequest();
             }
         });
@@ -161,7 +160,7 @@ public class FileUploadOperation {
                 cachedResults.clear();
 
                 operationGuid++;
-                for (int a = 0, count = (slowNetwork ? initialRequestsSlowNetworkCount : initialRequestsCount); a < count; a++) {
+                for (int a = 0, count = slowNetwork ? initialRequestsSlowNetworkCount : Math.max(1, Math.min(16, xyz.nextalone.nagram.hgram.HgramConfig.getUploadThreads())); a < count; a++) {
                     startUploadRequest();
                 }
             }
@@ -312,7 +311,9 @@ public class FileUploadOperation {
                 if (AccountInstance.getInstance(currentAccount).getUserConfig().isPremium() && totalFileSize > FileLoader.DEFAULT_MAX_FILE_SIZE) {
                     maxUploadParts = MessagesController.getInstance(currentAccount).uploadMaxFilePartsPremium;
                 }
-                uploadChunkSize = (int) Math.max(slowNetwork ? minUploadChunkSlowNetworkSize : NekoConfig.enhancedFileLoader.Bool() ? minUploadChunkSizeBoost : minUploadChunkSize, (totalFileSize + 1024L * maxUploadParts - 1) / (1024L * maxUploadParts));
+                // On a fast link always use the maximum chunk size (512 KB): fewer round trips
+                // and the requested number of streams actually works in parallel.
+                uploadChunkSize = (int) Math.max(slowNetwork ? minUploadChunkSlowNetworkSize : minUploadChunkSizeBoost, (totalFileSize + 1024L * maxUploadParts - 1) / (1024L * maxUploadParts));
                 if (1024 % uploadChunkSize != 0) {
                     int chunkSize = 64;
                     while (uploadChunkSize > chunkSize) {
@@ -320,7 +321,9 @@ public class FileUploadOperation {
                     }
                     uploadChunkSize = chunkSize;
                 }
-                maxRequestsCount = Math.max(1, (slowNetwork ? maxUploadingSlowNetworkKBytes : maxUploadingKBytes) / uploadChunkSize);
+                maxRequestsCount = slowNetwork
+                        ? Math.max(1, maxUploadingSlowNetworkKBytes / uploadChunkSize)
+                        : Math.max(1, Math.min(16, xyz.nextalone.nagram.hgram.HgramConfig.getUploadThreads()));
 
                 if (isEncrypted) {
                     freeRequestIvs = new ArrayList<>(maxRequestsCount);

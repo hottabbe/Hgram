@@ -125,7 +125,7 @@ public class InlineBotRulesHelper extends BaseRemoteHelper {
         var tag = getTag();
         long oldTime = preferences.getLong(tag + "_update_time", 0L);
         long nowTime = System.currentTimeMillis();
-        int TTL = 15 * 60;
+        long TTL = 15 * 60 * 1000L;
         return oldTime + TTL <= nowTime;
     }
 
@@ -134,7 +134,9 @@ public class InlineBotRulesHelper extends BaseRemoteHelper {
             return;
         }
         loading = true;
-        loadInlineBotRules();
+        if (inlineBotRules.isEmpty()) {
+            loadInlineBotRules();
+        }
         if (needUpdate()) {
             load();
         }

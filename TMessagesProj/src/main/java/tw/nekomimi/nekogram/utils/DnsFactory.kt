@@ -1,6 +1,7 @@
 package tw.nekomimi.nekogram.utils
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -11,6 +12,9 @@ import org.telegram.tgnet.ConnectionsManager
 import tw.nekomimi.nekogram.NekoConfig
 import xyz.nextalone.nagram.network.NetworkRequestBuilder
 import java.net.InetAddress
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 
@@ -28,8 +32,8 @@ object DnsFactory {
         "https://8.8.8.8/resolve",
     )
 
-    private val cache = mutableMapOf<String, List<InetAddress>>()
-    private val txtCache = mutableMapOf<String, List<String>>()
+    private val cache = ConcurrentHashMap<String, List<InetAddress>>()
+    private val txtCache = ConcurrentHashMap<String, List<String>>()
 
     class CustomException(message: String) : Exception(message)
 
@@ -54,13 +58,15 @@ object DnsFactory {
                 if (ConnectionsManager.hasIpv4) "A" else "AAAA"
             } else if (!fallback) "A" else "AAAA"
 
+            val providerList = providers()
             val counterAll = AtomicInteger(0)
-            val counterGood = AtomicInteger(0)
+            val resolved = AtomicBoolean(false)
 
             val ret = runBlocking {
-                val ret: List<InetAddress>? = suspendCancellableCoroutine {
-                    for (provider in providers()) {
-                        launch(Dispatchers.IO) {
+                val jobs = CopyOnWriteArrayList<Job>()
+                val ret: List<InetAddress>? = suspendCancellableCoroutine { cont ->
+                    for (provider in providerList) {
+                        val job = launch(Dispatchers.IO) {
                             try {
                                 val response = makeDohJsonRequest(provider, domain, recordType)
 
@@ -83,10 +89,10 @@ object DnsFactory {
                                 if (answers == null || answers.length() == 0) {
                                     if (!noFallback && !fallback) {
                                         val aaaaResult = lookup(domain, true)
-                                        if (aaaaResult.isNotEmpty()) {
+                                        if (aaaaResult.isNotEmpty() && resolved.compareAndSet(false, true)) {
                                             cache[domain] = aaaaResult
-                                            counterGood.incrementAndGet()
-                                            it.resume(aaaaResult)
+                                            jobs.forEach { it.cancel() }
+                                            cont.resume(aaaaResult)
                                         }
                                     }
                                     throw CustomException("$provider no answer")
@@ -105,10 +111,11 @@ object DnsFactory {
                                     }
                                 }
 
-                                if (addresses.isNotEmpty() && counterGood.incrementAndGet() == 1) {
+                                if (addresses.isNotEmpty() && resolved.compareAndSet(false, true)) {
                                     cache[domain] = addresses
                                     FileLog.d("DNS Result $domain: $addresses")
-                                    it.resume(addresses)
+                                    jobs.forEach { it.cancel() }
+                                    cont.resume(addresses)
                                 }
                             } catch (e: Exception) {
                                 if (e is CustomException) {
@@ -117,15 +124,22 @@ object DnsFactory {
                                     FileLog.w(e.stackTraceToString())
                                 }
                             }
-                            if (counterAll.incrementAndGet() == providers().size && counterGood.get() == 0) {
-                                it.resume(null)
+                            if (counterAll.incrementAndGet() == providerList.size && resolved.compareAndSet(false, true)) {
+                                jobs.forEach { it.cancel() }
+                                cont.resume(null)
                             }
                         }
+                        jobs.add(job)
                     }
 
-                    launch {
+                    val timeoutJob = launch {
                         delay(5000L)
+                        if (resolved.compareAndSet(false, true)) {
+                            jobs.forEach { it.cancel() }
+                            cont.resume(null)
+                        }
                     }
+                    jobs.add(timeoutJob)
                 }
 
                 ret
@@ -156,13 +170,15 @@ object DnsFactory {
             return cached
         }
 
+        val providerList = providers()
         val counterAll = AtomicInteger(0)
-        val counterGood = AtomicInteger(0)
+        val resolved = AtomicBoolean(false)
 
         return runBlocking {
-            val ret: List<String> = suspendCancellableCoroutine {
-                for (provider in providers()) {
-                    launch(Dispatchers.IO) {
+            val jobs = CopyOnWriteArrayList<Job>()
+            val ret: List<String> = suspendCancellableCoroutine { cont ->
+                for (provider in providerList) {
+                    val job = launch(Dispatchers.IO) {
                         try {
                             val response = makeDohJsonRequest(provider, domain, "TXT")
 
@@ -198,10 +214,11 @@ object DnsFactory {
                                 }
                             }
 
-                            if (txts.isNotEmpty() && counterGood.incrementAndGet() == 1) {
+                            if (txts.isNotEmpty() && resolved.compareAndSet(false, true)) {
                                 txtCache[domain] = txts
                                 FileLog.d("TXT Result $domain: $txts")
-                                it.resume(txts)
+                                jobs.forEach { it.cancel() }
+                                cont.resume(txts)
                             }
                         } catch (e: Exception) {
                             if (e is CustomException) {
@@ -210,15 +227,22 @@ object DnsFactory {
                                 FileLog.w(e.stackTraceToString())
                             }
                         }
-                        if (counterAll.incrementAndGet() == providers().size && counterGood.get() == 0) {
-                            it.resume(listOf())
+                        if (counterAll.incrementAndGet() == providerList.size && resolved.compareAndSet(false, true)) {
+                            jobs.forEach { it.cancel() }
+                            cont.resume(listOf())
                         }
                     }
+                    jobs.add(job)
                 }
 
-                launch {
+                val timeoutJob = launch {
                     delay(5000L)
+                    if (resolved.compareAndSet(false, true)) {
+                        jobs.forEach { it.cancel() }
+                        cont.resume(listOf())
+                    }
                 }
+                jobs.add(timeoutJob)
             }
 
             ret
@@ -231,6 +255,37 @@ object DnsFactory {
             parameter("name", name)
             parameter("type", type)
         }.execute()
+    }
+
+    @JvmStatic
+    fun clearCache() {
+        cache.clear()
+        txtCache.clear()
+    }
+
+    @JvmStatic
+    fun probe(endpoint: String): Boolean {
+        return try {
+            val separator = if (endpoint.contains("?")) "&" else "?"
+            val url = java.net.URL(endpoint + separator + "name=example.com&type=A")
+            val connection = (url.openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 1500
+                readTimeout = 2200
+                instanceFollowRedirects = false
+                setRequestProperty("Accept", "application/dns-json")
+            }
+            try {
+                if (connection.responseCode !in 200..299) return false
+                val body = connection.inputStream.bufferedReader().use { it.readText() }
+                org.json.JSONObject(body).optInt("Status", -1) == STATUS_NOERROR
+            } finally {
+                connection.disconnect()
+            }
+        } catch (e: Exception) {
+            FileLog.w("DoH probe failed: ${e.javaClass.simpleName}")
+            false
+        }
     }
 
     private fun cleanTxtData(data: String): String {

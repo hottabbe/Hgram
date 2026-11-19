@@ -14,7 +14,6 @@
     <string name="TextUndoRedo">取消/重做</string>
     <string name="TextUndo">取消</string>
     <string name="TextRedo">重做</string>
-    <string name="NoiseSuppressAndVoiceEnhance">噪音抑制和語音增強</string>
     <string name="RepeatAsCopy">無引用復讀</string>
     <string name="DoubleTapAction">雙擊操作</string>
     <string name="DoubleTapActionIncoming">收到的訊息</string>

@@ -66,6 +66,7 @@ import org.telegram.ui.Adapters.FiltersView;
 import org.telegram.ui.Components.AnimatedEmojiDrawable;
 import org.telegram.ui.Components.BackupImageView;
 import org.telegram.ui.Components.ChatAvatarContainer;
+import xyz.nextalone.nagram.hgram.HgramConfig;
 import org.telegram.ui.Components.CubicBezierInterpolator;
 import org.telegram.ui.Components.EllipsizeSpanAnimator;
 import org.telegram.ui.Components.FireworksEffect;
@@ -206,6 +207,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
     private boolean glassModeIsForum;
 
     private ChatAvatarContainer chatAvatarContainer;
+    private ChatAvatarContainer hgramAntiPeekContainer;
 
     public void setGlassOnlyBack() {
         glassOnlyBack = true;
@@ -1657,6 +1659,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
             }
             child.layout(childLeft, childTop, childLeft + width, childTop + height);
         }
+        updateHgramAntiPeekMask();
     }
 
     public void onMenuButtonPressed() {
@@ -2271,6 +2274,13 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
 
     @Override
     protected void dispatchDraw(Canvas canvas) {
+        final ChatAvatarContainer hgramContainer = chatAvatarContainer != null ? chatAvatarContainer : hgramAntiPeekContainer;
+        if (hgramContainer != null) {
+            final boolean hgramActive = HgramConfig.isAntiPeekActive();
+            if (hgramContainer.isAntiPeekMasked() != hgramActive) {
+                hgramContainer.setAntiPeekMasked(hgramActive);
+            }
+        }
         final int p = dp(6);
         final int s = dp(46);
 
@@ -2338,6 +2348,26 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
         }
 
         super.dispatchDraw(canvas);
+    }
+
+    private void updateHgramAntiPeekMask() {
+        ChatAvatarContainer container = chatAvatarContainer;
+        if (container == null) {
+            if (hgramAntiPeekContainer == null || hgramAntiPeekContainer.getParent() != this) {
+                hgramAntiPeekContainer = null;
+                for (int i = 0; i < getChildCount(); i++) {
+                    final View child = getChildAt(i);
+                    if (child instanceof ChatAvatarContainer) {
+                        hgramAntiPeekContainer = (ChatAvatarContainer) child;
+                        break;
+                    }
+                }
+            }
+            container = hgramAntiPeekContainer;
+        }
+        if (container != null) {
+            container.setAntiPeekMasked(HgramConfig.isAntiPeekActive());
+        }
     }
 
     public void setForceSkipTouches(boolean forceSkipTouches) {

@@ -73,6 +73,7 @@ import android.text.style.DynamicDrawableSpan;
 import android.text.style.LeadingMarginSpan;
 import android.text.style.StrikethroughSpan;
 import android.text.style.URLSpan;
+import android.util.Log;
 import android.util.Pair;
 import android.util.Property;
 import android.util.SparseArray;
@@ -84,6 +85,7 @@ import android.view.SoundEffectConstants;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.ViewStructure;
 import android.view.Window;
 import android.view.accessibility.AccessibilityEvent;
@@ -95,6 +97,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.ColorUtils;
 import androidx.core.math.MathUtils;
@@ -144,6 +147,13 @@ import org.telegram.messenger.utils.DrawableUtils;
 import org.telegram.messenger.utils.tlutils.TLKeyboardHelper;
 import org.telegram.messenger.utils.tlutils.TlUtils;
 import org.telegram.messenger.video.OldVideoPlayerRewinder;
+import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramOfflineTranscriber;
+import xyz.nextalone.nagram.hgram.HgramContentHeuristics;
+import xyz.nextalone.nagram.hgram.HgramCompactAlbumRenderer;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+import xyz.nextalone.nagram.hgram.HgramPostDeduplicator;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
@@ -1266,7 +1276,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     private final int[] pressedState = new int[]{android.R.attr.state_enabled, android.R.attr.state_pressed};
     private float animatingLoadingProgressProgress;
     CharSequence accessibilityText;
-    private boolean accessibilityTextUnread, accessibilityTextContentUnread;
+    private boolean accessibilityTextUnread, accessibilityTextContentUnread, accessibilityTextAntiPeek;
     private long accessibilityTextFileSize;
     private boolean wasTranscriptionOpen;
     private Path instantLinkArrowPath;
@@ -1515,6 +1525,364 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     private boolean checkFileLoad;
     private boolean wasAllChats;
     private MessageObject currentMessageObject;
+    private HgramPostDeduplicator.Match hgramDuplicatePost;
+    private String hgramCoverName;
+    private long hgramFooterFrame = -1;
+    private float hgramFooterTop;
+    private HgramContentHeuristics.Reason hgramContentReason = HgramContentHeuristics.Reason.NONE;
+    private String hgramPostText;
+    private String hgramAnalyzedText;
+    private boolean hgramAnalyzedGrouped;
+    private int hgramAnalyzedEditDate;
+    private long hgramPostDialogId;
+    private int hgramPostMessageId;
+    private boolean hgramPostChecked;
+    private boolean hgramDuplicateExpanded;
+    private xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain hgramShortChain;
+    private boolean hgramShortCollapsed, hgramShortTap, hgramShortHeaderZone;
+    private boolean hgramShortPrivate;
+    private Runnable hgramShortToggle;
+    private String hgramShortCollapseText;
+    private StaticLayout hgramShortLayout;
+    private StaticLayout hgramShortLabelLayout;
+    private int hgramShortBubbleWidth;
+    private int hgramShortMaxTextWidth;
+    private int hgramShortContentInset;
+    private int hgramShortLabelWidth;
+    private boolean hgramShortChecksOnOwnLine;
+    private float hgramShortLabelOriginX, hgramShortLabelOriginY;
+    private final RectF hgramShortCheckSlot = new RectF();
+    private final TextPaint hgramShortPaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private final TextPaint hgramShortLabelPaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+private RectF hgramDuplicateBounds;
+    private final RectF hgramShortBounds = new RectF();
+    private final RectF hgramShortCollapseTmp = new RectF();
+    private static final int HGRAM_ACTION_COLLAPSE = 0x0f3a0101;
+    private static final int HGRAM_ACTION_ALBUM_NEXT = 0x0f3a0102;
+    private static final int HGRAM_ACTION_ALBUM_PREV = 0x0f3a0103;
+    private static final int HGRAM_SHORT_CHECK_SIZE_DP = 11;
+    private static final int HGRAM_SHORT_CHECK_GAP_DP = 2;
+    private static final int HGRAM_SHORT_READ_RESERVE_DP = 30;
+    private static final int HGRAM_SHORT_EDGE_INSET_DP = 4;
+    private final RectF hgramShortToggleBounds = new RectF();
+    private boolean hgramShortChainPendingMeasure;
+    private int hgramStableNamesOffset;
+    private float hgramShortDownX, hgramShortDownY;
+
+    public void setHgramShortChain(xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain chain, boolean collapsed, Runnable toggle) {
+        final boolean newCollapsed = chain != null && collapsed;
+        final boolean stateChanged = hgramShortChain == null ? chain != null
+                : chain == null || hgramShortCollapsed != newCollapsed
+                || hgramShortChain.anchorId != chain.anchorId
+                || hgramShortChain.ids.size() != chain.ids.size()
+                || !hgramShortChain.text.equals(chain.text)
+                || hgramShortChain.readState() != chain.readState();
+        if (stateChanged) {
+            hgramShortChainPendingMeasure = hgramShortChain != null || chain != null;
+        }
+        hgramShortChain = chain;
+        hgramShortCollapsed = newCollapsed;
+        hgramShortToggle = chain != null ? toggle : null;
+        hgramShortCollapseText = chain != null && !collapsed
+                ? LocaleController.getString(R.string.HgramShortChainCollapse) : null;
+        if (!stateChanged) {
+            // Same content/state on a normal rebind: keep the measured geometry.
+            return;
+        }
+        hgramShortLayout = null;
+        hgramShortLabelLayout = null;
+        // Drop every cached measurement that contributes to the footer height change.
+        lastSize = 0;
+        wasLayout = false;
+        forcedLayout = true;
+        layoutHeight = 0;
+        backgroundHeight = 0;
+        totalHeight = 0;
+        requestLayout();
+        invalidate();
+    }
+
+    /**
+     * Payload-only update for a read receipt. A split holder (or any cell whose bound chain
+     * no longer matches this snapshot) is left untouched and picks up the new state on its
+     * normal bind/attach instead of being collapsed into a different presentation.
+     */
+    public void updateHgramShortReadSnapshot(xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain chain,
+                                            long dialogId) {
+        if (chain == null || hgramShortChain == null || currentMessageObject == null) return;
+        if (!xyz.nextalone.nagram.hgram.HgramShortChainPayload.canApply(true,
+                hgramShortChain.key, hgramShortChain.anchorId, hgramShortChain.ids,
+                currentMessageObject.getId(), currentMessageObject.getDialogId(), dialogId,
+                hgramShortCollapsed, chain)) {
+            return;
+        }
+        if (hgramShortChain.readState() == chain.readState()) return;
+        hgramShortChain = chain;
+        invalidate();
+    }
+
+    public xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain getHgramShortChain() {
+        return hgramShortChain;
+    }
+
+    public boolean isHgramShortCollapsed() {
+        return hgramShortChain != null && hgramShortCollapsed;
+    }
+
+    public void performHgramShortToggle() {
+        if (hgramShortToggle != null) {
+            hgramShortToggle.run();
+        }
+    }
+
+    private void drawHgramShortChain(Canvas canvas) {
+        if (hgramShortLayout == null) return;
+        float left = getHgramShortLeft();
+        boolean outgoing = currentMessageObject != null && currentMessageObject.isOutOwner();
+        float top = dp(3);
+        float bottom = getHeight() - dp(7);
+        hgramShortBounds.set(left, top, left + hgramShortBubbleWidth, bottom);
+        if (currentBackgroundDrawable != null) {
+            final Rect bounds = currentBackgroundDrawable.getBounds();
+            final int previousLeft = bounds.left, previousTop = bounds.top;
+            final int previousRight = bounds.right, previousBottom = bounds.bottom;
+            canvas.save();
+            currentBackgroundDrawable.setBounds((int) hgramShortBounds.left, (int) hgramShortBounds.top,
+                    (int) hgramShortBounds.right, (int) hgramShortBounds.bottom);
+            setHgramShortBackgroundTop(currentBackgroundDrawable);
+            currentBackgroundDrawable.draw(canvas);
+            currentBackgroundDrawable.setBounds(previousLeft, previousTop, previousRight, previousBottom);
+            canvas.restore();
+        } else {
+            MessageDrawable mediaBackground = (MessageDrawable) getThemedDrawable(outgoing
+                    ? Theme.key_drawable_msgOutMedia : Theme.key_drawable_msgInMedia);
+            if (mediaBackground != null) {
+                final Rect bounds = mediaBackground.getBounds();
+                final int previousLeft = bounds.left, previousTop = bounds.top;
+                final int previousRight = bounds.right, previousBottom = bounds.bottom;
+                mediaBackground.setBounds((int) hgramShortBounds.left, (int) hgramShortBounds.top,
+                        (int) hgramShortBounds.right, (int) hgramShortBounds.bottom);
+                setHgramShortBackgroundTop(mediaBackground);
+                mediaBackground.draw(canvas);
+                mediaBackground.setBounds(previousLeft, previousTop, previousRight, previousBottom);
+            } else {
+                hgramDuplicateBackgroundPaint.setColor(getThemedColor(outgoing ? Theme.key_chat_outBubble : Theme.key_chat_inBubble));
+                hgramShortBubblePath.reset();
+                hgramShortBubblePath.addRoundRect(hgramShortBounds, dp(SharedConfig.bubbleRadius), dp(SharedConfig.bubbleRadius), Path.Direction.CW);
+                canvas.drawPath(hgramShortBubblePath, hgramDuplicateBackgroundPaint);
+            }
+        }
+        hgramShortPaint.setColor(getThemedColor(outgoing ? Theme.key_chat_messageTextOut : Theme.key_chat_messageTextIn));
+        final float contentLeft = left + hgramShortContentInset;
+        final float contentRight = left + hgramShortBubbleWidth - hgramShortContentInset;
+        updateHgramShortGeometry(left);
+        canvas.save();
+        canvas.clipRect(contentLeft, top, contentRight, bottom);
+        canvas.translate(contentLeft, dp(13));
+        hgramShortLayout.draw(canvas);
+        canvas.restore();
+        if (hgramShortLabelLayout != null) {
+            hgramShortLabelPaint.setColor(getThemedColor(outgoing ? Theme.key_chat_outTimeText : Theme.key_chat_inTimeText));
+            canvas.save();
+            canvas.clipRect(contentLeft, top, contentRight, bottom);
+            canvas.translate(hgramShortLabelOriginX, hgramShortLabelOriginY);
+            hgramShortLabelLayout.draw(canvas);
+            canvas.restore();
+            if (hgramShortCollapsed && hgramShortShowsReadState()) {
+                drawHgramShortReadChecks(canvas, hgramShortChain.readState());
+            }
+        }
+    }
+
+    /**
+     * One geometry slot shared by the body, the label, the read checks and the collapse
+     * hitbox. The body always starts at the content edge and the layout itself aligns every
+     * paragraph, so mixed RTL/LTR lines cannot be shifted outside the bubble.
+     */
+    private void updateHgramShortGeometry(float left) {
+        hgramShortCheckSlot.setEmpty();
+        if (hgramShortLayout == null) return;
+        final float contentLeft = left + hgramShortContentInset;
+        final float contentRight = left + hgramShortBubbleWidth - hgramShortContentInset;
+        hgramShortLabelOriginX = contentLeft;
+        hgramShortLabelOriginY = dp(13) + hgramShortLayout.getHeight() + dp(2);
+        if (hgramShortLabelLayout == null || !hgramShortShowsReadState()) return;
+        final int size = dp(HGRAM_SHORT_CHECK_SIZE_DP);
+        final int gap = dp(HGRAM_SHORT_CHECK_GAP_DP);
+        final int blockWidth = size * 2 + gap;
+        final boolean rtl = hgramShortLabelLayout.getParagraphDirection(0) == Layout.DIR_RIGHT_TO_LEFT;
+        if (hgramShortChecksOnOwnLine) {
+            final float y = hgramShortLabelOriginY + hgramShortLabelLayout.getHeight() + dp(1);
+            final float x = xyz.nextalone.nagram.hgram.HgramShortChainLayout.checksLeft(
+                    contentLeft, contentRight, rtl, true, blockWidth,
+                    hgramShortLabelWidth, dp(HGRAM_SHORT_EDGE_INSET_DP));
+            hgramShortCheckSlot.set(x, y, x + blockWidth, y + size);
+        } else {
+            hgramShortLabelOriginX = xyz.nextalone.nagram.hgram.HgramShortChainLayout.labelOriginX(
+                    contentLeft, rtl, blockWidth, dp(HGRAM_SHORT_EDGE_INSET_DP));
+            final float x = xyz.nextalone.nagram.hgram.HgramShortChainLayout.checksLeft(
+                    contentLeft, contentRight, rtl, false, blockWidth,
+                    hgramShortLabelWidth, dp(HGRAM_SHORT_EDGE_INSET_DP));
+            final float y = hgramShortLabelOriginY + (hgramShortLabelLayout.getHeight() - size) * 0.5f;
+            hgramShortCheckSlot.set(x, y, x + blockWidth, y + size);
+        }
+    }
+
+    private void setHgramShortBackgroundTop(MessageDrawable drawable) {
+        int width = parentWidth;
+        int height = parentHeight;
+        if (height == 0) {
+            width = getParentWidth();
+            height = AndroidUtilities.displaySize.y;
+            if (getParent() instanceof View) {
+                View parent = (View) getParent();
+                if (parent.getMeasuredWidth() > 0) width = parent.getMeasuredWidth();
+                if (parent.getMeasuredHeight() > 0) height = parent.getMeasuredHeight();
+            }
+        }
+        drawable.setTop((int) (getY() + parentViewTopOffset + dp(1)), width, height,
+                (int) parentViewTopOffset, blurredViewTopOffset, blurredViewBottomOffset,
+                pinnedTop, pinnedBottom || transitionParams.changePinnedBottomProgress == 1);
+        drawable.setBotButtonsBottom(hasInlineBotButtons());
+    }
+
+    private void hgramShortCollapseRect(RectF out) {
+        out.setEmpty();
+        if (hgramShortLabelLayout == null || hgramShortLayout == null) return;
+        final float left = getHgramShortLeft();
+        updateHgramShortGeometry(left);
+        float leftExtent = Float.MAX_VALUE, top = Float.MAX_VALUE;
+        float right = -Float.MAX_VALUE, bottom = -Float.MAX_VALUE;
+        for (int i = 0; i < hgramShortLabelLayout.getLineCount(); i++) {
+            leftExtent = Math.min(leftExtent, hgramShortLabelOriginX + hgramShortLabelLayout.getLineLeft(i));
+            right = Math.max(right, hgramShortLabelOriginX + hgramShortLabelLayout.getLineRight(i));
+            top = Math.min(top, hgramShortLabelOriginY + hgramShortLabelLayout.getLineTop(i));
+            bottom = Math.max(bottom, hgramShortLabelOriginY + hgramShortLabelLayout.getLineBottom(i));
+        }
+        if (leftExtent >= right || top >= bottom) return;
+        leftExtent = Math.max(leftExtent, left + hgramShortContentInset);
+        right = Math.min(right, left + hgramShortBubbleWidth - hgramShortContentInset);
+        top = Math.max(top, dp(3));
+        bottom = Math.min(bottom, getHeight() - dp(7));
+        if (leftExtent < right && top < bottom) {
+            out.set(leftExtent, top, right, bottom);
+        }
+    }
+
+    private boolean hgramShortShowsReadState() {
+        return hgramShortChain != null && hgramShortChain.outgoingCount > 0
+                && !(currentChat != null && ChatObject.isChannel(currentChat) && !currentChat.megagroup);
+    }
+
+    private void drawHgramShortReadChecks(Canvas canvas, int state) {
+        Drawable grey = getThemedDrawable(Theme.key_drawable_msgOutCheck);
+        Drawable blue = getThemedDrawable(Theme.key_drawable_msgOutCheckRead);
+        if (grey == null || blue == null || hgramShortCheckSlot.isEmpty()) return;
+        final int size = dp(HGRAM_SHORT_CHECK_SIZE_DP);
+        final int gap = dp(HGRAM_SHORT_CHECK_GAP_DP);
+        final int unreadAlpha = 140;
+        final int top = (int) hgramShortCheckSlot.top;
+        int x = (int) hgramShortCheckSlot.left;
+        if (state == 3) {
+            blue.setAlpha(255);
+            blue.setBounds(x, top, x + size, top + size);
+            blue.draw(canvas);
+            x += gap + size;
+            blue.setBounds(x, top, x + size, top + size);
+            blue.draw(canvas);
+        } else if (state == 2) {
+            grey.setAlpha(unreadAlpha);
+            grey.setBounds(x, top, x + size, top + size);
+            grey.draw(canvas);
+            grey.setAlpha(255);
+            x += gap + size;
+            blue.setAlpha(255);
+            blue.setBounds(x, top, x + size, top + size);
+            blue.draw(canvas);
+        } else if (state == 1) {
+            grey.setAlpha(255);
+            grey.setBounds(x, top, x + size, top + size);
+            grey.draw(canvas);
+        }
+    }
+
+    private void updateHgramShortToggleBounds() {
+        hgramShortToggleBounds.setEmpty();
+        if (hgramShortChain == null || currentMessageObject == null) {
+            return;
+        }
+        if (hgramShortCollapsed) {
+            hgramShortCollapseRect(hgramShortToggleBounds);
+            if (hgramShortToggleBounds.isEmpty()) return;
+            hgramShortToggleBounds.inset(-dp(HGRAM_SHORT_EDGE_INSET_DP), -dp(2));
+            final float left = getHgramShortLeft();
+            hgramShortCollapseTmp.set(left, dp(3), left + hgramShortBubbleWidth, getHeight() - dp(7));
+            if (!hgramShortToggleBounds.intersect(hgramShortCollapseTmp)) {
+                hgramShortToggleBounds.setEmpty();
+            }
+        } else if (currentMessageObject.getId() == hgramShortChain.anchorId) {
+            // Expanded chain: the whole bottom strip is the collapse button.
+            final float top = backgroundDrawableBottom
+                    - dp(xyz.nextalone.nagram.hgram.HgramShortMessageMerger.COLLAPSE_ROW_HEIGHT_DP);
+            hgramShortToggleBounds.set(getBackgroundDrawableLeft() + dp(4), top,
+                    getBackgroundDrawableRight() - dp(4), backgroundDrawableBottom);
+        }
+    }
+
+    @Override
+    public void draw(Canvas canvas) {
+        super.draw(canvas);
+        if (hgramShortChain == null || hgramShortCollapsed || hgramShortToggle == null
+                || currentMessageObject == null || currentMessageObject.getId() != hgramShortChain.anchorId) {
+            return;
+        }
+        updateHgramShortToggleBounds();
+        if (hgramShortToggleBounds.isEmpty() || hgramShortCollapseText == null) return;
+        final int color = getThemedColor(currentMessageObject.isOutOwner()
+                ? Theme.key_chat_outTimeText : Theme.key_chat_inTimeText);
+        hgramShortPaint.setColor(color);
+        hgramShortPaint.setStyle(Paint.Style.FILL);
+        hgramShortPaint.setTextSize(dp(13));
+        final float cx = hgramShortToggleBounds.centerX();
+        final float cy = hgramShortToggleBounds.centerY();
+        hgramShortPaint.setStyle(Paint.Style.STROKE);
+        hgramShortPaint.setStrokeWidth(dp(1.2f));
+        canvas.drawLine(cx - dp(34), cy, cx - dp(28), cy - dp(4), hgramShortPaint);
+        canvas.drawLine(cx - dp(28), cy - dp(4), cx - dp(22), cy, hgramShortPaint);
+        hgramShortPaint.setStyle(Paint.Style.FILL);
+        canvas.drawText(hgramShortCollapseText, cx - dp(16), cy + dp(4), hgramShortPaint);
+    }
+
+    private int hgramShortFooterHeight() {
+        return hgramShortChain != null && !hgramShortCollapsed && currentMessageObject != null
+                && currentMessageObject.getId() == hgramShortChain.anchorId
+                ? dp(xyz.nextalone.nagram.hgram.HgramShortMessageMerger.COLLAPSE_ROW_HEIGHT_DP) : 0;
+    }
+
+    private float getHgramShortLeft() {
+        if (currentMessageObject != null && currentMessageObject.isOutOwner() && hgramShortLayout != null) {
+            return getMeasuredWidth() - hgramShortBubbleWidth - dp(12);
+        }
+        return isChat ? dp(64) : dp(12);
+    }
+    private ArrayList<ImageReceiver> hgramAlbumReceivers;
+    private ArrayList<ImageReceiver> hgramAlbumBlurReceivers;
+    private boolean[] hgramAlbumPlayable;
+    private long hgramAlbumGroupId = -1;
+    private int hgramAlbumIndex;
+    private float hgramAlbumDownX;
+    private boolean hgramAlbumSwiping;
+    private float hgramAlbumOffset;
+    private float hgramAlbumStartOffset;
+    private ValueAnimator hgramAlbumAnimator;
+    private final HgramCompactAlbumRenderer hgramAlbumRenderer = new HgramCompactAlbumRenderer();
+    private final Path hgramShortBubblePath = new Path();
+    private boolean hgramDuplicateMeasured;
+    private boolean hgramMeasureRequestPending;
+    private final Paint hgramDuplicateBackgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint hgramCoverPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final TextPaint hgramNamePaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private final TextPaint hgramDuplicateTextPaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private MessageObject messageObjectToSet;
     private MessageObject.GroupedMessages groupedMessagesToSet;
     private boolean topNearToSet;
@@ -1694,6 +2062,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     private static final int SIDE_BUTTON_SPONSORED_MORE = 5;
     private float sideStartX, sideStartY;
     private float summarizeButtonX, summarizeButtonY;
+    private int hgramSummarizeTier;
+    private final android.graphics.RectF hgramSummarizeButtonBounds = new android.graphics.RectF();
+    private static final java.util.Set<Integer> hgramSumContentLogged = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private static final java.util.Set<Integer> hgramSumButtonLogged = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
 
     private StaticLayout nameLayout;
     private int nameLayoutWidth;
@@ -2050,7 +2422,30 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
     }
 
+    private CharSequence hgramInitials(CharSequence name) {
+        if (name == null) {
+            return "";
+        }
+        String value = name.toString().trim();
+        if (value.isEmpty()) {
+            return "•";
+        }
+        String[] parts = value.split("\\s+");
+        if (parts.length == 1) {
+            return value.substring(0, Math.min(2, value.length())).toUpperCase();
+        }
+        String first = parts[0].isEmpty() ? "" : parts[0].substring(0, 1);
+        String second = !parts[1].isEmpty() ? parts[1].substring(0, 1) : "";
+        return (first + second).toUpperCase();
+    }
+
     public void drawStatusWithImage(Canvas canvas, ImageReceiver imageReceiver, int radius) {
+        if (HgramConfig.isAntiPeekActive()) {
+            Paint coverPaint = hgramCoverPaint;
+            coverPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
+            canvas.drawCircle(imageReceiver.getCenterX(), imageReceiver.getCenterY(), Math.max(imageReceiver.getImageWidth(), imageReceiver.getImageHeight()) / 2f, coverPaint);
+            return;
+        }
         String formatUserStatus = currentUser != null ? LocaleController.formatUserStatus(this.currentAccount, currentUser) : "";
         if (!NaConfig.INSTANCE.getShowOnlineStatus().Bool() || currentUser == null || currentUser.bot) {
             imageReceiver.draw(canvas);
@@ -4987,6 +5382,117 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        if (hgramShortToggle != null && (delegate == null || delegate.canPerformActions())) {
+            int action = event.getActionMasked();
+            if (hgramShortCollapsed && action == MotionEvent.ACTION_DOWN) {
+                updateHgramSummarizeButtonBounds();
+                final boolean hit = drawSummarizeButton && isInHgramSummarizeButton(event.getX(), event.getY());
+                logHgramSummarizeTap(event.getX(), event.getY(), hit, action);
+                if (hit) {
+                    summarizeButtonPressed = true;
+                    invalidate();
+                    return true;
+                }
+            }
+            if (hgramShortCollapsed && summarizeButtonPressed
+                    && (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)) {
+                summarizeButtonPressed = false;
+                invalidate();
+                if (action == MotionEvent.ACTION_UP) {
+                    final boolean hit = isInHgramSummarizeButton(event.getX(), event.getY());
+                    logHgramSummarizeTap(event.getX(), event.getY(), hit, action);
+                    if (hit && delegate != null) {
+                        playSoundEffect(SoundEffectConstants.CLICK);
+                        delegate.didPressSummarize(this, false);
+                    }
+                }
+                return true;
+            }
+            if (action == MotionEvent.ACTION_DOWN) {
+                hgramShortDownX = event.getX();
+                hgramShortDownY = event.getY();
+                // Only the explicit "N messages" label (collapsed) or the compact chevron
+                // chip (expanded anchor) toggles. Avatar/text/links keep normal taps.
+                updateHgramShortToggleBounds();
+                hgramShortTap = xyz.nextalone.nagram.hgram.HgramShortMessageMerger.isInToggleZone(
+                        event.getX(), event.getY(), hgramShortToggleBounds.left,
+                        hgramShortToggleBounds.top, hgramShortToggleBounds.right,
+                        hgramShortToggleBounds.bottom);
+                hgramShortHeaderZone = hgramShortTap;
+                if (hgramShortTap) {
+                    startCheckLongPress();
+                    return true;
+                }
+            } else if (action == MotionEvent.ACTION_MOVE) {
+                if (Math.abs(event.getX() - hgramShortDownX) > ViewConfiguration.get(getContext()).getScaledTouchSlop()
+                        || Math.abs(event.getY() - hgramShortDownY) > ViewConfiguration.get(getContext()).getScaledTouchSlop()) {
+                    hgramShortTap = false;
+                    hgramShortHeaderZone = false;
+                    cancelCheckLongPress();
+                }
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                boolean headerTap = hgramShortHeaderZone;
+                boolean tap = hgramShortTap && action == MotionEvent.ACTION_UP
+                        && event.getEventTime() - event.getDownTime() < ViewConfiguration.getLongPressTimeout();
+                hgramShortTap = false;
+                hgramShortHeaderZone = false;
+                cancelCheckLongPress();
+                if (tap) { hgramShortToggle.run(); return true; }
+                if (headerTap) return true;
+            }
+            if (hgramShortCollapsed) return true;
+        }
+        if (hgramAlbumReceivers != null && hgramAlbumReceivers.size() > 1) {
+            float x = event.getX();
+            int action = event.getAction();
+            if (action == MotionEvent.ACTION_DOWN) {
+                if (hgramAlbumAnimator != null) {
+                    hgramAlbumAnimator.end();
+                }
+                hgramAlbumDownX = x;
+                hgramAlbumStartOffset = hgramAlbumOffset;
+                hgramAlbumSwiping = false;
+            } else if (action == MotionEvent.ACTION_MOVE) {
+                if (!hgramAlbumSwiping && Math.abs(x - hgramAlbumDownX) > dp(12)) {
+                    hgramAlbumSwiping = true;
+                    cancelCheckLongPress();
+                    isPressed = false;
+                    invalidate();
+                    if (getParent() != null) {
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                    }
+                }
+                if (hgramAlbumSwiping) {
+                    float width = xyz.nextalone.nagram.hgram.HgramCompactAlbumRenderer.effectiveWidth(
+                            photoImage.getImageWidth(), getMeasuredWidth());
+                    hgramAlbumOffset = Math.max(-width, Math.min(width, hgramAlbumStartOffset + (x - hgramAlbumDownX)));
+                    invalidate();
+                    return true;
+                }
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (hgramAlbumSwiping) {
+                    hgramAlbumSwiping = false;
+                    float width = xyz.nextalone.nagram.hgram.HgramCompactAlbumRenderer.effectiveWidth(
+                            photoImage.getImageWidth(), getMeasuredWidth());
+                    boolean forward = action == MotionEvent.ACTION_UP
+                            && Math.abs(hgramAlbumOffset) > xyz.nextalone.nagram.hgram.HgramCompactAlbumRenderer.swipeThreshold(
+                            width, dp(40))
+                            && xyz.nextalone.nagram.hgram.HgramCompactAlbumRenderer.isForward(
+                            hgramAlbumOffset, LocaleController.isRTL);
+                    settleHgramAlbum(forward);
+                    return true;
+                }
+            }
+        }
+        if (isHgramDuplicateCollapsed()) {
+
+            if (event.getAction() == MotionEvent.ACTION_UP) {
+                hgramDuplicateExpanded = true;
+                requestLayout();
+                invalidate();
+            }
+            return true;
+        }
         if (currentMessageObject == null || delegate != null && !delegate.canPerformActions() || animationRunning) {
             if (currentMessageObject != null && currentMessageObject.preview) {
                 return checkTextSelection(event);
@@ -4994,6 +5500,43 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 boolean r_reply = checkReplyTouchEvent(event);
                 boolean r_text = r_reply || checkTextSelection(event);
                 return r_reply || super.onTouchEvent(event);
+            }
+        }
+
+        if (drawSummarizeButton && (delegate == null || delegate.canPerformActions())) {
+            final int hgramSumAction = event.getActionMasked();
+            final float hgramSumTapX = getEventX(event);
+            final float hgramSumTapY = getEventY(event);
+            if (hgramSumAction == MotionEvent.ACTION_DOWN) {
+                updateHgramSummarizeButtonBounds();
+                final boolean hit = isInHgramSummarizeButton(hgramSumTapX, hgramSumTapY);
+                logHgramSummarizeTap(hgramSumTapX, hgramSumTapY, hit, hgramSumAction);
+                if (hit) {
+                    summarizeButtonPressed = true;
+                    invalidate();
+                    return true;
+                }
+            } else if (summarizeButtonPressed) {
+                final boolean hit = isInHgramSummarizeButton(hgramSumTapX, hgramSumTapY);
+                if (hgramSumAction == MotionEvent.ACTION_UP) {
+                    logHgramSummarizeTap(hgramSumTapX, hgramSumTapY, hit, hgramSumAction);
+                    summarizeButtonPressed = false;
+                    if (hit) {
+                        playSoundEffect(SoundEffectConstants.CLICK);
+                        if (delegate != null) {
+                            delegate.didPressSummarize(this, false);
+                        }
+                    }
+                    invalidate();
+                    return true;
+                } else if (hgramSumAction == MotionEvent.ACTION_CANCEL) {
+                    summarizeButtonPressed = false;
+                    invalidate();
+                    return true;
+                } else if (hgramSumAction == MotionEvent.ACTION_MOVE && !hit) {
+                    summarizeButtonPressed = false;
+                    invalidate();
+                }
             }
         }
 
@@ -5260,10 +5803,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         result = true;
                         invalidate();
                     } else if (
-                        sideButtonVisible &&
                         drawSummarizeButton &&
-                        x >= summarizeButtonX - dp(4) && x <= summarizeButtonX + dp(40) &&
-                        y >= summarizeButtonY - dp(4) && y <= summarizeButtonY + dp(40)
+                        isInHgramSummarizeButton(x, y)
                     ) {
                         summarizeButtonPressed = true;
                         result = true;
@@ -5429,9 +5970,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         pressedSideButton = 0;
                     } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
                         if (!(
-                            sideButtonVisible &&
-                            x >= summarizeButtonX - dp(4) && x <= summarizeButtonX + dp(40) &&
-                            y >= summarizeButtonY - dp(4) && y <= summarizeButtonY + dp(40)
+                            isInHgramSummarizeButton(x, y)
                         )) {
                             sideButtonPressed = false;
                             summarizeButtonPressed = false;
@@ -6282,7 +6821,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         if (captionLayout != null && captionLayout.textLayoutBlocks != null) {
             animatedEmojiStack = AnimatedEmojiSpan.update(cache, this, false, animatedEmojiStack, captionLayout.textLayoutBlocks);
         } else {
-            animatedEmojiStack = AnimatedEmojiSpan.update(cache, this, delegate == null || !delegate.canDrawOutboundsContent(), animatedEmojiStack, currentMessageObject.textLayoutBlocks);
+            animatedEmojiStack = AnimatedEmojiSpan.update(cache, this, false, animatedEmojiStack, currentMessageObject.textLayoutBlocks);
         }
         if (currentMessageObject.type == MessageObject.TYPE_ARTICLE && currentMessageObject.richLayout != null) {
             currentMessageObject.richLayout.invalidateAnimatedEmojiInParent = delegate == null || !delegate.canDrawOutboundsContent();
@@ -6835,6 +7374,35 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     public MultiLayoutTypingAnimator botDraftTypingAnimator;
 
     private void setMessageContent(MessageObject messageObject, MessageObject.GroupedMessages groupedMessages, boolean bottomNear, boolean topNear, boolean firstInChat, boolean lastInChatList) {
+        boolean hgramSameMessage = currentMessageObject == messageObject;
+        boolean hgramCanAnalyze = groupedMessages == null && messageObject.isFromChannel();
+        int hgramEditDate = messageObject.messageOwner != null ? messageObject.messageOwner.edit_date : 0;
+        String hgramCurrentText = hgramSameMessage && hgramCanAnalyze
+                && (messageObject.forceUpdate || hgramAnalyzedEditDate != hgramEditDate)
+                ? getHgramPostText(messageObject) : null;
+        boolean hgramTextChanged = hgramCurrentText != null && !TextUtils.equals(hgramAnalyzedText, hgramCurrentText);
+        if (!hgramSameMessage || hgramTextChanged || hgramAnalyzedGrouped != (groupedMessages != null)) {
+            if (hgramSameMessage && hgramTextChanged && hgramPostText != null) {
+                HgramPostDeduplicator.getInstance(currentAccount).removeSeen(hgramPostDialogId, hgramPostMessageId);
+            }
+            hgramAnalyzedText = hgramCanAnalyze
+                    ? (hgramCurrentText != null ? hgramCurrentText : getHgramPostText(messageObject)) : null;
+            hgramAnalyzedGrouped = groupedMessages != null;
+            hgramDuplicatePost = null;
+            hgramContentReason = HgramContentHeuristics.Reason.NONE;
+            hgramPostText = null;
+            hgramPostChecked = false;
+            hgramDuplicateExpanded = false;
+            if (groupedMessages == null && isHgramDedupCandidate(messageObject, hgramAnalyzedText)) {
+                hgramPostText = hgramAnalyzedText;
+                hgramPostDialogId = messageObject.getDialogId();
+                hgramPostMessageId = messageObject.getId();
+            }
+            if (groupedMessages == null && HgramConfig.isCleanFeedFilterEnabled() && isHgramContentCandidate(messageObject, hgramAnalyzedText)) {
+                hgramContentReason = HgramContentHeuristics.classify(hgramAnalyzedText, hasHgramLinkEntity(messageObject));
+            }
+        }
+        hgramAnalyzedEditDate = hgramEditDate;
         if (messageObject.checkLayout() || currentPosition != null && lastHeight != AndroidUtilities.displaySize.y) {
             currentMessageObject = null;
         }
@@ -7054,7 +7622,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     drawSideButton = 2;
                 }
             }
-            drawSummarizeButton = TranslateController.isSummarizable(messageObject);
+            drawSummarizeButton = TranslateController.isSummarizable(messageObject)
+                    || xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(messageObject, hgramShortChain);
             hasReplyQuote = false;
             isReplyQuote = false;
             isReplyTaskOrPollOption = false;
@@ -7320,7 +7889,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             } else {
                 linked = messageObject.isLinkedToChat(linkedChatId);
             }
-            if ((hasDiscussion && linked || isRepliesChat && !messageObject.isOutOwner()) && (currentPosition == null || (currentPosition.flags & MessageObject.POSITION_FLAG_BOTTOM) != 0) && messageObject.searchType == 0 && !messageObject.isEphemeral()) {
+            if ((hasDiscussion && linked || isRepliesChat && !messageObject.isOutOwner())
+                    && (currentPosition == null || (currentPosition.flags & MessageObject.POSITION_FLAG_BOTTOM) != 0)
+                    && messageObject.searchType == 0 && !messageObject.isEphemeral()) {
                 int commentCount = getRepliesCount();
                 if (!messageObject.shouldDrawWithoutBackground() && !messageObject.isAnimatedEmoji()) {
                     drawCommentButton = true;
@@ -7819,14 +8390,21 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         backgroundWidth = Math.min(getParentWidth() - dp(50), dp(270));
                     }
                 } else {
-                    backgroundWidth = messageObject.textWidth + getExtraTextX() * 2 + (hasGamePreview || hasInvoicePreview ? dp(10) : 0);
+                    backgroundWidth = messageObject.textWidth + getExtraTextX() * 2
+                            + (hasGamePreview || hasInvoicePreview ? dp(10) : 0);
                 }
                 if (messageObject.isSponsored()) {
                     totalHeight = dp(22.5f);
                 } else if (messageObject.type == MessageObject.TYPE_ARTICLE) {
                     totalHeight = messageObject.richLayout.getHeight() + dp(19.5f) + namesOffset;
                 } else {
-                    totalHeight = messageObject.textHeight() + dp(19.5f) + namesOffset;
+                    // Normal and recovery paths share the same height calculator. drawPinnedTop
+                    // adjusts namesOffset later, so apply the same dp(1) here for the fresh path.
+                    final int footer = hgramShortChain != null && !hgramShortCollapsed
+                            && messageObject.getId() == hgramShortChain.anchorId
+                            ? dp(xyz.nextalone.nagram.hgram.HgramShortMessageMerger.COLLAPSE_ROW_HEIGHT_DP) : 0;
+                    totalHeight = xyz.nextalone.nagram.hgram.HgramShortMessageMerger.normalCellHeight(
+                            messageObject.textHeight() + dp(19.5f), namesOffset, footer, 0, 0);
                 }
 
                 if (!reactionsLayoutInBubble.isSmall) {
@@ -7847,6 +8425,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         totalHeight += reactionsLayoutInBubble.totalHeight;
                     }
                 }
+                hgramStableNamesOffset = namesOffset;
                 if (drawPinnedTop) {
                     namesOffset -= dp(1);
                 }
@@ -10579,7 +11158,17 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 } else if (drawNameLayout && (messageObject.getReplyMsgId() == 0 || isThreadChat && messageObject.getReplyTopMsgId() == 0)) {
                     namesOffset += dp(7);
                 }
+                // Footer cells keep Telegram's caption/reaction/comment layout, but
+                // their media is rendered by the album head, outside this bubble.
+                if (isHgramCompactAlbumFooterCell()) {
+                    photoHeight = 0;
+                }
                 totalHeight = photoHeight + dp(14) + namesOffset + additionHeight;
+                if (isHgramCompactAlbumFooterCell() && captionLayout == null
+                        && (reactionsLayoutInBubble.isEmpty || reactionsLayoutInBubble.isSmall)) {
+                    // Without caption/reactions the timestamp still needs its own row.
+                    totalHeight += dp(18);
+                }
                 if (messageObject.isVoiceTranscriptionOpen()) {
                     totalHeight += dp(70 - 14);
                 }
@@ -11026,6 +11615,16 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 substractBackgroundHeight = 0;
                 keyboardHeight = 0;
             }
+            if (!hgramDuplicateExpanded && HgramConfig.isCleanFeedFilterEnabled() && hgramContentReason != HgramContentHeuristics.Reason.NONE) {
+                for (BotButton botButton : botButtons) {
+                    if (botButton.animatedEmojiDrawable != null) {
+                        botButton.animatedEmojiDrawable.clear();
+                    }
+                }
+                botButtons.clear();
+                keyboardHeight = 0;
+                substractBackgroundHeight = 0;
+            }
             if (drawCommentButton) {
                 totalHeight += dp(shouldDrawTimeOnMedia() ? 41.3f : 43);
                 createSelectorDrawable(1);
@@ -11424,6 +12023,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         transitionParams.updatePhotoImageX = true;
 
         highlightCaptionToSetStart = highlightCaptionToSetEnd = -1;
+
+        setupHgramAlbum(messageObject);
 
         updateFlagSecure();
     }
@@ -12799,6 +13400,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             (
                 UserConfig.getInstance(currentAccount).isPremium()
                 ||
+                HgramConfig.isOfflineTranscriptionEnabled() && HgramOfflineTranscriber.isAvailable(getContext())
+                ||
                 TranscribeButton.isFreeTranscribeInChat(currentMessageObject)
                 ||
                 MessagesController.getInstance(currentAccount).transcribeAudioTrialWeeklyNumber > 0 &&
@@ -13808,6 +14411,53 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        if (isHgramCompactAlbumTail() && !isHgramCompactAlbumFooterCell()) {
+            setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), 0);
+            additionalPaddingHeight = 0;
+            return;
+        }
+        if (hgramShortCollapsed && hgramShortChain != null) {
+            int width = MeasureSpec.getSize(widthMeasureSpec);
+            int textWidth = Math.max(dp(80), Math.min(dp(340), width - (isChat ? dp(104) : dp(52))));
+            if (hgramShortLayout == null || hgramShortMaxTextWidth != textWidth || hgramShortPrivate != HgramConfig.isAntiPeekActive()) {
+                hgramShortMaxTextWidth = textWidth;
+                hgramShortPrivate = HgramConfig.isAntiPeekActive();
+                hgramShortContentInset = dp(12);
+                hgramShortPaint.set(Theme.chat_msgTextPaint);
+                hgramShortLabelPaint.set(hgramShortPaint);
+                hgramShortLabelPaint.setTextSize(dp(12));
+                String label = LocaleController.formatPluralString("messages", hgramShortChain.ids.size())
+                        + " · " + LocaleController.getString(R.string.HgramShortMergeExpand);
+                final StaticLayout probeBody = new StaticLayout(hgramShortChain.text, hgramShortPaint,
+                        textWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0, false);
+                final StaticLayout probeLabel = new StaticLayout(label, hgramShortLabelPaint,
+                        textWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0, false);
+                float bodyWidest = 0;
+                for (int i = 0; i < probeBody.getLineCount(); i++) bodyWidest = Math.max(bodyWidest, probeBody.getLineWidth(i));
+                float labelWidest = 0;
+                for (int i = 0; i < probeLabel.getLineCount(); i++) labelWidest = Math.max(labelWidest, probeLabel.getLineWidth(i));
+                final boolean readState = hgramShortChain.readState() > 0;
+                final int checkReserve = dp(HGRAM_SHORT_CHECK_SIZE_DP) * 2
+                        + dp(HGRAM_SHORT_CHECK_GAP_DP) + dp(HGRAM_SHORT_EDGE_INSET_DP);
+                final xyz.nextalone.nagram.hgram.HgramShortChainLayout layout =
+                        xyz.nextalone.nagram.hgram.HgramShortChainLayout.measure(
+                                bodyWidest, labelWidest, textWidth, readState, checkReserve, dp(60));
+                hgramShortChecksOnOwnLine = layout.checksOnOwnLine;
+                final int contentWidth = layout.contentWidth;
+                hgramShortLabelWidth = layout.labelWidth;
+                hgramShortLayout = new StaticLayout(hgramShortChain.text, hgramShortPaint,
+                        contentWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0, false);
+                hgramShortLabelLayout = new StaticLayout(label, hgramShortLabelPaint,
+                        hgramShortLabelWidth, Layout.Alignment.ALIGN_NORMAL, 1f, 0, false);
+                hgramShortBubbleWidth = contentWidth + hgramShortContentInset * 2;
+            }
+            final int checksRow = hgramShortChecksOnOwnLine ? dp(HGRAM_SHORT_CHECK_SIZE_DP) + dp(2) : 0;
+            setMeasuredDimension(width, needHide ? 0 : hgramShortLayout.getHeight()
+                    + hgramShortLabelLayout.getHeight() + checksRow + dp(25));
+            additionalPaddingHeight = 0;
+            hgramShortChainPendingMeasure = false;
+            return;
+        }
         if (currentMessageObject != null && (currentMessageObject.checkLayout() || lastHeight != AndroidUtilities.displaySize.y)) {
             inLayout = true;
             MessageObject messageObject = currentMessageObject;
@@ -13815,8 +14465,42 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             setMessageObject(messageObject, currentMessagesGroup, pinnedBottom, pinnedTop, firstInChat);
             inLayout = false;
         }
+        if (isHgramDuplicateCollapsed()) {
+            hgramDuplicateMeasured = true;
+            hgramMeasureRequestPending = false;
+            int collapsedHeight = dp(62) + starsPriceTopPadding + topicSeparatorTopPadding + suggestionOfferTopPadding;
+            setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), needHide ? 0 : collapsedHeight);
+            additionalPaddingHeight = 0;
+            return;
+        }
+        hgramDuplicateMeasured = false;
+        hgramMeasureRequestPending = false;
         updateSelectionTextPosition();
 
+        // A same-holder expand/clear resets totalHeight before the next bind. Rebuild the
+        // normal text height here instead of calling setMessageObject() again, so reactions,
+        // media and selection state are not reset.
+        if (hgramShortChainPendingMeasure && totalHeight <= 0 && currentMessageObject != null
+                && (currentMessageObject.type == MessageObject.TYPE_TEXT
+                || currentMessageObject.type == MessageObject.TYPE_ARTICLE)) {
+            final int footer = hgramShortChain != null && !hgramShortCollapsed
+                    && currentMessageObject.getId() == hgramShortChain.anchorId
+                    ? dp(xyz.nextalone.nagram.hgram.HgramShortMessageMerger.COLLAPSE_ROW_HEIGHT_DP) : 0;
+            final int reactions = !reactionsLayoutInBubble.isEmpty ? reactionsLayoutInBubble.totalHeight : 0;
+            int timeRow = hasNewLineForTime ? dp(14) : 0;
+            if (currentMessageObject.hasCodeAtBottom || currentMessageObject.hasQuoteAtBottom
+                    || currentMessageObject.isGiveawayOrGiveawayResults()) {
+                timeRow = dp(18);
+            }
+            totalHeight = xyz.nextalone.nagram.hgram.HgramShortMessageMerger.normalCellHeight(
+                    currentMessageObject.textHeight() + dp(19.5f),
+                    drawPinnedTop ? hgramStableNamesOffset : namesOffset, footer, reactions, timeRow);
+            hgramShortChainPendingMeasure = false;
+        }
+
+        if (hgramShortChainPendingMeasure && totalHeight > 0) {
+            hgramShortChainPendingMeasure = false;
+        }
         final int normHeight = starsPriceTopPadding + topicSeparatorTopPadding + suggestionOfferTopPadding + totalHeight + keyboardHeight + askBotForumBottomPadding + bottomActionPadding;
         int resultHeight = normHeight;
         ChatActivityDraftMessageMeasureController botDraftHeightController = getDraftMessageMeasureController();
@@ -19113,11 +19797,16 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 currentNameString = messageObject.customName;
             } else if (needAuthorName) {
                 currentNameString = getAuthorName();
+                if (HgramConfig.isAntiPeekActive()) {
+                    currentNameString = hgramInitials(currentNameString).toString();
+                }
                 currentNameStatus = getAuthorStatus();
                 currentNameBotVerificationId = getAuthorBotVerificationId();
             } else {
                 currentNameString = "";
             }
+            hgramCoverName = HgramConfig.isAntiPeekActive() && currentNameString.length() > 0
+                    ? hgramInitials(currentNameString).toString() : null;
             int additionalWidth = dp(currentMessageObject.isSponsored() ? -24 : 0);
             CharSequence nameStringFinal = AndroidUtilities.removeDiacritics(currentNameString.replace('\n', ' ').replace('\u200F', ' '));
             try {
@@ -20347,7 +21036,405 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     @SuppressLint("WrongCall")
     @Override
     protected void onDraw(Canvas canvas) {
+        if (isHgramCompactAlbumTail() && !isHgramCompactAlbumFooterCell()) {
+            return;
+        }
+        if (hgramShortCollapsed) {
+            if (hgramShortPrivate != HgramConfig.isAntiPeekActive()) requestLayout();
+            else {
+                drawHgramShortChain(canvas);
+                if (hgramShortChain != null) {
+                    updateHgramSummarizeButtonBounds();
+                    if (drawSummarizeButton) {
+                        drawHgramSummarizeButton(canvas);
+                    }
+                }
+            }
+            return;
+        }
+        HgramPostDeduplicator.PreparedPost preparedHgramPost = null;
+        MessageObject drawnHgramMessage = null;
+        if (HgramConfig.isSimilarPostDeduplicationEnabled() && hgramPostText != null && !hgramPostChecked) {
+            HgramPostDeduplicator deduplicator = HgramPostDeduplicator.getInstance(currentAccount);
+            preparedHgramPost = deduplicator.prepare(hgramPostText, hgramPostDialogId, SystemClock.elapsedRealtime());
+            hgramDuplicatePost = preparedHgramPost.match;
+            drawnHgramMessage = currentMessageObject;
+            hgramPostChecked = true;
+        }
+        boolean collapsed = isHgramDuplicateCollapsed();
+        if (collapsed != hgramDuplicateMeasured && !hgramMeasureRequestPending) {
+            hgramMeasureRequestPending = true;
+            post(() -> {
+                hgramMeasureRequestPending = false;
+                requestLayout();
+            });
+        }
+        if (collapsed) {
+            drawSideButton = 0;
+            drawSideButton2 = 0;
+            drawHgramDuplicatePost(canvas);
+            return;
+        }
         drawInternal(canvas);
+        if (preparedHgramPost != null && preparedHgramPost.match == null
+                && drawnHgramMessage != null && currentMessageObject == drawnHgramMessage) {
+            HgramPostDeduplicator.getInstance(currentAccount).rememberSeen(
+                    preparedHgramPost,
+                    hgramPostMessageId,
+                    getHgramSourceLabel(drawnHgramMessage),
+                    SystemClock.elapsedRealtime()
+            );
+        }
+    }
+
+    private void setupHgramAlbum(MessageObject messageObject) {
+        if (currentMessagesGroup == null || currentPosition == null || currentPosition.minY != 0 || currentPosition.minX != 0
+                || currentMessagesGroup.messages.size() < 3 || !HgramConfig.isCompactMediaAlbumsEnabled()
+                || currentMessagesGroup.isDocuments) {
+            if (hgramAlbumReceivers != null) {
+                clearHgramAlbum();
+            }
+            return;
+        }
+        long groupId = currentMessagesGroup.messages.get(0).getGroupId();
+        if (hgramAlbumReceivers != null && hgramAlbumGroupId == groupId) {
+            return;
+        }
+        clearHgramAlbum();
+        hgramAlbumGroupId = groupId;
+        hgramAlbumIndex = 0;
+        int count = currentMessagesGroup.messages.size();
+        hgramAlbumReceivers = new ArrayList<>(count);
+        hgramAlbumBlurReceivers = new ArrayList<>(count);
+        hgramAlbumPlayable = new boolean[count];
+        // The list may be laid out in reverse, so keep the visual order of the cards.
+        boolean reversed = currentMessagesGroup.reversed;
+        for (int i = 0; i < count; i++) {
+            MessageObject message = currentMessagesGroup.messages.get(reversed ? count - 1 - i : i);
+            ImageReceiver receiver = new ImageReceiver(this);
+            receiver.setCurrentAccount(currentAccount);
+            receiver.setRoundRadius(AndroidUtilities.dp(9));
+            bindHgramAlbumReceiver(receiver, message);
+            hgramAlbumReceivers.add(receiver);
+            hgramAlbumPlayable[i] = message.isVideo() || message.isGif();
+            ImageReceiver blurredReceiver = new ImageReceiver(this);
+            blurredReceiver.setCurrentAccount(currentAccount);
+            blurredReceiver.setRoundRadius(AndroidUtilities.dp(9));
+            bindHgramAlbumReceiver(blurredReceiver, message, true);
+            hgramAlbumBlurReceivers.add(blurredReceiver);
+        }
+    }
+
+    /** Message that is currently shown in the compact album, so a tap opens the right item. */
+    public MessageObject getHgramAlbumMessage() {
+        if (hgramAlbumReceivers == null || hgramAlbumReceivers.isEmpty() || currentMessagesGroup == null) {
+            return null;
+        }
+        int count = currentMessagesGroup.messages.size();
+        if (hgramAlbumIndex < 0 || hgramAlbumIndex >= count) {
+            return null;
+        }
+        boolean reversed = currentMessagesGroup.reversed;
+        return currentMessagesGroup.messages.get(reversed ? count - 1 - hgramAlbumIndex : hgramAlbumIndex);
+    }
+
+    private void clearHgramAlbum() {
+        if (hgramAlbumAnimator != null) {
+            hgramAlbumAnimator.cancel();
+            hgramAlbumAnimator = null;
+        }
+        hgramAlbumOffset = 0;
+        hgramAlbumSwiping = false;
+        if (hgramAlbumReceivers != null) {
+            for (ImageReceiver receiver : hgramAlbumReceivers) {
+                receiver.clearImage();
+            }
+            hgramAlbumReceivers = null;
+        }
+        if (hgramAlbumBlurReceivers != null) {
+            for (ImageReceiver receiver : hgramAlbumBlurReceivers) receiver.clearImage();
+            hgramAlbumBlurReceivers = null;
+        }
+        hgramAlbumPlayable = null;
+        hgramAlbumGroupId = -1;
+        hgramAlbumIndex = 0;
+    }
+
+    private void bindHgramAlbumReceiver(ImageReceiver receiver, MessageObject message) {
+        bindHgramAlbumReceiver(receiver, message, false);
+    }
+
+    private void bindHgramAlbumReceiver(ImageReceiver receiver, MessageObject message, boolean forceBlur) {
+        if (message == null || message.messageOwner == null) {
+            return;
+        }
+        // Same scheme as the regular media cells: a sized copy of the picture plus a blurred placeholder.
+        String filter = currentPhotoFilter;
+        if (filter == null) {
+            int w = (int) (photoImage.getImageWidth() / AndroidUtilities.density);
+            int h = (int) (photoImage.getImageHeight() / AndroidUtilities.density);
+            if (w <= 0 || h <= 0) {
+                w = Math.max(1, (int) (AndroidUtilities.displaySize.x * 0.6f / AndroidUtilities.density));
+                h = w;
+            }
+            filter = w + "_" + h;
+        }
+        String mainFilter = forceBlur || message.needDrawBluredPreview() ? filter + "_b1" : filter;
+        TLRPC.MessageMedia media = getMedia(message.messageOwner);
+        if (media instanceof TLRPC.TL_messageMediaPhoto && media.photo != null) {
+            TLRPC.PhotoSize size = FileLoader.getClosestPhotoSizeWithSize(media.photo.sizes, AndroidUtilities.getPhotoSize());
+            TLRPC.PhotoSize thumb = FileLoader.getClosestPhotoSizeWithSize(media.photo.sizes, 40);
+            receiver.setImage(ImageLocation.getForPhoto(size, media.photo), mainFilter, ImageLocation.getForPhoto(thumb, media.photo), "b1", null, 0, "jpg", message, 1);
+        } else if (media != null && media.document != null) {
+            TLRPC.Document document = media.document;
+            TLRPC.PhotoSize size = FileLoader.getClosestPhotoSizeWithSize(document.thumbs, AndroidUtilities.getPhotoSize());
+            TLRPC.PhotoSize thumb = FileLoader.getClosestPhotoSizeWithSize(document.thumbs, 40);
+            if (size != null) {
+                receiver.setImage(ImageLocation.getForDocument(size, document), mainFilter, ImageLocation.getForDocument(thumb, document), "b1", null, 0, "jpg", message, 1);
+            } else {
+                receiver.setImage(ImageLocation.getForDocument(document), mainFilter, null, null, null, 0, "jpg", message, 1);
+            }
+        }
+    }
+
+    private boolean isHgramCompactAlbumTail() {
+        return HgramConfig.isCompactMediaAlbumsEnabled()
+                && currentMessagesGroup != null && currentMessagesGroup.messages.size() >= 3
+                && !currentMessagesGroup.isDocuments && currentPosition != null
+                && (currentPosition.minY != 0 || currentPosition.minX != 0);
+    }
+
+    private boolean isHgramCompactAlbumFooterCell() {
+        return isHgramCompactAlbumTail() && (currentPosition.last
+                || (currentPosition.flags & MessageObject.POSITION_FLAG_BOTTOM) != 0
+                && (currentPosition.flags & MessageObject.POSITION_FLAG_LEFT) != 0);
+    }
+
+    public boolean isHgramCompactAlbumHead() {
+        return HgramConfig.isCompactMediaAlbumsEnabled()
+                && currentMessagesGroup != null && currentMessagesGroup.messages.size() >= 3
+                && !currentMessagesGroup.isDocuments && currentPosition != null
+                && currentPosition.minX == 0 && currentPosition.minY == 0;
+    }
+
+    public float getHgramAlbumMetadataOffset() {
+        // Keep Telegram's independently drawn caption, time, reactions and comments
+        // at their measured positions. The grouped background is cropped instead.
+        return 0;
+    }
+
+    private boolean isHgramCompactAlbumMember() {
+        return HgramConfig.isCompactMediaAlbumsEnabled()
+                && ((currentMessagesGroup != null && currentMessagesGroup.messages.size() >= 3
+                        && !currentMessagesGroup.isDocuments)
+                    || (hgramAlbumReceivers != null && hgramAlbumReceivers.size() >= 3));
+    }
+
+    public boolean isHgramStandaloneAlbumGroup() {
+        return HgramConfig.isCompactMediaAlbumsEnabled()
+                && currentMessagesGroup != null && currentMessagesGroup.messages.size() >= 3
+                && !currentMessagesGroup.isDocuments;
+    }
+
+    public float getHgramAlbumFooterTop() {
+        final long frame = getDrawingTime();
+        if (frame != 0 && frame == hgramFooterFrame) {
+            return hgramFooterTop;
+        }
+        float top = Float.MAX_VALUE;
+        if (currentMessagesGroup != null && getParent() instanceof ViewGroup) {
+            ViewGroup parent = (ViewGroup) getParent();
+            for (int i = 0; i < parent.getChildCount(); i++) {
+                View child = parent.getChildAt(i);
+                if (!(child instanceof ChatMessageCell)) continue;
+                ChatMessageCell member = (ChatMessageCell) child;
+                if (member.currentMessagesGroup == currentMessagesGroup && member.isHgramCompactAlbumFooterCell()) {
+                    top = Math.min(top, member.getTop() + member.getPaddingTop());
+                }
+            }
+        }
+        final float result = top == Float.MAX_VALUE ? getBottom() - getPaddingBottom() : top;
+        hgramFooterFrame = frame;
+        hgramFooterTop = result;
+        return result;
+    }
+
+    public void drawHgramAlbumMetadataBackground(Canvas canvas, float left, float right, float bottom, boolean pinnedBottom, boolean selected) {
+        if (right <= left) return;
+        float top = getHgramAlbumFooterTop();
+        float footerBottom = bottom;
+        drawBackground(canvas, (int) left, (int) top, (int) right, (int) footerBottom, false, pinnedBottom, selected, 0);
+    }
+
+    private boolean drawHgramAlbum(Canvas canvas) {
+        if (hgramAlbumReceivers == null || hgramAlbumReceivers.isEmpty()) {
+            return false;
+        }
+        float x = photoImage.getImageX();
+        float y = photoImage.getImageY();
+        float width = photoImage.getImageWidth();
+        if (drawNameLayout && nameLayout != null) {
+            y = Math.max(y, nameY + nameLayout.getHeight() + dp(7));
+        }
+        float height = photoImage.getImageHeight();
+        float footerTop = getHgramAlbumFooterTop() - getTop() - getPaddingTop();
+        height = Math.min(height, footerTop - y);
+        if (width <= 0 || height < dp(90)) {
+            return false;
+        }
+        hgramAlbumRenderer.draw(canvas, hgramAlbumReceivers, hgramAlbumBlurReceivers, hgramAlbumPlayable,
+                hgramAlbumIndex, x, y, width, height,
+                hgramAlbumOffset, AndroidUtilities.density, 0xcc000000, 0xffffffff, null);
+        return true;
+    }
+
+    private void settleHgramAlbum(boolean forward) {
+        float from = hgramAlbumOffset;
+        float width = xyz.nextalone.nagram.hgram.HgramCompactAlbumRenderer.effectiveWidth(
+                photoImage.getImageWidth(), getMeasuredWidth());
+        int direction = from < 0 ? 1 : -1;
+        float to = forward ? -direction * width : 0;
+        if (hgramAlbumAnimator != null) {
+            hgramAlbumAnimator.cancel();
+        }
+        ValueAnimator animator = ValueAnimator.ofFloat(from, to);
+        animator.setDuration(forward ? 340 : 260);
+        animator.setInterpolator(CubicBezierInterpolator.EASE_OUT_QUINT);
+        final boolean[] cancelled = {false};
+        animator.addUpdateListener(a -> {
+            hgramAlbumOffset = (float) a.getAnimatedValue();
+            invalidate();
+        });
+        animator.addListener(new AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationCancel(Animator animation) {
+                cancelled[0] = true;
+            }
+
+            @Override
+            public void onAnimationEnd(Animator animation) {
+                if (hgramAlbumAnimator == animation) {
+                    hgramAlbumAnimator = null;
+                }
+                if (!cancelled[0] && forward && hgramAlbumReceivers != null && !hgramAlbumReceivers.isEmpty()) {
+                    int count = hgramAlbumReceivers.size();
+                    hgramAlbumIndex = ((hgramAlbumIndex + direction) % count + count) % count;
+                }
+                hgramAlbumOffset = 0;
+                invalidate();
+            }
+        });
+        hgramAlbumAnimator = animator;
+        animator.start();
+    }
+
+    private void advanceHgramAlbum(int delta) {
+        if (hgramAlbumReceivers == null || hgramAlbumReceivers.isEmpty()) return;
+        int count = hgramAlbumReceivers.size();
+        hgramAlbumIndex = ((hgramAlbumIndex + delta) % count + count) % count;
+        hgramAlbumOffset = 0;
+        HgramHaptics.play(HgramHapticProfile.PLACE_ALBUMS_SWIPE);
+        if (hgramAlbumAnimator != null) {
+            hgramAlbumAnimator.cancel();
+            hgramAlbumAnimator = null;
+        }
+        invalidate();
+    }
+
+    private boolean isHgramDuplicateCollapsed() {
+        if (currentMessageObject == null || hgramDuplicateExpanded) {
+            return false;
+        }
+        return hgramDuplicatePost != null && HgramConfig.isSimilarPostDeduplicationEnabled()
+                || hgramContentReason != HgramContentHeuristics.Reason.NONE && HgramConfig.isCleanFeedFilterEnabled();
+    }
+
+    private boolean isHgramDedupCandidate(MessageObject messageObject, String text) {
+        if (messageObject == null || messageObject.messageOwner == null
+                || messageObject.preview || messageObject.isSponsored()
+                || messageObject.messageOwner.action != null
+                || messageObject.type != MessageObject.TYPE_TEXT
+                || !messageObject.isFromChannel()
+                || text == null || text.length() < 80) {
+            return false;
+        }
+        long ageSeconds = ConnectionsManager.getInstance(currentAccount).getCurrentTime() - messageObject.messageOwner.date;
+        return ageSeconds >= -60 && ageSeconds <= HgramPostDeduplicator.RETENTION_MS / 1000L;
+    }
+
+    private boolean isHgramContentCandidate(MessageObject messageObject, String text) {
+        return messageObject != null && messageObject.messageOwner != null
+                && !messageObject.preview && !messageObject.isSponsored()
+                && messageObject.messageOwner.action == null
+                && messageObject.isFromChannel()
+                && text != null && text.length() >= 8;
+    }
+
+    private String getHgramPostText(MessageObject messageObject) {
+        if (messageObject == null) {
+            return "";
+        }
+        CharSequence text = messageObject.caption != null ? messageObject.caption : messageObject.messageText;
+        return text == null ? "" : text.toString();
+    }
+
+    private boolean hasHgramLinkEntity(MessageObject messageObject) {
+        if (messageObject == null || messageObject.messageOwner == null || messageObject.messageOwner.entities == null) {
+            return false;
+        }
+        for (TLRPC.MessageEntity entity : messageObject.messageOwner.entities) {
+            if (entity instanceof TLRPC.TL_messageEntityUrl || entity instanceof TLRPC.TL_messageEntityTextUrl
+                    || entity instanceof TLRPC.TL_messageEntityEmail) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String getHgramSourceLabel(MessageObject messageObject) {
+        long dialogId = messageObject.getDialogId();
+        TLRPC.Chat chat = dialogId < 0 ? MessagesController.getInstance(currentAccount).getChat(-dialogId) : null;
+        if (chat == null) {
+            return LocaleController.getString(R.string.HgramUnknownChannel);
+        }
+        if (!TextUtils.isEmpty(chat.username)) {
+            return "@" + chat.username;
+        }
+        return chat.title;
+    }
+
+    private void drawHgramDuplicatePost(Canvas canvas) {
+        final float left = dp(16);
+        final float right = getMeasuredWidth() - dp(16);
+        final float top = starsPriceTopPadding + topicSeparatorTopPadding + suggestionOfferTopPadding + dp(3);
+        final float bottom = Math.min(getMeasuredHeight(), top + dp(56));
+        if (hgramDuplicateBounds == null) {
+            hgramDuplicateBounds = new RectF();
+        }
+        hgramDuplicateBounds.set(left, top, right, bottom);
+    final RectF bounds = hgramDuplicateBounds;
+        boolean outgoing = currentMessageObject.isOutOwner();
+        hgramDuplicateBackgroundPaint.setColor(getThemedColor(outgoing ? Theme.key_chat_outBubble : Theme.key_chat_inBubble));
+        canvas.drawRoundRect(bounds, dp(14), dp(14), hgramDuplicateBackgroundPaint);
+
+        hgramDuplicateTextPaint.setColor(getThemedColor(outgoing ? Theme.key_chat_messageTextOut : Theme.key_chat_messageTextIn));
+        hgramDuplicateTextPaint.setTypeface(Theme.chat_msgTextPaint.getTypeface());
+        hgramDuplicateTextPaint.setTextSize(dp(14));
+        CharSequence title;
+        if (hgramDuplicatePost != null) {
+            title = LocaleController.formatString(R.string.HgramSimilarPost, hgramDuplicatePost.sourceLabel);
+        } else if (hgramContentReason == HgramContentHeuristics.Reason.ADVERTISEMENT) {
+            title = LocaleController.getString(R.string.HgramFilteredAdvertisement);
+        } else {
+            title = LocaleController.getString(R.string.HgramFilteredClickbait);
+        }
+        title = TextUtils.ellipsize(title, hgramDuplicateTextPaint, bounds.width() - dp(28), TextUtils.TruncateAt.END);
+        canvas.drawText(title, 0, title.length(), bounds.left + dp(14), bounds.top + dp(25), hgramDuplicateTextPaint);
+
+        hgramDuplicateTextPaint.setColor(getThemedColor(outgoing ? Theme.key_chat_outTimeText : Theme.key_chat_inTimeText));
+        hgramDuplicateTextPaint.setTextSize(dp(12));
+        CharSequence hint = TextUtils.ellipsize(LocaleController.getString(R.string.HgramTapToExpand), hgramDuplicateTextPaint, bounds.width() - dp(28), TextUtils.TruncateAt.END);
+        canvas.drawText(hint, 0, hint.length(), bounds.left + dp(14), bounds.top + dp(44), hgramDuplicateTextPaint);
     }
     public void drawInternal(Canvas canvas) {
         if (currentMessageObject == null) {
@@ -20409,9 +21496,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 highlightedQuote = false;
             }
             invalidate();
-            if (getParent() != null) {
-                ((View) getParent()).invalidate();
-            }
+            invalidateParentArea(dp(8));
         }
 
         if (alphaInternal != 1.0f) {
@@ -20953,7 +22038,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             roundVideoPlayPipFloat.set(0, true);
         }
 
-        if ((drawBackground || transitionParams.animateDrawBackground) && currentBackgroundDrawable != null && (currentPosition == null || isDrawSelectionBackground() && (currentMessageObject.isMusic() || currentMessageObject.isDocument())) && !(enterTransitionInProgress && !currentMessageObject.isVoice())) {
+        boolean standaloneHgramAlbum = isHgramCompactAlbumMember();
+        if ((drawBackground || transitionParams.animateDrawBackground) && currentBackgroundDrawable != null && !standaloneHgramAlbum && (currentPosition == null || isDrawSelectionBackground() && (currentMessageObject.isMusic() || currentMessageObject.isDocument())) && !(enterTransitionInProgress && !currentMessageObject.isVoice())) {
             float alphaInternal = this.alphaInternal;
             if (fromParent) {
                 alphaInternal *= getAlpha();
@@ -21099,12 +22185,26 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     }
                 }
                 invalidate();
-                ((View) getParent()).invalidate();
+                invalidateParentArea(0);
             }
         }
     }
 
+    private void invalidateParentArea(int padding) {
+        ViewParent parent = getParent();
+        if (!(parent instanceof View)) {
+            return;
+        }
+        View parentView = (View) parent;
+        int left = (int) (getLeft() + getTranslationX()) - padding;
+        int top = (int) (getTop() + getTranslationY()) - padding;
+        int right = (int) (getRight() + getTranslationX()) + padding;
+        int bottom = (int) (getBottom() + getTranslationY()) + padding;
+        parentView.invalidate(left, top, right, bottom);
+    }
+
     public boolean drawBackgroundInParent() {
+        if (hgramShortCollapsed) return false;
         if (canDrawBackgroundInParent && currentMessageObject != null && currentMessageObject.isOutOwner()) {
             return getThemedColor(Theme.key_chat_outBubbleGradient1) != 0;
         }
@@ -21229,6 +22329,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     }
 
     public boolean hasOutboundsContent() {
+        if (hgramShortCollapsed) return false;
         if (effectDrawable != null && effectDrawable.isNotEmpty() > 0) {
             return true;
         }
@@ -21266,6 +22367,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             reactionsLayoutInBubble.hasOverlay() ||
             (!transitionParams.transitionBotButtons.isEmpty() && transitionParams.animateBotButtonsChanged) ||
             !botButtons.isEmpty() ||
+            drawSummarizeButton ||
             drawSideButton != 0 ||
             drawNameLayout && nameLayout != null && currentNameEmojiStatusDrawable != null && !currentNameEmojiStatusDrawable.isEmpty() ||
             animatedEmojiStack != null && !animatedEmojiStack.holders.isEmpty() ||
@@ -21653,6 +22755,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
         }
 
+        drawSummarizeButton = TranslateController.isSummarizable(currentMessageObject)
+                || xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(currentMessageObject, hgramShortChain);
+        logHgramSummarizeDrawContent();
         drawSideButton(canvas);
         drawSummarizeButton(canvas);
     }
@@ -21835,7 +22940,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     }
 
     public void drawSideButton(Canvas canvas, boolean fromQuickShare) {
-        if (hideSideButtonByQuickShare && !fromQuickShare || drawSideButton == 0) {
+        if (hideSideButtonByQuickShare && !fromQuickShare || (drawSideButton == 0 && !drawSummarizeButton) || isHgramDuplicateCollapsed()) {
             return;
         }
 
@@ -21888,6 +22993,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 sideStartY = 0;
             }
         }
+        if (drawCommentButton && isHgramCompactAlbumHead()) {
+            sideStartY -= getHgramAlbumMetadataOffset();
+        }
         if (!currentMessageObject.isOutOwner() && isRoundVideo && !hasLinkPreview) {
             float offsetSize = isAvatarVisible ? ((AndroidUtilities.roundPlayingMessageSize(isSideMenued) - AndroidUtilities.roundMessageSize) * 0.7f) : dp(50);
             float offsetX = isPlayingRound ? offsetSize * (1f - getVideoTranscriptionProgress()) : 0;
@@ -21900,6 +23008,13 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             sideStartY -= offsetY;
         }
         sideButtonVisible = true;
+        if (drawSideButton == 0) {
+            // Local summarizer button owns the slot; no share/comment circle to draw.
+            if (sideStartX + dp(32) >= getMeasuredWidth()) {
+                sideButtonVisible = false;
+            }
+            return;
+        }
         if (drawSideButton == 3) {
             if (!(enterTransitionInProgress && !currentMessageObject.isVoice())) {
                 drawCommentButton(canvas, 1f);
@@ -21991,36 +23106,179 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 drawable.draw(canvas);
             }
 
-            if (restoreToSponosoredAlpha != -1) {
+        if (HgramConfig.isAntiPeekActive() && currentMessageObject != null) {
+            Paint cover = hgramCoverPaint;
+            boolean out = currentMessageObject.isOutOwner();
+            cover.setColor(getThemedColor(out ? Theme.key_chat_outBubble : Theme.key_chat_inBubble));
+            int left = backgroundDrawableLeft;
+            int right = backgroundDrawableRight;
+            int top = backgroundDrawableTop;
+            int bottom = backgroundDrawableBottom;
+            if (currentMessageObject.isAnyKindOfSticker() || currentMessageObject.isRoundVideo()) {
+                canvas.drawRoundRect(left, top, right, bottom, dp(12), dp(12), cover);
+            } else if (!currentMessageObject.isVoice() && !currentMessageObject.isMusic()) {
+                canvas.drawRect(left, top, right, Math.min(bottom, top + dp(34)), cover);
+                TextPaint namePaint = hgramNamePaint;
+                namePaint.set(Theme.chat_namePaint);
+                namePaint.setColor(getThemedColor(out ? Theme.key_chat_messageTextOut : Theme.key_chat_messageTextIn));
+                canvas.drawText(hgramCoverName != null ? hgramCoverName : hgramInitials(currentMessageObject.customName != null ? currentMessageObject.customName : getAuthorName()).toString(), left + dp(10), top + dp(22), namePaint);
+            }
+        }
+
+        if (restoreToSponosoredAlpha != -1) {
                 canvas.restoreToCount(restoreToSponosoredAlpha);
             }
         }
     }
 
+    private void logHgramSummarizeDrawContent() {
+        final MessageObject msg = currentMessageObject;
+        if (msg == null) return;
+        final int msgId = msg.getId();
+        if (!hgramSumContentLogged.add(msgId)) return;
+        final String text = msg.messageOwner == null ? null
+                : (!TextUtils.isEmpty(msg.messageOwner.message)
+                ? msg.messageOwner.message
+                : (msg.caption != null ? msg.caption.toString() : null));
+        Log.d("HGRAM_SUM", "drawContent msgId=" + msgId
+                + " calledFromDraw=true"
+                + " chain=" + (hgramShortChain != null)
+                + " isOut=" + (msg.messageOwner != null && msg.isOutOwner())
+                + " textLen=" + (text == null ? -1 : text.length())
+                + " words=" + xyz.nextalone.nagram.hgram.HgramSummarizer.wordCount(text)
+                + " minWords=" + xyz.nextalone.nagram.hgram.HgramConfig.getSummarizerMinWords()
+                + " enabled=" + xyz.nextalone.nagram.hgram.HgramConfig.isSummarizerEnabled()
+                + " antiPeekCfg=" + xyz.nextalone.nagram.hgram.HgramConfig.isAntiPeekActive()
+                + " antiPeekActive=" + xyz.nextalone.nagram.hgram.HgramAntiPeek.isActive()
+                + " secretSpace=" + xyz.nextalone.nagram.hgram.HgramSecretSpace.isActive()
+                + " result=" + drawSummarizeButton);
+    }
+
+    private void logHgramSummarizeTap(float x, float y, boolean hit, int action) {
+        Log.d("HGRAM_SUM", "TAP action=" + action
+                + " x=" + x
+                + " y=" + y
+                + " hit=" + hit
+                + " draw=" + drawSummarizeButton
+                + " bounds=[" + hgramSummarizeButtonBounds.left + "," + hgramSummarizeButtonBounds.top + ","
+                + hgramSummarizeButtonBounds.right + "," + hgramSummarizeButtonBounds.bottom + "]"
+                + " sideVisible=" + sideButtonVisible
+                + " side=" + drawSideButton
+                + " collapsed=" + hgramShortCollapsed);
+    }
+
+    private void logHgramSummarizeButton() {
+        final MessageObject msg = currentMessageObject;
+        if (msg == null) return;
+        final int msgId = msg.getId();
+        final boolean empty = hgramSummarizeButtonBounds.isEmpty();
+        final boolean out = msg.messageOwner != null && msg.isOutOwner();
+        final float bubbleWidth = hgramShortCollapsed ? hgramShortBubbleWidth : backgroundWidth;
+        final float bubbleL = xyz.nextalone.nagram.hgram.HgramSummarizer.bubbleLeft(
+                out, getMeasuredWidth(), bubbleWidth, !hgramShortCollapsed && isAvatarVisible);
+        final float bubbleR = bubbleL + bubbleWidth;
+        final float buttonSize = hgramSummarizeButtonBounds.width();
+        final float signedGap = out
+                ? bubbleL - hgramSummarizeButtonBounds.right
+                : hgramSummarizeButtonBounds.left - bubbleR;
+        final float gap = hgramSummarizeTier == 4 ? 0 : Math.max(0, signedGap);
+        final float overlap = hgramSummarizeTier == 4 ? 0 : Math.max(0, -signedGap);
+        final int key = msgId * 2 + (empty ? 0 : 1);
+        if (!hgramSumButtonLogged.add(key)) return;
+        Log.d("HGRAM_SUM", "drawButton msgId=" + msgId
+                + " calledFromDraw=true"
+                + " drawSummarizeButton=" + drawSummarizeButton
+                + " boundsEmpty=" + empty
+                + " bounds=[" + hgramSummarizeButtonBounds.left + "," + hgramSummarizeButtonBounds.top + ","
+                + hgramSummarizeButtonBounds.right + "," + hgramSummarizeButtonBounds.bottom + "]"
+                + " size=" + buttonSize + " gap=" + gap + " overlap=" + overlap + " tier=" + hgramSummarizeTier
+                + " bubbleL=" + bubbleL
+                + " bubbleR=" + bubbleR
+                + " bubbleW=" + bubbleWidth
+                + " earlyReturn=" + (!drawSummarizeButton || empty)
+                + " isOut=" + (msg.messageOwner != null && msg.isOutOwner())
+                + " layoutWidth=" + layoutWidth
+                + " layoutHeight=" + layoutHeight
+                + " cellW=" + getMeasuredWidth()
+                + " cellH=" + getHeight());
+    }
+
     private SummaryIcon summarizeIcon;
     public void drawSummarizeButton(Canvas canvas) {
-        summarizeButtonX = sideStartX;
-        summarizeButtonY = getPaddingTop() + dp(8);
-        summarizeButtonY = Math.max(Math.min(-childPosition2 + dp(4), sideStartY - dp(42)), summarizeButtonY);
+        updateHgramSummarizeButtonBounds();
+        drawHgramSummarizeButton(canvas);
+    }
 
-        if (drawSummarizeButton && sideButtonVisible) {
-            rect.set(summarizeButtonX, summarizeButtonY, summarizeButtonX + dp(32), summarizeButtonY + dp(32));
+    private void drawHgramSummarizeButton(Canvas canvas) {
+        logHgramSummarizeButton();
+        if (!drawSummarizeButton || hgramSummarizeButtonBounds.isEmpty()) return;
+        rect.set(hgramSummarizeButtonBounds);
+        summarizeButtonX = rect.left;
+        summarizeButtonY = rect.top;
+        final float radius = Math.min(dp(16), rect.width() / 2f);
 
-            applyServiceShaderMatrix();
-            canvas.drawRoundRect(rect, dp(16), dp(16), getThemedPaint(sideButtonPressed ? Theme.key_paint_chatActionBackgroundSelected : Theme.key_paint_chatActionBackground));
-            if (hasGradientService()) {
-                canvas.drawRoundRect(rect, dp(16), dp(16), Theme.chat_actionBackgroundGradientDarkenPaint);
-            }
-
-            if (summarizeIcon == null) {
-                summarizeIcon = new SummaryIcon(this);
-            }
-            final MessageObject msg = getMessageObject();
-            final boolean open = msg != null && msg.messageOwner != null && msg.messageOwner.summarizedOpen;
-            summarizeIcon.set(open);
-            setDrawableBounds(summarizeIcon, summarizeButtonX + dp(16) - summarizeIcon.getIntrinsicWidth() / 2f, summarizeButtonY + dp(16) - summarizeIcon.getIntrinsicHeight() / 2f);
-            summarizeIcon.draw(canvas);
+        applyServiceShaderMatrix();
+        canvas.drawRoundRect(rect, radius, radius, getThemedPaint(sideButtonPressed ? Theme.key_paint_chatActionBackgroundSelected : Theme.key_paint_chatActionBackground));
+        if (hasGradientService()) {
+            canvas.drawRoundRect(rect, radius, radius, Theme.chat_actionBackgroundGradientDarkenPaint);
         }
+
+        if (summarizeIcon == null) {
+            summarizeIcon = new SummaryIcon(this);
+        }
+        final MessageObject msg = getMessageObject();
+        final boolean open = msg != null && msg.messageOwner != null && msg.messageOwner.summarizedOpen;
+        summarizeIcon.set(open);
+        final float iconWidth = summarizeIcon.getIntrinsicWidth();
+        final float iconHeight = summarizeIcon.getIntrinsicHeight();
+        final float maxIconSize = Math.max(1, rect.width() - dp(8));
+        final float iconScale = Math.min(1f, Math.min(maxIconSize / Math.max(1, iconWidth), maxIconSize / Math.max(1, iconHeight)));
+        final int iconSave = canvas.save();
+        canvas.translate(rect.centerX(), rect.centerY());
+        canvas.scale(iconScale, iconScale);
+        summarizeIcon.setBounds((int) (-iconWidth / 2f), (int) (-iconHeight / 2f),
+                (int) (iconWidth / 2f), (int) (iconHeight / 2f));
+        summarizeIcon.draw(canvas);
+        canvas.restoreToCount(iconSave);
+    }
+
+    private void updateHgramSummarizeButtonBounds() {
+        hgramSummarizeButtonBounds.setEmpty();
+        hgramSummarizeTier = 0;
+        if (currentMessageObject == null) return;
+        if (hgramShortCollapsed) {
+            drawSummarizeButton = hgramShortChain != null
+                    && xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(
+                    currentMessageObject, hgramShortChain);
+            if (!drawSummarizeButton) return;
+            hgramSummarizeTier = xyz.nextalone.nagram.hgram.HgramSummarizer.summarizeBounds(
+                    hgramSummarizeButtonBounds, currentMessageObject.isOutOwner(),
+                    getMeasuredWidth(), hgramShortBubbleWidth, false,
+                    layoutHeight, 0, 0, getHeight(), dp(32), dp(8), dp(2));
+            return;
+        }
+        if (!drawSummarizeButton) return;
+        float reactions = 0;
+        if (currentMessageObject.shouldDrawReactions() && !reactionsLayoutInBubble.isSmall) {
+            reactions = reactionsLayoutInBubble.getCurrentTotalHeight(transitionParams.animateChangeProgress);
+        }
+        float bubbleTop = backgroundDrawableTop;
+        float bubbleBottom = backgroundDrawableBottom;
+        if (bubbleBottom <= bubbleTop) {
+            bubbleTop = 0;
+            bubbleBottom = layoutHeight + transitionParams.deltaBottom;
+        }
+        hgramSummarizeTier = xyz.nextalone.nagram.hgram.HgramSummarizer.summarizeBoundsAdaptive(
+                hgramSummarizeButtonBounds,
+                currentMessageObject.isOutOwner(), getMeasuredWidth(), backgroundWidth,
+                isAvatarVisible, bubbleTop, bubbleBottom, reactions,
+                getHeight(), dp(32), dp(8), dp(2));
+    }
+
+    private boolean isInHgramSummarizeButton(float x, float y) {
+        return drawSummarizeButton && hgramSummarizeButtonBounds != null
+                && xyz.nextalone.nagram.hgram.HgramSummarizer.isInsideButton(
+                hgramSummarizeButtonBounds, x, y, dp(4));
     }
 
     public float getSideButtonStartX() {
@@ -23835,7 +25093,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         if (currentPosition != null && (currentPosition.flags & MessageObject.POSITION_FLAG_LEFT) == 0 && !currentMessagesGroup.hasSibling) {
             endX += dp(14);
         }
-        drawCommentLayout(canvas, alpha);
+        if (!isHgramStandaloneAlbumGroup()) {
+            drawCommentLayout(canvas, alpha);
+        }
 
         if (captionLayout == null || selectionOnly && links.isEmpty() || (currentMessageObject.deleted && !drawingToBitmap && currentPosition != null) || alpha == 0) {
             return;
@@ -24084,6 +25344,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     }
 
     public boolean shouldDrawTimeOnMedia() {
+        if (isHgramStandaloneAlbumGroup()) return false;
         if (overideShouldDrawTimeOnMedia != 0) {
             return overideShouldDrawTimeOnMedia == 1;
         }
@@ -24377,7 +25638,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             }
 
             canvas.save();
-            canvas.translate(drawTimeX = timeTitleTimeX + additionalX, drawTimeY = timeY - dp(7.3f) - timeLayout.getHeight());
+            canvas.translate(drawTimeX = timeTitleTimeX + additionalX, drawTimeY = timeY - dp(7.3f) - timeLayout.getHeight()
+                            );
             SpoilerEffect.layoutDrawMaybe(timeLayout, canvas);
             canvas.restore();
             Theme.chat_timePaint.setAlpha(255);
@@ -24390,6 +25652,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             } else {
                 timeYOffset = -(drawCommentButton ? dp(43) : 0);
             }
+            timeYOffset -= hgramShortFooterHeight();
             float additionalX = -timeLayout.getLineLeft(0);
             if (currentMessageObject.shouldDrawReactions() && reactionsLayoutInBubble.isSmall) {
                 updateReactionLayoutPosition();
@@ -24469,7 +25732,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     Theme.chat_timePaint.setAlpha(oldAlpha);
                 }
             } else {
-                canvas.translate(drawTimeX = timeTitleTimeX + additionalX, drawTimeY = layoutHeight - dp(pinnedBottom || pinnedTop ? 7.5f : 6.5f) - timeLayout.getHeight() + timeYOffset);
+                canvas.translate(drawTimeX = timeTitleTimeX + additionalX, drawTimeY = layoutHeight - dp(pinnedBottom || pinnedTop ? 7.5f : 6.5f) - timeLayout.getHeight() + timeYOffset
+                        );
                 SpoilerEffect.layoutDrawMaybe(timeLayout, canvas);
             }
             canvas.restore();
@@ -24599,6 +25863,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
             return;
         }
         statusDrawableProgress = 0f;
+        if (statusDrawableAnimator != null) {
+            statusDrawableAnimator.removeAllListeners();
+            statusDrawableAnimator.cancel();
+        }
         statusDrawableAnimator = ValueAnimator.ofFloat(0, 1f);
         if (moveCheckTransition) {
             statusDrawableAnimator.setDuration(220);
@@ -24611,8 +25879,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         statusDrawableAnimator.addUpdateListener(valueAnimator -> {
             statusDrawableProgress = (float) valueAnimator.getAnimatedValue();
             invalidate();
-            if (fromParent && getParent() != null) {
-                ((View) getParent()).invalidate();
+            if (fromParent) {
+                invalidateParentArea(dp(16));
             }
         });
         statusDrawableAnimator.addListener(new AnimatorListenerAdapter() {
@@ -26873,6 +28141,20 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
 
     @Override
     public boolean performAccessibilityAction(int action, Bundle arguments) {
+        if (action == HGRAM_ACTION_COLLAPSE && hgramShortChain != null
+                && !hgramShortCollapsed && hgramShortToggle != null && currentMessageObject != null
+                && currentMessageObject.getId() == hgramShortChain.anchorId) {
+            hgramShortToggle.run();
+            return true;
+        }
+        if (action == HGRAM_ACTION_ALBUM_NEXT) {
+            advanceHgramAlbum(1);
+            return true;
+        }
+        if (action == HGRAM_ACTION_ALBUM_PREV) {
+            advanceHgramAlbum(-1);
+            return true;
+        }
         if (delegate != null && delegate.onAccessibilityAction(action, arguments)) {
             return false;
         }
@@ -26970,6 +28252,33 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     @Override
     public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
         super.onInitializeAccessibilityNodeInfo(info);
+        if (hgramShortChain != null && !hgramShortCollapsed && hgramShortToggle != null
+                && currentMessageObject != null
+                && currentMessageObject.getId() == hgramShortChain.anchorId
+                && hgramShortCollapseText != null) {
+            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                    HGRAM_ACTION_COLLAPSE, hgramShortCollapseText));
+        }
+        if (hgramAlbumReceivers != null && hgramAlbumReceivers.size() > 1) {
+            final int count = hgramAlbumReceivers.size();
+            final int current = (hgramAlbumIndex % count + count) % count;
+            final MessageObject albumMessage = getHgramAlbumMessage();
+            final boolean gif = albumMessage != null && albumMessage.isGif();
+            final boolean video = albumMessage != null && albumMessage.isVideo();
+            final CharSequence description = LocaleController.formatString(
+                    gif ? R.string.HgramAlbumGifOf
+                            : video ? R.string.HgramAlbumVideoOf : R.string.HgramAlbumPhotoOf,
+                    current + 1, count);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                info.setStateDescription(description);
+            } else {
+                info.setContentDescription(description);
+            }
+            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                    HGRAM_ACTION_ALBUM_NEXT, LocaleController.getString(R.string.HgramAlbumNext)));
+            info.addAction(new AccessibilityNodeInfo.AccessibilityAction(
+                    HGRAM_ACTION_ALBUM_PREV, LocaleController.getString(R.string.HgramAlbumPrevious)));
+        }
     }
 
     @Override
@@ -27324,6 +28633,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
         public static final int CONTACT_VIEW = 491;
         public static final int CONTACT_ADD = 490;
         public static final int CONTACT_MESSAGE = 489;
+        private boolean hgramIsAntiPeekHiddenA11yChild(int id) {
+            return id == PROFILE || id == FORWARD || id == REPLY || id == CONTACT
+                    || id >= LINK_IDS_START && id < LINK_CAPTION_IDS_START + 1000
+                    || id >= RICH_MEDIA_START;
+        }
         private Path linkPath = new Path();
         private RectF rectF = new RectF();
         private Rect rect = new Rect();
@@ -27378,8 +28692,11 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 final boolean unread = currentMessageObject != null && currentMessageObject.isOut() && !currentMessageObject.scheduled && currentMessageObject.isUnread();
                 final boolean contentUnread = currentMessageObject != null && currentMessageObject.isContentUnread();
                 final long fileSize = currentMessageObject != null ? currentMessageObject.loadedFileSize : 0;
-                if (accessibilityText == null || accessibilityTextUnread != unread || accessibilityTextContentUnread != contentUnread || accessibilityTextFileSize != fileSize) {
+                if (accessibilityText == null || accessibilityTextUnread != unread || accessibilityTextContentUnread != contentUnread || accessibilityTextFileSize != fileSize || accessibilityTextAntiPeek != HgramConfig.isAntiPeekActive()) {
                     SpannableStringBuilder sb = new SpannableStringBuilder();
+                    if (HgramConfig.isAntiPeekActive()) {
+                        sb.append(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                    } else {
                     if (isChat && currentUser != null && !currentMessageObject.isOut()) {
                         sb.append(UserObject.getUserName(currentUser));
                         sb.setSpan(new ProfileSpan(currentUser), 0, sb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
@@ -27619,10 +28936,12 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         };
                         sb.setSpan(underlineSpan, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
                     }
+                    }
                     accessibilityText = sb;
                     accessibilityTextUnread = unread;
                     accessibilityTextContentUnread = contentUnread;
                     accessibilityTextFileSize = fileSize;
+                    accessibilityTextAntiPeek = HgramConfig.isAntiPeekActive();
                 }
 
                 if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
@@ -27682,7 +29001,8 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     seekBarAccessibilityDelegate.onInitializeAccessibilityNodeInfoInternal(info);
                 }
                 //smallest ids should be added at first,because talkback can focus on it not always in correct order
-                if (forwardedNameLayout[1] != null) {
+                final boolean hgramA11yMasked = HgramConfig.isAntiPeekActive();
+                if (!hgramA11yMasked && forwardedNameLayout[1] != null) {
                     info.addChild(ChatMessageCell.this, FORWARD);
                 }
 
@@ -27691,7 +29011,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 }
 
                 int i;
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                if (!hgramA11yMasked && Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
                     if (isChat && currentUser != null && !currentMessageObject.isOut()) {
                         info.addChild(ChatMessageCell.this, PROFILE);
                     }
@@ -27731,7 +29051,9 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     info.addChild(ChatMessageCell.this, INSTANT_VIEW);
                 }
                 if (drawContact && contactRect != null && !contactRect.isEmpty()) {
-                    info.addChild(ChatMessageCell.this, CONTACT);
+                    if (!hgramA11yMasked) {
+                        info.addChild(ChatMessageCell.this, CONTACT);
+                    }
                     if (contactButtons != null && contactButtons.size() > 1) {
                         for (InstantViewButton instantViewButton : contactButtons) {
                             if (drawContactView && instantViewButton.type == INSTANT_BUTTON_TYPE_CONTACT_VIEW && !instantViewButton.rect.isEmpty()) {
@@ -27752,10 +29074,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 if (drawSideButton == 1 || drawSideButton == 2) {
                     info.addChild(ChatMessageCell.this, SHARE);
                 }
-                if (replyNameLayout != null) {
+                if (!hgramA11yMasked && replyNameLayout != null) {
                     info.addChild(ChatMessageCell.this, REPLY);
                 }
-                if (currentMessageObject != null && currentMessageObject.richLayout != null) {
+                if (!hgramA11yMasked && currentMessageObject != null && currentMessageObject.richLayout != null) {
                     final RichMessageLayout richLayout = currentMessageObject.richLayout;
                     int acc = 0;
                     for (int b = 0; b < richLayout.blocks.size(); b++) {
@@ -27778,11 +29100,17 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 }
                 return info;
             } else {
+                if (HgramConfig.isAntiPeekActive() && hgramIsAntiPeekHiddenA11yChild(virtualViewId)) {
+                    return null;
+                }
                 AccessibilityNodeInfo info = AccessibilityNodeInfo.obtain();
                 info.setSource(ChatMessageCell.this, virtualViewId);
                 info.setParent(ChatMessageCell.this);
                 info.setPackageName(getContext().getPackageName());
                 if (virtualViewId == PROFILE) {
+                    if (HgramConfig.isAntiPeekActive()) {
+                        return null;
+                    }
                     if (currentUser == null) {
                         return null;
                     }
@@ -27917,6 +29245,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     }
 
                     info.setText(button.title.getText());
+                    if (HgramConfig.isAntiPeekActive()) {
+                        info.setText(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                        info.setContentDescription(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                    }
                     info.setClassName("android.widget.Button");
                     info.setEnabled(true);
                     info.setClickable(true);
@@ -27953,6 +29285,10 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                         }
                     }
                     info.setText(sb);
+                    if (HgramConfig.isAntiPeekActive()) {
+                        info.setText(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                        info.setContentDescription(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                    }
                     info.setEnabled(true);
                     info.addAction(AccessibilityNodeInfo.ACTION_CLICK);
 
@@ -27999,7 +29335,7 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                     info.setClassName("android.widget.Button");
                     info.setEnabled(true);
                     if (titleLayout != null) {
-                        info.setText(titleLayout.getText());
+                        info.setText(HgramConfig.isAntiPeekActive() ? LocaleController.getString(R.string.HgramAntiPeekHidden) : titleLayout.getText());
                     }
                     info.addAction(AccessibilityNodeInfo.ACTION_CLICK);
                     contactRect.round(rect);
@@ -29513,6 +30849,19 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     }
 
     protected boolean drawPhotoImage(Canvas canvas) {
+        if (isHgramCompactAlbumFooterCell()) {
+            return true;
+        }
+        if (HgramConfig.isAntiPeekActive()) {
+            Paint coverPaint = hgramCoverPaint;
+            coverPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
+            AndroidUtilities.rectTmp.set(photoImage.getImageX(), photoImage.getImageY(), photoImage.getImageX2(), photoImage.getImageY2());
+            canvas.drawRoundRect(AndroidUtilities.rectTmp, dp(8), dp(8), coverPaint);
+            return false;
+        }
+        if (drawHgramAlbum(canvas)) {
+            return true;
+        }
         if (currentMessageObject != null && currentMessageObject.isLivePhoto()) {
             final AnimatedFileDrawable animation = photoImage.getAnimation();
             if (animation != null && animation.getDurationMs() > 0) {

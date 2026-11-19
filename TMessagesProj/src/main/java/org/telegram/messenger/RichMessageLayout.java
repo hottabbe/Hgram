@@ -6474,7 +6474,8 @@ public class RichMessageLayout {
             canvas.restore();
 
             if (view != null) {
-                view.invalidate();
+                // Nagram: shimmer runs at ~30fps instead of every vsync to keep the chat list smooth
+                view.postInvalidateDelayed(33);
             }
         }
 

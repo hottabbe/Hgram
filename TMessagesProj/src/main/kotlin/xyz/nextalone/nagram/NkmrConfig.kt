@@ -4,16 +4,20 @@ import android.content.Context
 import android.content.SharedPreferences
 import org.telegram.messenger.ApplicationLoader
 import java.util.IdentityHashMap
+import java.util.concurrent.ConcurrentHashMap
 
 object NkmrConfig {
     private const val USER_PREFERENCES_NAME = "nkmrcfg"
     private const val DEFAULT_PREFERENCES_NAME = "nkmrcfg_default"
 
     private val lock = Any()
+    private val NULL_SENTINEL = Any()
+    private val memoryDefaults = ConcurrentHashMap<String, Any>()
+
     private val listenerWrappers = IdentityHashMap<
-        SharedPreferences.OnSharedPreferenceChangeListener,
-        SharedPreferences.OnSharedPreferenceChangeListener,
-    >()
+            SharedPreferences.OnSharedPreferenceChangeListener,
+            SharedPreferences.OnSharedPreferenceChangeListener,
+            >()
     private val userPreferences = ApplicationLoader.applicationContext.getSharedPreferences(
         USER_PREFERENCES_NAME,
         Context.MODE_PRIVATE,
@@ -29,11 +33,11 @@ object NkmrConfig {
     @JvmStatic
     fun compact() {
         synchronized(lock) {
-            val defaults = defaultPreferences.all
             val editor = userPreferences.edit()
             var changed = false
             userPreferences.all.forEach { (key, value) ->
-                if (defaults.containsKey(key) && valuesEqual(value, defaults[key])) {
+                val defVal = getRegisteredDefault(key)
+                if (defVal !== NULL_SENTINEL && valuesEqual(value, defVal)) {
                     editor.remove(key)
                     changed = true
                 }
@@ -47,21 +51,27 @@ object NkmrConfig {
     @JvmStatic
     fun clear() {
         synchronized(lock) {
-            userPreferences.edit().clear().commit()
-            defaultPreferences.edit().clear().commit()
+            memoryDefaults.clear()
+            userPreferences.edit().clear().apply()
+            defaultPreferences.edit().clear().apply()
         }
     }
 
     private fun registerDefault(key: String, value: Any?) {
-        synchronized(lock) {
-            val storedDefault = defaultPreferences.all[key]
-            if (!defaultPreferences.contains(key) || !valuesEqual(storedDefault, value)) {
-                putValue(defaultPreferences.edit(), key, value).commit()
-            }
-            if (userPreferences.contains(key) && valuesEqual(userPreferences.all[key], value)) {
-                userPreferences.edit().remove(key).apply()
-            }
+        val stored = when (value) {
+            null -> NULL_SENTINEL
+            is Set<*> -> HashSet(value)
+            else -> value
         }
+        memoryDefaults[key] = stored
+    }
+
+    private fun getRegisteredDefault(key: String): Any? {
+        val mem = memoryDefaults[key]
+        if (mem != null) {
+            return if (mem === NULL_SENTINEL) null else mem
+        }
+        return if (defaultPreferences.contains(key)) defaultPreferences.all[key] else NULL_SENTINEL
     }
 
     private fun valuesEqual(first: Any?, second: Any?): Boolean {
@@ -98,65 +108,44 @@ object NkmrConfig {
         override fun getAll(): Map<String, *> =
             HashMap<String, Any?>().apply {
                 putAll(defaultPreferences.all)
+                memoryDefaults.forEach { (k, v) ->
+                    put(k, if (v === NULL_SENTINEL) null else v)
+                }
                 putAll(userPreferences.all)
             }
 
         override fun getString(key: String, defValue: String?): String? {
             registerDefault(key, defValue)
-            return if (userPreferences.contains(key)) {
-                userPreferences.getString(key, defValue)
-            } else {
-                defValue
-            }
+            return userPreferences.getString(key, defValue)
         }
 
         override fun getStringSet(key: String, defValues: Set<String>?): Set<String>? {
             registerDefault(key, defValues)
-            return if (userPreferences.contains(key)) {
-                userPreferences.getStringSet(key, defValues)
-            } else {
-                defValues
-            }
+            return userPreferences.getStringSet(key, defValues)
         }
 
         override fun getInt(key: String, defValue: Int): Int {
             registerDefault(key, defValue)
-            return if (userPreferences.contains(key)) {
-                userPreferences.getInt(key, defValue)
-            } else {
-                defValue
-            }
+            return userPreferences.getInt(key, defValue)
         }
 
         override fun getLong(key: String, defValue: Long): Long {
             registerDefault(key, defValue)
-            return if (userPreferences.contains(key)) {
-                userPreferences.getLong(key, defValue)
-            } else {
-                defValue
-            }
+            return userPreferences.getLong(key, defValue)
         }
 
         override fun getFloat(key: String, defValue: Float): Float {
             registerDefault(key, defValue)
-            return if (userPreferences.contains(key)) {
-                userPreferences.getFloat(key, defValue)
-            } else {
-                defValue
-            }
+            return userPreferences.getFloat(key, defValue)
         }
 
         override fun getBoolean(key: String, defValue: Boolean): Boolean {
             registerDefault(key, defValue)
-            return if (userPreferences.contains(key)) {
-                userPreferences.getBoolean(key, defValue)
-            } else {
-                defValue
-            }
+            return userPreferences.getBoolean(key, defValue)
         }
 
         override fun contains(key: String): Boolean =
-            userPreferences.contains(key) || defaultPreferences.contains(key)
+            userPreferences.contains(key) || memoryDefaults.containsKey(key) || defaultPreferences.contains(key)
 
         override fun edit(): SharedPreferences.Editor = CompactingEditor()
 
@@ -260,9 +249,9 @@ object NkmrConfig {
                 if (shouldClear) {
                     editor.clear()
                 }
-                val defaults = defaultPreferences.all
                 pendingChanges.forEach { (key, value) ->
-                    if (value != null && defaults.containsKey(key) && valuesEqual(value, defaults[key])) {
+                    val defVal = getRegisteredDefault(key)
+                    if (value != null && defVal !== NULL_SENTINEL && valuesEqual(value, defVal)) {
                         editor.remove(key)
                     } else {
                         putValue(editor, key, value)

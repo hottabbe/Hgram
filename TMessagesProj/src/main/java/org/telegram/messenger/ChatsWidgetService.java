@@ -33,6 +33,8 @@ import org.telegram.ui.EditWidgetActivity;
 import java.io.File;
 import java.util.ArrayList;
 
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
+
 public class ChatsWidgetService extends RemoteViewsService {
     @Override
     public RemoteViewsFactory onGetViewFactory(Intent intent) {
@@ -393,6 +395,14 @@ class ChatsRemoteViewsFactory implements RemoteViewsService.RemoteViewsFactory {
         ArrayList<TLRPC.Chat> chats = new ArrayList<>();
         LongSparseArray<TLRPC.Message> messages = new LongSparseArray<>();
         accountInstance.getMessagesStorage().getWidgetDialogs(appWidgetId, 0, dids, dialogs, messages, users, chats);
+        final int widgetAccount = accountInstance.getCurrentAccount();
+        for (int i = dids.size() - 1; i >= 0; i--) {
+            final long dialogId = dids.get(i);
+            if (!HgramSecretSpace.isVisible(widgetAccount, dialogId)) {
+                dids.remove(i);
+                messages.remove(dialogId);
+            }
+        }
         accountInstance.getMessagesController().putUsers(users, true);
         accountInstance.getMessagesController().putChats(chats, true);
         messageObjects.clear();

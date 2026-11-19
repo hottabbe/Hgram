@@ -26,6 +26,7 @@ import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Components.AvatarDrawable;
 import org.telegram.ui.EditWidgetActivity;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -237,6 +238,15 @@ class ContactsRemoteViewsFactory implements RemoteViewsService.RemoteViewsFactor
         ArrayList<TLRPC.Chat> chats = new ArrayList<>();
         LongSparseArray<TLRPC.Message> messages = new LongSparseArray<>();
         accountInstance.getMessagesStorage().getWidgetDialogs(appWidgetId, 1, dids, dialogs, messages, users, chats);
+        final int account = accountInstance.getCurrentAccount();
+        for (int i = dids.size() - 1; i >= 0; i--) {
+            final long dialogId = dids.get(i);
+            if (!HgramSecretSpace.isVisible(account, dialogId)) {
+                dids.remove(i);
+                dialogs.remove(dialogId);
+                messages.remove(dialogId);
+            }
+        }
         accountInstance.getMessagesController().putUsers(users, true);
         accountInstance.getMessagesController().putChats(chats, true);
     }

@@ -1085,10 +1085,15 @@ public class GalleryListView extends FrameLayout implements NotificationCenter.N
         private static int allQueuesIndex;
 
         private static final HashMap<String, Integer> bitmapsUseCounts = new HashMap<>();
-        private static final LruCache<String, Bitmap> bitmapsCache = new LruCache<String, Bitmap>(45) {
+        private static final LruCache<String, Bitmap> bitmapsCache = new LruCache<String, Bitmap>(24 * 1024 * 1024) {
+            @Override
+            protected int sizeOf(String key, Bitmap value) {
+                return value != null ? Math.max(1, value.getByteCount()) : 1;
+            }
+
             @Override
             protected void entryRemoved(boolean evicted, String key, Bitmap oldValue, Bitmap newValue) {
-                if (oldValue.isRecycled() || bitmapsUseCounts.containsKey(key)) {
+                if (oldValue == null || oldValue.isRecycled() || bitmapsUseCounts.containsKey(key)) {
                     return;
                 }
                 oldValue.recycle();

@@ -17,6 +17,8 @@ import org.telegram.messenger.Utilities;
 
 public class GooglePushListenerServiceProvider implements PushListenerController.IPushListenerServiceProvider {
 
+    private static final int MAX_TOKEN_RETRIES = 3;
+
     private Boolean hasServices;
 
     public GooglePushListenerServiceProvider() {}
@@ -43,30 +45,38 @@ public class GooglePushListenerServiceProvider implements PushListenerController
                 FileLog.d("FCM Registration not found.");
             }
         }
-        Utilities.globalQueue.postRunnable(() -> {
-            try {
-                SharedConfig.pushStringGetTimeStart = SystemClock.elapsedRealtime();
-                FirebaseApp.initializeApp(ApplicationLoader.applicationContext);
-                FirebaseMessaging.getInstance().getToken()
-                        .addOnCompleteListener(task -> {
-                            SharedConfig.pushStringGetTimeEnd = SystemClock.elapsedRealtime();
-                            if (!task.isSuccessful()) {
-                                if (BuildVars.LOGS_ENABLED) {
-                                    FileLog.d("Failed to get regid");
-                                }
-                                SharedConfig.pushStringStatus = "__FIREBASE_FAILED__";
-                                PushListenerController.sendRegistrationToServer(getPushType(), null);
-                                return;
-                            }
-                            String token = task.getResult();
-                            if (!TextUtils.isEmpty(token)) {
-                                PushListenerController.sendRegistrationToServer(getPushType(), token);
-                            }
-                        });
-            } catch (Throwable e) {
-                FileLog.e(e);
+        Utilities.globalQueue.postRunnable(() -> requestToken(0));
+    }
+
+    private void requestToken(int attempt) {
+        try {
+            SharedConfig.pushStringGetTimeStart = SystemClock.elapsedRealtime();
+            FirebaseApp.initializeApp(ApplicationLoader.applicationContext);
+            FirebaseMessaging.getInstance().getToken().addOnCompleteListener(task -> {
+                SharedConfig.pushStringGetTimeEnd = SystemClock.elapsedRealtime();
+                if (!task.isSuccessful() || TextUtils.isEmpty(task.getResult())) {
+                    Exception error = task.getException();
+                    if (error != null) {
+                        FileLog.e("Failed to get FCM registration token", error);
+                    }
+                    SharedConfig.pushStringStatus = "__FIREBASE_FAILED__";
+                    // A transient token fetch failure must not unregister a previously working token.
+                    if (attempt < MAX_TOKEN_RETRIES) {
+                        long delay = 2_000L << attempt;
+                        Utilities.globalQueue.postRunnable(() -> requestToken(attempt + 1), delay);
+                    }
+                    return;
+                }
+                String token = task.getResult();
+                SharedConfig.pushStringStatus = "";
+                PushListenerController.sendRegistrationToServer(getPushType(), token);
+            });
+        } catch (Throwable e) {
+            FileLog.e(e);
+            if (attempt < MAX_TOKEN_RETRIES) {
+                Utilities.globalQueue.postRunnable(() -> requestToken(attempt + 1), 2_000L << attempt);
             }
-        });
+        }
     }
 
     @Override

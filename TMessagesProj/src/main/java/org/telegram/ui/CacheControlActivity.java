@@ -86,6 +86,7 @@ import org.telegram.messenger.FileLog;
 import org.telegram.messenger.FilePathDatabase;
 import org.telegram.messenger.FilePathDatabase;
 import org.telegram.messenger.ImageLoader;
+import xyz.nextalone.nagram.hgram.HgramSecretCache;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessageObject;
@@ -1150,6 +1151,7 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
             }
         }
         final boolean imagesClearedFinal = imagesCleared;
+        cacheSize += HgramSecretCache.size();
         totalSize = lastTotalSizeCalculated = cacheSize + cacheTempSize + logsSize + videoSize + audioSize + photoSize + documentsSize + musicSize + stickersCacheSize + storiesSize;
         lastTotalSizeCalculatedTime = System.currentTimeMillis();
         Arrays.fill(selected, true);
@@ -1163,6 +1165,10 @@ public class CacheControlActivity extends BaseFragment implements NotificationCe
         totalDeviceSize = blocksTotal * blockSize;
         totalDeviceFreeSize = availableBlocks * blockSize;
         long finalClearedSize = clearedSize;
+
+        if (selected[0] || selected[1] || selected[2] || selected[4] || selected[5] || selected[7] || selected[8]) {
+            HgramSecretCache.clear();
+        }
 
         if (allItemsClear) {
             FileLoader.getInstance(currentAccount).clearFilePaths();

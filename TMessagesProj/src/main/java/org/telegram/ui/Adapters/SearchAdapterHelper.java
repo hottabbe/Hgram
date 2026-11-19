@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -578,6 +579,45 @@ public class SearchAdapterHelper {
         object = groupSearchMap.get(userId);
         if (object != null) {
             groupSearch.remove(object);
+        }
+    }
+
+    public void hgramFilterHiddenResults(Predicate<Object> predicate) {
+        for (int i = globalSearch.size() - 1; i >= 0; i--) {
+            if (!predicate.test(globalSearch.get(i))) {
+                globalSearch.remove(i);
+            }
+        }
+        for (int i = localServerSearch.size() - 1; i >= 0; i--) {
+            if (!predicate.test(localServerSearch.get(i))) {
+                localServerSearch.remove(i);
+            }
+        }
+        for (int i = groupSearch.size() - 1; i >= 0; i--) {
+            if (!predicate.test(groupSearch.get(i))) {
+                groupSearch.remove(i);
+            }
+        }
+        for (int i = globalSearchMap.size() - 1; i >= 0; i--) {
+            if (!predicate.test(globalSearchMap.valueAt(i))) {
+                globalSearchMap.removeAt(i);
+            }
+        }
+        for (int i = groupSearchMap.size() - 1; i >= 0; i--) {
+            if (!predicate.test(groupSearchMap.valueAt(i))) {
+                groupSearchMap.removeAt(i);
+            }
+        }
+        for (int i = phonesSearch.size() - 1; i >= 0; i--) {
+            final Object object = phonesSearch.get(i);
+            if (!(object instanceof String) && !predicate.test(object)) {
+                phonesSearch.remove(i);
+            }
+        }
+        for (int i = phoneSearchMap.size() - 1; i >= 0; i--) {
+            if (!predicate.test(phoneSearchMap.valueAt(i))) {
+                phoneSearchMap.removeAt(i);
+            }
         }
     }
 

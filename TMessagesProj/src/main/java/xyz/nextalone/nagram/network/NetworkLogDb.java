@@ -38,26 +38,25 @@ public class NetworkLogDb {
 
             long count = box.count();
             if (count > MAX_LOGS) {
-                Query<NetworkLogItem> query = box.query()
+                try (Query<NetworkLogItem> query = box.query()
                         .orderDesc(NetworkLogItem_.timestamp)
-                        .build();
-                List<NetworkLogItem> allLogs = query.find();
-                if (allLogs.size() > MAX_LOGS) {
-                    List<NetworkLogItem> toDelete = allLogs.subList(MAX_LOGS, allLogs.size());
-                    for (NetworkLogItem log : toDelete) {
-                        box.remove(log);
+                        .build()) {
+                    long toRemoveCount = count - MAX_LOGS;
+                    List<NetworkLogItem> oldestLogs = query.find(MAX_LOGS, toRemoveCount);
+                    if (!oldestLogs.isEmpty()) {
+                        box.remove(oldestLogs);
                     }
                 }
-                query.close();
             }
         });
     }
 
     public static List<NetworkLogItem> getAll() {
-        return getBox().query()
+        try (Query<NetworkLogItem> query = getBox().query()
                 .orderDesc(NetworkLogItem_.timestamp)
-                .build()
-                .find();
+                .build()) {
+            return query.find();
+        }
     }
 
     public static List<NetworkLogItem> search(String keyword) {
@@ -68,7 +67,7 @@ public class NetworkLogDb {
         int statusCode = parseStatusCode(keyword);
 
         if (statusCode >= 0) {
-            return getBox().query()
+            try (Query<NetworkLogItem> query = getBox().query()
                     .contains(NetworkLogItem_.url, keyword, io.objectbox.query.QueryBuilder.StringOrder.CASE_INSENSITIVE)
                     .or()
                     .contains(NetworkLogItem_.method, keyword, io.objectbox.query.QueryBuilder.StringOrder.CASE_INSENSITIVE)
@@ -77,18 +76,20 @@ public class NetworkLogDb {
                     .or()
                     .equal(NetworkLogItem_.statusCode, (long) statusCode)
                     .orderDesc(NetworkLogItem_.timestamp)
-                    .build()
-                    .find();
+                    .build()) {
+                return query.find();
+            }
         } else {
-            return getBox().query()
+            try (Query<NetworkLogItem> query = getBox().query()
                     .contains(NetworkLogItem_.url, keyword, io.objectbox.query.QueryBuilder.StringOrder.CASE_INSENSITIVE)
                     .or()
                     .contains(NetworkLogItem_.method, keyword, io.objectbox.query.QueryBuilder.StringOrder.CASE_INSENSITIVE)
                     .or()
                     .contains(NetworkLogItem_.responseBody, keyword, io.objectbox.query.QueryBuilder.StringOrder.CASE_INSENSITIVE)
                     .orderDesc(NetworkLogItem_.timestamp)
-                    .build()
-                    .find();
+                    .build()) {
+                return query.find();
+            }
         }
     }
 

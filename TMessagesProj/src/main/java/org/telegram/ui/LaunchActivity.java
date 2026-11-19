@@ -33,6 +33,12 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
+import android.graphics.Typeface;
+import android.graphics.RenderEffect;
+import android.graphics.Shader;
+import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.media.AudioManager;
 import android.net.Uri;
@@ -69,6 +75,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 import android.window.BackEvent;
 import android.window.OnBackAnimationCallback;
@@ -110,6 +117,7 @@ import org.telegram.messenger.ChannelBoostsController;
 import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.ContactsController;
 import org.telegram.messenger.ContactsLoadingObserver;
+import org.telegram.messenger.ContactsWidgetProvider;
 import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.FileLog;
@@ -143,6 +151,7 @@ import org.telegram.messenger.pip.activity.IPipActivityHandler;
 import org.telegram.messenger.pip.activity.IPipActivityListener;
 import org.telegram.messenger.utils.FrameMetricsOverlayView;
 import org.telegram.messenger.utils.LeakDetector;
+import org.telegram.messenger.utils.PerfLogger;
 import org.telegram.messenger.utils.WindowVisibilityManager;
 import org.telegram.messenger.video.VideoAds;
 import org.telegram.messenger.voip.VideoCapturerDevice;
@@ -233,9 +242,6 @@ import org.telegram.ui.Stories.recorder.StoryEntry;
 import org.telegram.ui.Stories.recorder.StoryRecorder;
 import org.telegram.ui.Stories.LiveStoryPipOverlay;
 import org.telegram.ui.TON.TONIntroActivity;
-import org.telegram.ui.Wallet.GramWalletStorageAuth;
-import org.telegram.ui.Wallet.WalletActivity;
-import org.telegram.ui.Wallet.WalletSendSelectSender;
 import org.telegram.ui.bots.BotWebViewAttachedSheet;
 import org.telegram.ui.bots.BotWebViewSheet;
 import org.telegram.ui.bots.WebViewRequestProps;
@@ -265,6 +271,7 @@ import cn.hutool.core.util.StrUtil;
 import kotlin.Unit;
 import kotlin.text.StringsKt;
 import tw.nekomimi.nekogram.helpers.SettingsHelper;
+import tw.nekomimi.nekogram.helpers.PasscodeHelper;
 import tw.nekomimi.nekogram.helpers.remote.ChatExtraButtonsHelper;
 import tw.nekomimi.nekogram.helpers.remote.EmojiHelper;
 import tw.nekomimi.nekogram.helpers.remote.ExtendedHelper;
@@ -284,6 +291,8 @@ import tw.nekomimi.nekogram.utils.ProxyUtil;
 import tw.nekomimi.nekogram.utils.UIUtil;
 import tw.nekomimi.nekogram.utils.UpdateUtil;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 import xyz.nextalone.nagram.helper.ExternalStickerCacheHelper;
 
 public class LaunchActivity extends BasePermissionsActivity implements INavigationLayout.INavigationLayoutDelegate, NotificationCenter.NotificationCenterDelegate, DialogsActivity.DialogsActivityDelegate, IPipActivity {
@@ -350,6 +359,16 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     private FireworksOverlay fireworksOverlay;
     private BottomSheetTabsOverlay bottomSheetTabsOverlay;
     public DrawerLayoutContainer drawerLayoutContainer;
+    private View hgramPinnedView;
+    private View hgramAntiPeekOverlay;
+    private View hgramDecoyWorkspace;
+    private String hgramPinnedText;
+    private long hgramPinnedDialogId;
+    private int hgramPinnedMessageId;
+    private long hgramLastHeaderTapTime;
+    private float hgramLastHeaderTapX;
+    private float hgramLastHeaderTapY;
+
     private PasscodeViewDialog passcodeDialog;
     private List<PasscodeView> overlayPasscodeViews = new ArrayList<>();
     private TermsOfServiceView termsOfServiceView;
@@ -421,6 +440,186 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
     public static LaunchActivity instance;
 
+    public void showHgramPinnedMessage(String text, long dialogId, int messageId) {
+        if (!HgramConfig.isPinToScreenEnabled() || frameLayout == null || TextUtils.isEmpty(text)) {
+            return;
+        }
+        hgramPinnedText = text.length() > 700 ? text.substring(0, 700) : text;
+        hgramPinnedDialogId = dialogId;
+        hgramPinnedMessageId = messageId;
+        if (hgramPinnedView != null && hgramPinnedView.getParent() instanceof ViewGroup) {
+            ((ViewGroup) hgramPinnedView.getParent()).removeView(hgramPinnedView);
+        }
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(10), dp(8), dp(4), dp(8));
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+        background.setCornerRadius(dp(14));
+        background.setStroke(dp(1), Theme.getColor(Theme.key_divider));
+        card.setBackground(background);
+        card.setElevation(dp(4));
+        card.setClickable(true);
+        card.setOnClickListener(v -> openHgramPinnedMessage());
+
+        View accent = new View(this);
+        accent.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText));
+        LinearLayout.LayoutParams accentParams = new LinearLayout.LayoutParams(dp(3), dp(36));
+        accentParams.rightMargin = dp(10);
+        card.addView(accent, accentParams);
+
+        LinearLayout details = new LinearLayout(this);
+        details.setOrientation(LinearLayout.VERTICAL);
+        details.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText(R.string.HgramPinnedLabel);
+        title.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlueText));
+        title.setTextSize(11);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        TextView textView = new TextView(this);
+        textView.setText(hgramPinnedText);
+        textView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText));
+        textView.setTextSize(14);
+        textView.setMaxLines(1);
+        textView.setEllipsize(TextUtils.TruncateAt.END);
+        details.addView(title, new LinearLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+        LinearLayout.LayoutParams snippetParams = new LinearLayout.LayoutParams(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT);
+        snippetParams.topMargin = dp(2);
+        details.addView(textView, snippetParams);
+        card.addView(details, new LinearLayout.LayoutParams(0, LayoutHelper.WRAP_CONTENT, 1f));
+
+        ImageView copy = createHgramPillButton(R.drawable.msg_copy, LocaleController.getString(R.string.Copy));
+        copy.setOnClickListener(v -> {
+            AndroidUtilities.addToClipboard(hgramPinnedText);
+            Toast.makeText(this, LocaleController.getString(R.string.TextCopied), Toast.LENGTH_SHORT).show();
+        });
+        card.addView(copy, new LinearLayout.LayoutParams(dp(36), dp(36)));
+
+        ImageView close = createHgramPillButton(R.drawable.msg_close, LocaleController.getString(R.string.Close));
+        close.setOnClickListener(v -> clearHgramPinnedMessage());
+        card.addView(close, new LinearLayout.LayoutParams(dp(36), dp(36)));
+
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        params.leftMargin = params.rightMargin = dp(12);
+        params.topMargin = AndroidUtilities.statusBarHeight + dp(54);
+        frameLayout.addView(card, params);
+        hgramPinnedView = card;
+    }
+
+    private ImageView createHgramPillButton(int drawable, String description) {
+        ImageView view = new ImageView(this);
+        view.setImageResource(drawable);
+        view.setScaleType(ImageView.ScaleType.CENTER);
+        view.setColorFilter(new PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText), PorterDuff.Mode.SRC_IN));
+        view.setBackground(Theme.createSelectorDrawable(Theme.getColor(Theme.key_listSelector), Theme.RIPPLE_MASK_CIRCLE_AUTO));
+        view.setContentDescription(description);
+        return view;
+    }
+
+    private void openHgramPinnedMessage() {
+        if (hgramPinnedDialogId == 0 || hgramPinnedMessageId == 0) {
+            return;
+        }
+        Bundle args = new Bundle();
+        long dialogId = hgramPinnedDialogId;
+        if (dialogId > 0) {
+            args.putLong("user_id", dialogId);
+        } else {
+            args.putLong("chat_id", -dialogId);
+        }
+        args.putInt("message_id", hgramPinnedMessageId);
+        clearHgramPinnedMessage();
+        presentFragment(new ChatActivity(args), false, true);
+    }
+
+    public void clearHgramPinnedMessage() {
+        hgramPinnedText = null;
+        hgramPinnedDialogId = 0;
+        hgramPinnedMessageId = 0;
+        if (hgramPinnedView != null && hgramPinnedView.getParent() instanceof ViewGroup) {
+            ((ViewGroup) hgramPinnedView.getParent()).removeView(hgramPinnedView);
+        }
+        hgramPinnedView = null;
+    }
+
+    private void showHgramDecoyWorkspace() {
+        // Second PIN is a filtered space, not an overlay. DialogsActivity applies the filter.
+        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.dialogsNeedReload);
+        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_AVATAR | MessagesController.UPDATE_MASK_NAME);
+        final int restoreAccount = UserConfig.selectedAccount;
+        Utilities.globalQueue.postRunnable(() -> {
+            try {
+                MediaDataController.getInstance(restoreAccount).restoreShortcutsForHiddenDialogs();
+            } catch (Throwable e) {
+                FileLog.e(e);
+            }
+        });
+        ContactsWidgetProvider.updateAllWidgets();
+    }
+
+    private void hideHgramDecoyWorkspace() {
+        closeHgramHiddenChats(actionBarLayout);
+        closeHgramHiddenChats(rightActionBarLayout);
+        closeHgramHiddenChats(layersActionBarLayout);
+        cleanupHgramConnectionServiceContacts();
+        cleanupHgramHiddenShortcuts();
+        ContactsWidgetProvider.updateAllWidgets();
+        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.dialogsNeedReload);
+        NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_AVATAR | MessagesController.UPDATE_MASK_NAME);
+    }
+
+    private void cleanupHgramConnectionServiceContacts() {
+        final int account = UserConfig.selectedAccount;
+        final ArrayList<Long> userIds = new ArrayList<>();
+        HgramSecretSpace.forEachHidden(account, dialogId -> {
+            if (dialogId != null && dialogId > 0) {
+                userIds.add(dialogId);
+            }
+        });
+        if (userIds.isEmpty()) {
+            return;
+        }
+        Utilities.globalQueue.postRunnable(() -> ContactsController.getInstance(account).deleteConnectionServiceContacts(userIds));
+    }
+
+    private void cleanupHgramHiddenShortcuts() {
+        final int account = UserConfig.selectedAccount;
+        if (!UserConfig.getInstance(account).isClientActivated()) {
+            return;
+        }
+        Utilities.globalQueue.postRunnable(() ->
+                MediaDataController.getInstance(account).uninstallShortcutsForHiddenDialogs());
+    }
+
+    private void closeHgramHiddenChats(INavigationLayout layout) {
+        if (layout == null) {
+            return;
+        }
+        final int account = UserConfig.selectedAccount;
+        final List<BaseFragment> stack = new ArrayList<>(layout.getFragmentStack());
+        for (int i = stack.size() - 1; i >= 0; i--) {
+            final BaseFragment fragment = stack.get(i);
+            final long dialogId;
+            if (fragment instanceof ChatActivity) {
+                dialogId = ((ChatActivity) fragment).getDialogId();
+            } else if (fragment instanceof TopicsFragment) {
+                dialogId = ((TopicsFragment) fragment).getDialogId();
+            } else {
+                continue;
+            }
+            if (!HgramSecretSpace.canOpenDialog(account, dialogId)) {
+                layout.removeFragmentFromStack(fragment, true);
+            }
+        }
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        return super.dispatchTouchEvent(event);
+    }
+
     public boolean voipLaunchedInBackground;
 
     public WindowAnimatedInsetsProvider getRootAnimatedInsetsListener() {
@@ -448,6 +647,8 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         ApplicationLoader.postInitApplication();
         AndroidUtilities.checkDisplaySize(this, getResources().getConfiguration());
         currentAccount = UserConfig.selectedAccount;
+        HgramSecretSpace.warmUp();
+        cleanupHgramHiddenShortcuts();
         registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         if (!UserConfig.getInstance(currentAccount).isClientActivated()) {
             Intent intent = getIntent();
@@ -782,13 +983,15 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         AndroidUtilities.enableEdgeToEdge(this);
 
         Utilities.globalQueue.postRunnable(() -> {
-            EmojiHelper.getInstance().checkEmojiPacks();
-            WallpaperHelper.getInstance().checkWallPaper();
-            PeerColorHelper.getInstance().checkPeerColor();
-            PagePreviewRulesHelper.getInstance().checkPagePreviewRules();
-            ChatExtraButtonsHelper.getInstance().checkChatExtraButtons();
-            InlineBotRulesHelper.getInstance().checkInlineBotRules();
-            ExtendedHelper.getInstance().checkExtended();
+            if (NekoConfig.useCustomEmoji.Bool()) {
+                EmojiHelper.getInstance().checkEmojiPacks();
+            }
+            if (NaConfig.INSTANCE.getFixUrlPagePreview().Bool()) {
+                PagePreviewRulesHelper.getInstance().checkPagePreviewRules();
+            }
+            if (NaConfig.INSTANCE.getFixUrlAutoInlineBot().Bool()) {
+                InlineBotRulesHelper.getInstance().checkInlineBotRules();
+            }
         });
         BackupAgent.requestBackup();
 
@@ -1135,7 +1338,10 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 drawerLayoutContainer.addView(actionBarLayout.getView(), new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             }
         }
-        FloatingDebugController.setActive(this, SharedConfig.isFloatingDebugActive, false);
+        // Nagram: Telegram's FloatingDebug overlay (green frames with element sizes) is forced off at startup.
+        // It adds a full-screen view redrawn on top of everything and costs frame time.
+        SharedConfig.isFloatingDebugActive = false;
+        FloatingDebugController.setActive(this, false, false);
     }
 
     public void addOnUserLeaveHintListener(Runnable callback) {
@@ -1500,6 +1706,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             selectAnimatedEmojiDialog = null;
         }
         SharedConfig.appLocked = true;
+        HgramSecretSpace.onAppLocked();
         if (SecretMediaViewer.hasInstance() && SecretMediaViewer.getInstance().isVisible()) {
             SecretMediaViewer.getInstance().closePhoto(false, false);
         } else if (PhotoViewer.hasInstance() && PhotoViewer.getInstance().isVisible()) {
@@ -1550,10 +1757,15 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 rightActionBarLayout.getView().setVisibility(View.VISIBLE);
             }
             NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.passcodeDismissed, view);
-            try {
-                NotificationsController.getInstance(UserConfig.selectedAccount).showNotifications();
-            } catch (Exception e) {
-                FileLog.e(e);
+            if (PasscodeHelper.isHgramDecoyModeActive()) {
+                showHgramDecoyWorkspace();
+            } else {
+                hideHgramDecoyWorkspace();
+                try {
+                    NotificationsController.getInstance(UserConfig.selectedAccount).showNotifications();
+                } catch (Exception e) {
+                    FileLog.e(e);
+                }
             }
         };
         passcodeDialog.passcodeView.setDelegate(delegate);
@@ -3101,6 +3313,48 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 }
             }
         }
+        final int hgramIntentAccount = intentAccount[0];
+        if (dialogId != 0 && !HgramSecretSpace.canOpenDialog(hgramIntentAccount, dialogId)) {
+            dialogId = 0;
+            showDialogsList = true;
+        }
+        if (open_user_id != 0 && !HgramSecretSpace.canOpenDialog(hgramIntentAccount, open_user_id)) {
+            open_user_id = 0;
+            showDialogsList = true;
+        }
+        final long hgramPushDialogId = push_user_id != 0 ? push_user_id
+                : push_chat_id != 0 ? -push_chat_id
+                : push_enc_id != 0 ? -push_enc_id : 0;
+        if (hgramPushDialogId != 0 && !HgramSecretSpace.canOpenDialog(hgramIntentAccount, hgramPushDialogId)
+                && !audioCallUser && !videoCallUser) {
+            push_user_id = 0;
+            push_chat_id = 0;
+            push_enc_id = 0;
+            push_topic_id = 0;
+            push_story_id = 0;
+            showDialogsList = true;
+        }
+        if (push_story_dids != null) {
+            int visibleStories = 0;
+            for (long storyDialogId : push_story_dids) {
+                if (HgramSecretSpace.canOpenDialog(hgramIntentAccount, storyDialogId)) {
+                    visibleStories++;
+                }
+            }
+            if (visibleStories == 0) {
+                push_story_dids = null;
+                showDialogsList = true;
+            } else if (visibleStories != push_story_dids.length) {
+                final long[] filteredStories = new long[visibleStories];
+                int index = 0;
+                for (long storyDialogId : push_story_dids) {
+                    if (HgramSecretSpace.canOpenDialog(hgramIntentAccount, storyDialogId)) {
+                        filteredStories[index++] = storyDialogId;
+                    }
+                }
+                push_story_dids = filteredStories;
+            }
+        }
         if (UserConfig.getInstance(currentAccount).isClientActivated()) {
             if (searchQuery != null) {
                 final BaseFragment lastFragment = actionBarLayout.getLastFragmentIncludeMainTabs();
@@ -3671,7 +3925,10 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     private int runCommentRequest(int intentAccount, Runnable dismissLoading, Integer messageId, Integer commentId, Long threadId, Integer taskId, byte[] pollOptionId, TLRPC.Chat chat, Runnable onOpened, String quote, int fromMessageId, int quoteOffset) {
-        if (chat == null) {
+        if (chat == null || !HgramSecretSpace.canOpenDialog(intentAccount, -chat.id)) {
+            if (dismissLoading != null) {
+                dismissLoading.run();
+            }
             return 0;
         }
         TLRPC.TL_messages_getDiscussionMessage req = new TLRPC.TL_messages_getDiscussionMessage();
@@ -3746,6 +4003,12 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     private void openTopicRequest(int intentAccount, int topicId, TLRPC.Chat chat, int messageId, TLRPC.TL_forumTopic forumTopic, Runnable whenDone, String quote, Integer taskId, byte[] pollOptionId, int fromMessageId, ArrayList<MessageObject> arrayList, int quoteOffset) {
+        if (chat == null || !HgramSecretSpace.canOpenDialog(intentAccount, -chat.id)) {
+            if (whenDone != null) {
+                whenDone.run();
+            }
+            return;
+        }
         if (forumTopic == null) {
             forumTopic = MessagesController.getInstance(intentAccount).getTopicsController().findTopic(chat.id, topicId);
         }
@@ -3994,8 +4257,18 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     public void openMessage(long dialogId, int messageId, String quote, final Browser.Progress progress, int fromMessageId, final int quoteOffset, Integer task_id, byte[] pollOption) {
+        openMessage(currentAccount, dialogId, messageId, quote, progress, fromMessageId, quoteOffset, task_id, pollOption);
+    }
+
+    public void openMessage(int account, long dialogId, int messageId, String quote, final Browser.Progress progress, int fromMessageId, final int quoteOffset, Integer task_id, byte[] pollOption) {
+        if (!HgramSecretSpace.canOpenDialog(account, dialogId)) {
+            if (progress != null) {
+                progress.end();
+            }
+            return;
+        }
         if (dialogId < 0) {
-            TLRPC.Chat chat = MessagesController.getInstance(currentAccount).getChat(-dialogId);
+            TLRPC.Chat chat = MessagesController.getInstance(account).getChat(-dialogId);
             if (chat != null && ChatObject.isForum(chat)) {
                 if (progress != null) {
                     progress.init();
@@ -4012,10 +4285,11 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             progress.init();
         }
         Bundle args = new Bundle();
+        args.putInt("currentAccount", account);
         if (dialogId >= 0) {
             args.putLong("user_id", dialogId);
         } else {
-            TLRPC.Chat chatLocal = MessagesController.getInstance(currentAccount).getChat(-dialogId);
+            TLRPC.Chat chatLocal = MessagesController.getInstance(account).getChat(-dialogId);
             if (chatLocal != null && chatLocal.forum) {
                 openForumFromLink(dialogId, messageId, quote, task_id, pollOption, () -> {
                     if (progress != null) {
@@ -4028,7 +4302,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         }
         args.putInt("message_id", messageId);
         BaseFragment lastFragment = !mainFragmentsStack.isEmpty() ? mainFragmentsStack.get(mainFragmentsStack.size() - 1) : null;
-        if (lastFragment == null || MessagesController.getInstance(currentAccount).checkCanOpenChat(args, lastFragment)) {
+        if (lastFragment == null || MessagesController.getInstance(account).checkCanOpenChat(args, lastFragment)) {
             AndroidUtilities.runOnUIThread(() -> {
                 ChatActivity chatActivity = new ChatActivity(args);
                 if (pollOption != null) {
@@ -4045,7 +4319,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                     TLRPC.TL_inputChannel inputChannel = new TLRPC.TL_inputChannel();
                     inputChannel.channel_id = -dialogId;
                     req.id.add(inputChannel);
-                    final int reqId = ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                    final int reqId = ConnectionsManager.getInstance(account).sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
                         if (progress != null) {
                             progress.end();
                         }
@@ -4054,12 +4328,12 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                             TLRPC.TL_messages_chats res = (TLRPC.TL_messages_chats) response;
                             if (!res.chats.isEmpty()) {
                                 notFound = false;
-                                MessagesController.getInstance(currentAccount).putChats(res.chats, false);
+                                MessagesController.getInstance(account).putChats(res.chats, false);
                                 TLRPC.Chat chat = res.chats.get(0);
                                 if (chat != null && chat.forum) {
                                     openForumFromLink(-dialogId, messageId, null, task_id, pollOption, null, 0, -1);
                                 }
-                                if (lastFragment == null || MessagesController.getInstance(currentAccount).checkCanOpenChat(args, lastFragment)) {
+                                if (lastFragment == null || MessagesController.getInstance(account).checkCanOpenChat(args, lastFragment)) {
                                     ChatActivity chatActivity2 = new ChatActivity(args);
                                     chatActivity.setHighlightQuote(messageId, quote, quoteOffset);
                                     getActionBarLayout().presentFragment(chatActivity2);
@@ -4072,7 +4346,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                     }));
                     if (progress != null) {
                         progress.onCancel(() -> {
-                            ConnectionsManager.getInstance(currentAccount).cancelRequest(reqId, true);
+                            ConnectionsManager.getInstance(account).cancelRequest(reqId, true);
                         });
                     }
                 } else {
@@ -4396,6 +4670,14 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                         .setMessage(LocaleController.getString(R.string.AffiliateLinkExpiredText))
                         .setNegativeButton(LocaleController.getString(R.string.OK), null)
                         .show();
+                    return;
+                }
+                if (peerId != null && !HgramSecretSpace.canOpenDialog(intentAccount, peerId)) {
+                    try {
+                        dismissLoading.run();
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
                     return;
                 }
                 if (!LaunchActivity.this.isFinishing()) {
@@ -5490,6 +5772,14 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 }
             }));
         } else if (channelId != null && (messageId != null || isBoost)) {
+            if (!HgramSecretSpace.canOpenDialog(intentAccount, -channelId)) {
+                try {
+                    dismissLoading.run();
+                } catch (Exception e) {
+                    FileLog.e(e);
+                }
+                return;
+            }
             if (threadId != null) {
                 TLRPC.Chat chat = MessagesController.getInstance(intentAccount).getChat(channelId);
                 if (chat != null) {
@@ -6004,6 +6294,12 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     private void openForumFromLink(long dialogId, Integer messageId, String quote, Integer taskId, byte[] pollOptionId, Runnable onOpened, int fromMessageId, int quoteOffset) {
+        if (!HgramSecretSpace.canOpenDialog(currentAccount, dialogId)) {
+            if (onOpened != null) {
+                onOpened.run();
+            }
+            return;
+        }
         if (messageId == null) {
             Bundle bundle = new Bundle();
             bundle.putLong("chat_id", -dialogId);
@@ -6135,6 +6431,11 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     }
 
     public void checkAppUpdate(boolean force, Browser.Progress progress, boolean updateAlways) {
+        if (!HgramConfig.areAppUpdatesEnabled()) {
+            SharedConfig.setNewAppVersionAvailable(null);
+            if (progress != null) progress.end();
+            return;
+        }
 //        if (!ApplicationLoader.isStandaloneBuild() && !ApplicationLoader.isBetaBuild()) {
 //            return;
 //        }
@@ -6818,8 +7119,8 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             return;
         }
         super.onActivityResult(requestCode, resultCode, data);
-        if (GramWalletStorageAuth.onActivityResult(this, requestCode, resultCode)) return;
-        if (requestCode == SCREEN_CAPTURE_REQUEST_CODE) {
+
+       if (requestCode == SCREEN_CAPTURE_REQUEST_CODE) {
             if (resultCode == Activity.RESULT_OK) {
                 VoIPService service = VoIPService.getSharedInstance();
                 if (service != null) {
@@ -6913,6 +7214,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     protected void onPause() {
         super.onPause();
         isResumed = false;
+        PerfLogger.detachWindow();
         pipActivityHandler.onPause();
         NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.stopAllHeavyOperations, 4096);
         ApplicationLoader.mainInterfacePaused = true;
@@ -6925,6 +7227,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             }
         });
         onPasscodePause();
+        if (SharedConfig.appLocked) {
+            HgramSecretSpace.onAppLocked();
+        }
         try {
             if (actionBarLayout != null) {
                 actionBarLayout.onPause();
@@ -6981,7 +7286,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     @Override
     protected void onStop() {
         super.onStop();
-        GramWalletStorageAuth.onActivityStopped(this);
         isStarted = false;
         pipActivityHandler.onStop();
         Browser.unbindCustomTabsService(this);
@@ -7042,7 +7346,11 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
     @Override
     protected void onDestroy() {
-        GramWalletStorageAuth.onActivityDestroyed(this);
+        // Nagram: drop the static reference so a destroyed activity (and its view tree) can be collected
+        if (instance == this) {
+            instance = null;
+        }
+        BottomSheetTabs.destroyAllTabs();
         isActive = false;
         activeInstanceCount--;
         unregisterReceiver(batteryReceiver);
@@ -7157,6 +7465,21 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     @Override
     protected void onResume() {
         super.onResume();
+        if (SharedConfig.passcodeHash.isEmpty() && PasscodeHelper.isHgramDecoyConfigured()) {
+            PasscodeHelper.removeHgramDecoyPasscode();
+            xyz.nextalone.nagram.hgram.HgramDecoySpace.clear();
+            hideHgramDecoyWorkspace();
+        }
+        if (!SharedConfig.appLocked && PasscodeHelper.isHgramDecoyModeActive()) {
+            showHgramDecoyWorkspace();
+        }
+        // Nagram: request the highest display refresh rate on every resume (not only on config change).
+        AndroidUtilities.setPreferredMaxRefreshRate(getWindow());
+        // Nagram: optional local perf log (Settings -> Debug). Frame timings are attached to this window.
+        if (PerfLogger.isEnabled(this)) {
+            PerfLogger.start(this);
+            PerfLogger.attachWindow(getWindow());
+        }
         isResumed = true;
         pipActivityHandler.onResume();
         if (onResumeStaticCallback != null) {
@@ -7233,7 +7556,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         }
         if (UserConfig.getInstance(UserConfig.selectedAccount).unacceptedTermsOfService != null) {
             showTosActivity(UserConfig.selectedAccount, UserConfig.getInstance(UserConfig.selectedAccount).unacceptedTermsOfService);
-        } else if (SharedConfig.pendingAppUpdate != null && SharedConfig.pendingAppUpdate.can_not_skip) {
+        } else if (HgramConfig.areAppUpdatesEnabled() && SharedConfig.pendingAppUpdate != null && SharedConfig.pendingAppUpdate.can_not_skip) {
             showUpdateActivity(UserConfig.selectedAccount, SharedConfig.pendingAppUpdate, true);
         }
         checkAppUpdate(false, null);
@@ -7878,9 +8201,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 ForumUtilities.switchAllFragmentsInStackToForum(chatId, actionBarLayout);
             }
         } else if (id == NotificationCenter.tlSchemeParseException) {
-            if (BuildConfig.DEBUG) {
-                return;
-            }
             if (tlErrorAlertDialog == null) {
                 final TLParseException error = (TLParseException) args[0];
 

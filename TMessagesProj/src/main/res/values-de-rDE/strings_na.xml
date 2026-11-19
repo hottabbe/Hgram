@@ -14,7 +14,6 @@
     <string name="TextUndoRedo">Rückgängig/Wiederholen</string>
     <string name="TextUndo">Rückgängig</string>
     <string name="TextRedo">Wiederholen</string>
-    <string name="NoiseSuppressAndVoiceEnhance">Geräuschunterdrückung und Sprachverstärkung</string>
     <string name="RepeatAsCopy">Als Kopie wiederholen</string>
     <string name="DoubleTapAction">Doppeltes Tippen Aktion</string>
     <string name="DoubleTapActionIncoming">Empfangene Nachrichten</string>

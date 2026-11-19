@@ -228,7 +228,7 @@ public class VoIpGradientLayout extends FrameLayout {
                 if (allowAnimations) {
                     if (defaultAnimatorSet != null) {
                         defaultAnimatorSet.cancel();
-                        defaultAnimatorSet.start();
+                        updateAnimatorState();
                     }
                 }
                 switchToConnectedAnimator();
@@ -269,7 +269,7 @@ public class VoIpGradientLayout extends FrameLayout {
         connectedAnimatorSet.setInterpolator(new LinearInterpolator());
         connectedAnimatorSet.setDuration(24000);
         if (allowAnimations) {
-            connectedAnimatorSet.start();
+            updateAnimatorState();
         } else {
             alphaBlueGreen = 0;
             alphaBlueViolet = 0;
@@ -317,6 +317,7 @@ public class VoIpGradientLayout extends FrameLayout {
             return;
         }
         isPaused = true;
+        updateAnimatorState();
     }
 
     public void resume() {
@@ -324,11 +325,39 @@ public class VoIpGradientLayout extends FrameLayout {
             return;
         }
         isPaused = false;
-        if (defaultAnimatorSet.isPaused()) {
-            defaultAnimatorSet.resume();
+        updateAnimatorState();
+    }
+
+    // Nagram: animators (infinite loops that invalidate the whole call background every frame)
+    // run only while the window is visible and the layout is not explicitly paused.
+    private boolean windowHidden;
+
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        windowHidden = visibility != VISIBLE;
+        updateAnimatorState();
+    }
+
+    private void updateAnimatorState() {
+        boolean run = allowAnimations && !isPaused && !windowHidden;
+        setAnimatorRunning(defaultAnimatorSet, run);
+        setAnimatorRunning(connectedAnimatorSet, run);
+        setAnimatorRunning(callingAnimator, run);
+    }
+
+    private static void setAnimatorRunning(android.animation.Animator animator, boolean run) {
+        if (animator == null) {
+            return;
         }
-        if (connectedAnimatorSet != null && connectedAnimatorSet.isPaused()) {
-            connectedAnimatorSet.resume();
+        if (run) {
+            if (animator.isPaused()) {
+                animator.resume();
+            } else if (!animator.isStarted()) {
+                animator.start();
+            }
+        } else if (animator.isRunning() && !animator.isPaused()) {
+            animator.pause();
         }
     }
 

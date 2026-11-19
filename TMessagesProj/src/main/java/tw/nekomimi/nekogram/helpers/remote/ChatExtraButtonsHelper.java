@@ -135,7 +135,7 @@ public class ChatExtraButtonsHelper extends BaseRemoteHelper {
         var tag = getTag();
         long oldTime = preferences.getLong(tag + "_update_time", 0L);
         long nowTime = System.currentTimeMillis();
-        int TTL = 15 * 60;
+        long TTL = 15 * 60 * 1000L;
         return oldTime + TTL <= nowTime;
     }
 
@@ -144,7 +144,9 @@ public class ChatExtraButtonsHelper extends BaseRemoteHelper {
             return;
         }
         loading = true;
-        loadPagePreviewRules();
+        if (buttons.isEmpty()) {
+            loadPagePreviewRules();
+        }
         if (needUpdate()) {
             load();
         }

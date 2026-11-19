@@ -210,6 +210,7 @@ public class ConnectionsManager extends BaseController {
     private static int lastClassGuid = 1;
 
     private static SparseArray<ConnectionsManager> Instance = new SparseArray<>();
+    private static boolean hgramSttSingletonLogged;
 
     public static ConnectionsManager getInstance(int num) {
         ConnectionsManager localInstance = Instance.get(num);
@@ -218,6 +219,10 @@ public class ConnectionsManager extends BaseController {
                 localInstance = Instance.get(num);
                 if (localInstance == null) {
                     Instance.put(num, localInstance = new ConnectionsManager(num));
+                    if (!hgramSttSingletonLogged && ApplicationLoader.isHgramSttProcess()) {
+                        hgramSttSingletonLogged = true;
+                        FileLog.e("HgramSTT: account singleton created in :stt: ConnectionsManager");
+                    }
 
                     if (_enabled == Boolean.TRUE) {
                         native_setProxySettings(num, _address, _port, _username, _password, _secret);
@@ -1330,9 +1335,12 @@ public class ConnectionsManager extends BaseController {
             if (hasIpv6) {
                 if (hasStrangeIpv4) {
                     ipStrategy = USE_IPV4_IPV6_RANDOM;
-                }
-                if (!hasIpv4) {
+                } else if (!hasIpv4) {
                     ipStrategy = USE_IPV6_ONLY;
+                } else {
+                    // Dual stack: keep IPv4. Broken IPv6 routes are common on mobile and a
+                    // failed IPv6 attempt costs a full connect timeout before the fallback.
+                    ipStrategy = USE_IPV4_ONLY;
                 }
                 return ipStrategy;
             }

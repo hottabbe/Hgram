@@ -347,6 +347,10 @@ public class ScrimOptions extends Dialog {
     }
 
     public static void makeGlobalBlurBitmaps(Utilities.Callback2<Bitmap, Bitmap> bitmaps) {
+        makeGlobalBlurBitmaps(bitmaps, 15);
+    }
+
+    public static void makeGlobalBlurBitmaps(Utilities.Callback2<Bitmap, Bitmap> bitmaps, int blurAmount) {
         AndroidUtilities.makeGlobalBlurBitmap(bitmap -> {
             final ColorMatrix colorMatrixBg = new ColorMatrix();
             AndroidUtilities.adjustSaturationColorMatrix(colorMatrixBg, Theme.isCurrentThemeDark() ? .04f : +.25f);
@@ -364,7 +368,7 @@ public class ScrimOptions extends Dialog {
 
             bitmap.recycle();
             bitmaps.run(bitmapBg, bitmapOptions);
-        }, 15);
+        }, 15, blurAmount, null, null);
     }
 
     public static void makeGlobalBlurBitmaps(View cutToContainer, Utilities.Callback2<Bitmap, Bitmap> bitmaps) {

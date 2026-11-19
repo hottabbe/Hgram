@@ -211,6 +211,30 @@ public class VoIpCoverView extends View {
 
     public void setState(boolean isPaused) {
         this.isPaused = isPaused;
+        updateEmojiActive();
         invalidate();
+    }
+
+    // Nagram: emoji position loops are stopped while the window is hidden or the call is paused.
+    private boolean windowVisible = true;
+
+    @Override
+    protected void onWindowVisibilityChanged(int visibility) {
+        super.onWindowVisibilityChanged(visibility);
+        windowVisible = visibility == VISIBLE;
+        updateEmojiActive();
+    }
+
+    private void updateEmojiActive() {
+        if (!allowAnimations || voipCoverEmojiLeft == null || voipCoverEmojiRight == null) {
+            return;
+        }
+        boolean active = windowVisible && !isPaused;
+        for (VoipCoverEmoji voipCoverEmoji : voipCoverEmojiLeft) {
+            voipCoverEmoji.setActive(active);
+        }
+        for (VoipCoverEmoji voipCoverEmoji : voipCoverEmojiRight) {
+            voipCoverEmoji.setActive(active);
+        }
     }
 }

@@ -65,8 +65,14 @@ object ProxyUtil {
         return false
     }
 
+    @Volatile
+    private var networkCallbackRegistered = false
+    private val IPV6_REGEX = Regex("^((?:[0-9A-Fa-f]{1,4}))?((?::[0-9A-Fa-f]{1,4}))*::((?:[0-9A-Fa-f]{1,4}))?((?::[0-9A-Fa-f]{1,4}))*|((?:[0-9A-Fa-f]{1,4}))((?::[0-9A-Fa-f]{1,4})){7}$")
+
     @JvmStatic
+    @Synchronized
     fun registerNetworkCallback() {
+        if (networkCallbackRegistered) return
         val connectivityManager = ApplicationLoader.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val networkCallback: ConnectivityManager.NetworkCallback =
             object : ConnectivityManager.NetworkCallback() {
@@ -101,6 +107,7 @@ object ProxyUtil {
                     .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
                 connectivityManager.registerNetworkCallback(request, networkCallback)
             }
+            networkCallbackRegistered = true
         } catch (ignored: Exception) {}
     }
 
@@ -405,7 +412,6 @@ object ProxyUtil {
             addr = addr.drop(1)
             addr = addr.dropLast(addr.count() - addr.lastIndexOf("]"))
         }
-        val regV6 = Regex("^((?:[0-9A-Fa-f]{1,4}))?((?::[0-9A-Fa-f]{1,4}))*::((?:[0-9A-Fa-f]{1,4}))?((?::[0-9A-Fa-f]{1,4}))*|((?:[0-9A-Fa-f]{1,4}))((?::[0-9A-Fa-f]{1,4})){7}$")
-        return regV6.matches(addr)
+        return IPV6_REGEX.matches(addr)
     }
 }

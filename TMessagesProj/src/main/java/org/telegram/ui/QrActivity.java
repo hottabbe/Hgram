@@ -1,5 +1,9 @@
 package org.telegram.ui;
 
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+
+import xyz.nextalone.nagram.hgram.HgramHaptics;
+
 import static org.telegram.messenger.AndroidUtilities.dp;
 import static org.telegram.messenger.LocaleController.getString;
 
@@ -32,7 +36,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
-import android.os.Vibrator;
 import android.text.Layout;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -1185,10 +1188,7 @@ public class QrActivity extends BaseFragment {
                         }
                         if (linkExpires != 0 && linkExpires < token.expires) {
                             try {
-                                Vibrator vibrator = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
-                                if (vibrator != null) {
-                                    vibrator.vibrate(100);
-                                }
+                                HgramHaptics.play(HgramHapticProfile.PLACE_LIST_ITEMS);
                             } catch (Exception ignore) {
                                 try {
                                     if (!NekoConfig.disableVibration.Bool())

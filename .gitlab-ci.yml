@@ -20,7 +20,7 @@ default:
   before_script:
     - export ANDROID_HOME="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
     - echo "sdk.dir=${ANDROID_HOME}" > local.properties
-    - echo "ndk.dir=${ANDROID_HOME}/ndk/27.2.12479018" >> local.properties
+    - echo "ndk.dir=${ANDROID_HOME}/ndk/29.0.14206865" >> local.properties
     - git config --global --add safe.directory $CI_PROJECT_DIR
 
 .fetch-status: &fetch-status |

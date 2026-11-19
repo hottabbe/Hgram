@@ -122,12 +122,6 @@ object NaConfig {
             ConfigItem.configTypeBool,
             false
         )
-    val noiseSuppressAndVoiceEnhance =
-        addConfig(
-            "NoiseSuppressAndVoiceEnhance",
-            ConfigItem.configTypeBool,
-            false
-        )
     val showNoQuoteForward =
         addConfig(
             "NoQuoteForward",
@@ -183,6 +177,12 @@ object NaConfig {
             "UseSystemUnlock",
             ConfigItem.configTypeBool,
             true
+        )
+    val useSystemNotificationColor =
+        addConfig(
+            "UseSystemNotificationColor",
+            ConfigItem.configTypeBool,
+            false
         )
     val codeSyntaxHighlight =
         addConfig(
@@ -629,7 +629,7 @@ object NaConfig {
         addConfig(
             "PushServiceTypeUnifiedGateway",
             ConfigItem.configTypeString,
-            "https://p2p.hoyolab.pp.ua/"
+            ""
         )
     val pushServiceTypeUnifiedSimple =
         addConfig(
@@ -683,7 +683,7 @@ object NaConfig {
         addConfig(
             "SentryAnalytics",
             ConfigItem.configTypeBool,
-            true
+            false
         )
     val regexFiltersEnabled =
         addConfig(
@@ -899,7 +899,7 @@ object NaConfig {
             disableTrendingFlags,
             16,
             false
-    )
+        )
     val disableRepeatInChannel =
         addConfig(
             "DisableRepeatInChannel",
@@ -1356,7 +1356,7 @@ object NaConfig {
             "LiquidGlassAngle",
             ConfigItem.configTypeInt,
             0
-    )
+        )
     val liquidGlassIntensity =
         addConfig(
             "LiquidGlassIntensity",
@@ -1466,12 +1466,6 @@ object NaConfig {
             "CommunityAvatarTapAction",
             ConfigItem.configTypeInt,
             1
-        )
-    val useSystemNotificationColor =
-        addConfig(
-            "UseSystemNotificationColor",
-            ConfigItem.configTypeBool,
-            false
         )
 
     private fun addConfig(

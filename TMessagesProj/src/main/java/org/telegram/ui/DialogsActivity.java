@@ -52,6 +52,7 @@ import android.graphics.drawable.ShapeDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.text.Spannable;
 import android.text.SpannableStringBuilder;
@@ -106,6 +107,7 @@ import org.telegram.messenger.BotWebViewVibrationEffect;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.ContactsController;
+import org.telegram.messenger.ContactsWidgetProvider;
 import org.telegram.messenger.DialogObject;
 import org.telegram.messenger.Emoji;
 import org.telegram.messenger.FileLoader;
@@ -288,6 +290,10 @@ import tw.nekomimi.nekogram.utils.ProxyUtil;
 import tw.nekomimi.nekogram.utils.UpdateUtil;
 import xyz.nextalone.nagram.MainTabsStyle;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramAntiPeek;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
+import xyz.nextalone.nagram.hgram.HgramSecretCache;
+import tw.nekomimi.nekogram.helpers.PasscodeHelper;
 
 import me.vkryl.android.animator.BoolAnimator;
 import me.vkryl.android.animator.FactorAnimator;
@@ -725,6 +731,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     private final static int mute = 104;
     private final static int archive = 105;
     private final static int block = 106;
+    private final static int hgram_decoy_space = 120;
     private final static int archive2 = 107;
     private final static int pin2 = 108;
     private final static int add_to_folder = 109;
@@ -790,12 +797,46 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
     };
 
+    private boolean hgramSuppressHeaderPublish;
+    private float hgramLastPublishedSignature = Float.NaN;
+    int hgramHeaderPublishCount;
+
+    private float hgramHeaderInputSignature() {
+        float signature = fragmentView != null ? fragmentView.getTranslationY() : 0f;
+        signature = signature * 31f + panTranslationY;
+        signature = signature * 31f + searchViewPagerTranslationY;
+        if (viewPages != null) {
+            for (ViewPage page : viewPages) {
+                signature = signature * 31f + (page != null ? page.getTranslationY() : 0f);
+            }
+        }
+        return signature;
+    }
+
+    private void onSearchPagerTranslation(float translationY) {
+        if (searchTabsAndFiltersLayout != null) {
+            searchTabsAndFiltersLayout.setTranslationY(translationY);
+        }
+        if (!hgramSuppressHeaderPublish) {
+            applyHeaderGeometryAndCommitClips();
+        }
+    }
+
     public final Property<View, Float> SEARCH_TRANSLATION_Y = new AnimationProperties.FloatProperty<View>("viewPagerTranslation") {
         @Override
         public void setValue(View object, float value) {
             searchViewPagerTranslationY = value;
-            object.setTranslationY(panTranslationY + searchViewPagerTranslationY);
-            checkUi_searchFiltersVisibility();
+            final boolean previous = hgramSuppressHeaderPublish;
+            hgramSuppressHeaderPublish = true;
+            try {
+                object.setTranslationY(panTranslationY + searchViewPagerTranslationY);
+                checkUi_searchFiltersVisibility();
+            } finally {
+                hgramSuppressHeaderPublish = previous;
+            }
+            if (hgramHeaderInputSignature() != hgramLastPublishedSignature) {
+                applyHeaderGeometryAndCommitClips();
+            }
         }
 
         @Override
@@ -840,6 +881,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             } else {
                 viewPages[1].setTranslationX(-viewPages[0].getMeasuredWidth());
             }
+            applyHeaderGeometryAndCommitClips();
             return true;
         }
 
@@ -904,6 +946,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
         private Rect blurBounds = new Rect();
 
+        private float getHgramPageClipTop(ViewPage page) {
+            final DialogsRecyclerView list = page.listView;
+            return hgramYInParent(page, hgramYInParent(list, list.hgramClipCache.clipTop));
+        }
+        
         @Override
         protected boolean drawChild(Canvas canvas, View child, long drawingTime) {
             if (child == blurredView) {
@@ -915,11 +962,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             boolean result;
             if (child == viewPages[0] || (viewPages.length > 1 && child == viewPages[1]) || child == topPanelLayout || child == filterTabsView) {
                 canvas.save();
-
-                final boolean doNotClip = child == topPanelLayout || child == filterTabsView;
-                if (!doNotClip) {
-                    canvas.clipRect(0, -getY() + getActionBarTop() + getActionBarFullHeight(), getMeasuredWidth(), getMeasuredHeight());
-                }
+        
                 if (slideFragmentProgress != 1f) {
                     if (slideFragmentLite) {
                         canvas.translate((-1) * dp(slideAmplitudeDp) * (1f - slideFragmentProgress), 0);
@@ -928,6 +971,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         canvas.translate((-dp(4)) * (1f - slideFragmentProgress), 0);
                         canvas.scale(s, s, 0, -getY() + scrollYOffset + getActionBarFullHeight());
                     }
+                }
+                if (child instanceof ViewPage && ((ViewPage) child).listView != null) {
+                    canvas.clipRect(0, getHgramPageClipTop((ViewPage) child), getMeasuredWidth(), getMeasuredHeight());
                 }
                 result = super.drawChild(canvas, child, drawingTime);
                 canvas.restore();
@@ -968,12 +1014,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             blurScrimPaint.setAlpha(oldScrimAlpha);
         }
 
-        @Override
-        protected void dispatchDraw(Canvas canvas) {
-            if (Build.VERSION.SDK_INT >= 31 && scrollableViewNoiseSuppressor != null) {
-                blur3_InvalidateBlur();
-            }
-
+        private void restoreHeaderScrollOffset() {
+            if (viewPages == null || viewPages[0] == null || viewPages[0].listView == null) return;
             if (invalidateScrollY && (rightSlidingDialogContainer == null || !rightSlidingDialogContainer.hasFragment()) && progressToActionMode == 0) {
                 invalidateScrollY = false;
                 int firstItemPosition = hasHiddenArchive() && viewPages[0].dialogsType == DIALOGS_TYPE_DEFAULT ? 1 : 0;
@@ -1000,7 +1042,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         }
                     }
                 }
-
+        
                 RecyclerView.ViewHolder holder = recyclerView.findViewHolderForLayoutPosition(firstItemPosition);
                 if (holder != null) {
                     float visiblePartAfterScroll = recyclerView.getPaddingTop() - holder.itemView.getY();
@@ -1020,58 +1062,25 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     DialogsActivity.this.setScrollY(-getMaxScrollYOffset());
                 }
             }
-            final int actionBarHeight = getActionBarFullHeight();
-            final int top;
-            if (inPreviewMode) {
-                top = AndroidUtilities.statusBarHeight;
-            } else {
-                top = getActionBarTop();
+        }
+        
+        private void applyHeaderGeometryAndCommitClips() {
+            if (actionBar == null || rightSlidingDialogContainer == null
+                    || viewPages == null || viewPages[0] == null || viewPages[0].listView == null) {
+                return;
             }
+            final int actionBarHeight = getActionBarFullHeight();
+            final int top = inPreviewMode ? AndroidUtilities.statusBarHeight : getActionBarTop();
             rightSlidingDialogContainer.setCurrentTop(top + actionBarHeight);
             float storiesAlpha = 1f;
-            if (whiteActionBar) {
-                if (searchAnimationProgress == 1f) {
-                    actionBarSearchPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
-                } else if (searchAnimationProgress == 0) {
-                    if (fragmentSearchField != null) {
-                        fragmentSearchField.setTranslationY(scrollYOffset + getSearchFieldAdditionOffset());
-                    }
-                }
-                blurBounds.set(0, top, getMeasuredWidth(), top + actionBarHeight - dp(2 * searchAnimationProgress));
-                if (searchAnimationProgress < 0) {
-                    drawBlurRect(canvas, 0, blurBounds, searchAnimationProgress == 1f ? actionBarSearchPaint : actionBarDefaultPaint, true);
-                }
-                if (searchAnimationProgress > 0 && searchAnimationProgress < 1f) {
-                    actionBarSearchPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
-                    if (searchIsShowed || !searchWasFullyShowed) {
-                    } else {
-                        blurBounds.set(0, top, getMeasuredWidth(), top + actionBarHeight - dp(2 * searchAnimationProgress));
-                        drawBlurRect(canvas, 0, blurBounds, actionBarSearchPaint, true);
-                    }
-                    if (fragmentSearchField != null) {
-                        fragmentSearchField.setTranslationY(top + actionBarHeight - (actionBar.getHeight() + (filterTabsView != null ? filterTabsView.getMeasuredHeight() : 0)) + getSearchFieldAdditionOffset());
-                    }
-                }
-            } else if (!inPreviewMode) {
-                if (progressToActionMode > 0) {
-                    actionBarSearchPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
-                    blurBounds.set(0, Math.max(0, top), getMeasuredWidth(), top + actionBarHeight - dp(2 * searchAnimationProgress));
-                    drawBlurRect(canvas, 0, blurBounds, actionBarSearchPaint, true);
-                } else {
-                    blurBounds.set(0, Math.max(0, top), getMeasuredWidth(), top + actionBarHeight - dp(2 * searchAnimationProgress));
-                    drawBlurRect(canvas, 0, blurBounds, actionBarDefaultPaint, true);
-                }
-            }
-            tabsYOffset = 0;
-            storiesYOffset = 0;
-            tabsYOffset -= Math.min(
+            tabsYOffset = -Math.min(
                 dp(hasStories ? DialogStoriesCell.HEIGHT_IN_DP : 0) + searchFieldHeight() + scrollYOffset,
                 progressToActionMode * (dp(hasStories ? DialogStoriesCell.HEIGHT_IN_DP : 0) + searchFieldHeight())
             );
             storiesYOffset = tabsYOffset;
             if ((rightSlidingDialogContainer != null && rightSlidingDialogContainer.hasFragment())) {
                 final float rightSlidingProgress = rightSlidingDialogContainer.openedProgress;
-
+        
                 tabsYOffset -= rightSlidingProgress * (getMaxScrollYOffset() + scrollYOffset);
                 storiesYOffset = tabsYOffset;
                 if (dialogStoriesCellVisible) {
@@ -1094,22 +1103,74 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 }
                 addH += searchFieldHeight();
                 addH *= rightSlidingDialogContainer.openedProgress;
-
-                viewPages[0].setTranslationY(rightFragmentOffset - addH);
+        
+                if (viewPages[0].getTranslationY() != rightFragmentOffset - addH) {
+                    viewPages[0].setTranslationY(rightFragmentOffset - addH);
+                }
             } else {
                 if (fragmentSearchField != null) {
-                    fragmentSearchField.setTranslationY(lerp(
+                    // Nagram: setting the same translation again still invalidates the view and
+                    // its parent, which redraws the whole content tree. Only touch it when the
+                    // value actually changed.
+                    final float searchFieldTranslation = lerp(
                         scrollYOffset + tabsYOffset + storiesOverscroll - dp(4),
                         -dp(SEARCH_FIELD_HEIGHT + (hasStories ? DialogStoriesCell.HEIGHT_IN_DP : 0)),
                         searchAnimationProgress
-                    ));
+                    );
+                    if (fragmentSearchField.getTranslationY() != searchFieldTranslation) {
+                        fragmentSearchField.setTranslationY(searchFieldTranslation);
+                    }
                 }
             }
-            updateContextViewPosition();
-            updateStoriesViewAlpha(storiesAlpha);
+            DialogsActivity.this.updateContextViewPosition();
+            if (dialogStoriesCell != null) {
+                updateStoriesViewAlpha(storiesAlpha);
+            }
+            updateHgramClipTops(this);
+        }
+        
+        @Override
+        protected void dispatchDraw(Canvas canvas) {
+            if (Build.VERSION.SDK_INT >= 31 && scrollableViewNoiseSuppressor != null) {
+                blur3_InvalidateBlur();
+            }
+        
+            final int actionBarHeight = getActionBarFullHeight();
+            final int top;
+            if (inPreviewMode) {
+                top = AndroidUtilities.statusBarHeight;
+            } else {
+                top = getActionBarTop();
+            }
+            if (whiteActionBar) {
+                if (searchAnimationProgress == 1f) {
+                    actionBarSearchPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
+                }
+                blurBounds.set(0, top, getMeasuredWidth(), top + actionBarHeight - dp(2 * searchAnimationProgress));
+                if (searchAnimationProgress < 0) {
+                    drawBlurRect(canvas, 0, blurBounds, searchAnimationProgress == 1f ? actionBarSearchPaint : actionBarDefaultPaint, true);
+                }
+                if (searchAnimationProgress > 0 && searchAnimationProgress < 1f) {
+                    actionBarSearchPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
+                    if (searchIsShowed || !searchWasFullyShowed) {
+                    } else {
+                        blurBounds.set(0, top, getMeasuredWidth(), top + actionBarHeight - dp(2 * searchAnimationProgress));
+                        drawBlurRect(canvas, 0, blurBounds, actionBarSearchPaint, true);
+                    }
+                }
+            } else if (!inPreviewMode) {
+                if (progressToActionMode > 0) {
+                    actionBarSearchPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
+                    blurBounds.set(0, Math.max(0, top), getMeasuredWidth(), top + actionBarHeight - dp(2 * searchAnimationProgress));
+                    drawBlurRect(canvas, 0, blurBounds, actionBarSearchPaint, true);
+                } else {
+                    blurBounds.set(0, Math.max(0, top), getMeasuredWidth(), top + actionBarHeight - dp(2 * searchAnimationProgress));
+                    drawBlurRect(canvas, 0, blurBounds, actionBarDefaultPaint, true);
+                }
+            }
             super.dispatchDraw(canvas);
             drawHeaderShadow(canvas, top + actionBarHeight);
-
+        
             /*if (fragmentContextView != null && fragmentContextView.isCallStyle()) {
                 canvas.save();
                 canvas.translate(fragmentContextView.getX(), fragmentContextView.getY());
@@ -1341,8 +1402,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 searchViewPager.setKeyboardHeight(keyboardSize);
             }
             notifyHeightChanged();
+            restoreHeaderScrollOffset();
             updateFloatingButtonOffset();
-            updateContextViewPosition();
+            applyHeaderGeometryAndCommitClips();
         }
 
         @Override
@@ -1406,6 +1468,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             switchToCurrentSelectedMode(true);
                             viewPages[0].dialogsAdapter.resume();
                             viewPages[1].dialogsAdapter.pause();
+                            applyHeaderGeometryAndCommitClips();
                         }
                     } else {
                         if (startedTrackingX < viewPages[1].getMeasuredWidth() + viewPages[1].getTranslationX()) {
@@ -1419,6 +1482,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             switchToCurrentSelectedMode(true);
                             viewPages[0].dialogsAdapter.resume();
                             viewPages[1].dialogsAdapter.pause();
+                            applyHeaderGeometryAndCommitClips();
                         } else {
                             additionalOffset = viewPages[0].getTranslationX();
                         }
@@ -1460,6 +1524,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         } else {
                             viewPages[1].setTranslationX(dx - viewPages[0].getMeasuredWidth());
                         }
+                        applyHeaderGeometryAndCommitClips();
                         float scrollProgress = Math.abs(dx) / (float) viewPages[0].getMeasuredWidth();
                         if (viewPages[1].isLocked && scrollProgress > 0.3f) {
                             dispatchTouchEvent(MotionEvent.obtain(0, 0, MotionEvent.ACTION_CANCEL, 0, 0, 0));
@@ -1565,6 +1630,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                     updateCounters(false);
                                     viewPages[0].dialogsAdapter.resume();
                                     viewPages[1].dialogsAdapter.pause();
+                                    applyHeaderGeometryAndCommitClips();
                                 }
                                 viewPages[1].setVisibility(View.GONE);
                                 showScrollbars(true);
@@ -1645,9 +1711,20 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         return -lerp(dp(4), dp(SEARCH_FIELD_HEIGHT), animatorSearchVisible.getFloatValue());
     }
 
+    private void setStoriesTranslationY(float translationY) {
+        if (dialogStoriesCell.getTranslationY() != translationY) {
+            dialogStoriesCell.setTranslationY(translationY);
+        }
+    }
+
     private void updateStoriesViewAlpha(float alpha) {
         final float factorSearch = Utilities.clamp(searchAnimationProgress * 2, 1f, 0f);
-        dialogStoriesCell.setAlpha((1f - progressToActionMode) * alpha * progressToDialogStoriesCell * (1f - factorSearch));
+        // Nagram: setting an unchanged alpha or translation still invalidates the view, so the
+        // stories row is only touched when the value really changes.
+        final float storiesAlphaValue = (1f - progressToActionMode) * alpha * progressToDialogStoriesCell * (1f - factorSearch);
+        if (dialogStoriesCell.getAlpha() != storiesAlphaValue) {
+            dialogStoriesCell.setAlpha(storiesAlphaValue);
+        }
         float containersAlpha;
 
         if (hasStories || animateToHasStories) {
@@ -1658,11 +1735,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             float pHalf = Utilities.clamp(p / 0.5f, 1f, 0f);
             dialogStoriesCell.setClipTop(0);
             if (!hasStories && animateToHasStories) {
-                dialogStoriesCell.setTranslationY(-dp(DialogStoriesCell.HEIGHT_IN_DP) - dp(8));
+                setStoriesTranslationY(-dp(DialogStoriesCell.HEIGHT_IN_DP) - dp(8));
                 dialogStoriesCell.setProgressToCollapse(1f);
                 containersAlpha = 1f - progressToDialogStoriesCell;
             } else {
-                dialogStoriesCell.setTranslationY(Math.max(scrollYOffset, -getMaxScrollYOffsetWithoutSearch()) + storiesYOffset + storiesOverscroll / 2f - dp(8));
+                setStoriesTranslationY(Math.max(scrollYOffset, -getMaxScrollYOffsetWithoutSearch()) + storiesYOffset + storiesOverscroll / 2f - dp(8));
                 dialogStoriesCell.setProgressToCollapse(p, !rightSlidingDialogContainer.hasFragment());
                 if (!animateToHasStories) {
                     containersAlpha = 1f - progressToDialogStoriesCell;
@@ -1673,7 +1750,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             actionBar.setTranslationY(0);
         } else {
             if (hasOnlySlefStories) {
-                dialogStoriesCell.setTranslationY(-dp(DialogStoriesCell.HEIGHT_IN_DP) + Math.max(scrollYOffset, -getMaxScrollYOffsetWithoutSearch()) - dp(8));
+                setStoriesTranslationY(-dp(DialogStoriesCell.HEIGHT_IN_DP) + Math.max(scrollYOffset, -getMaxScrollYOffsetWithoutSearch()) - dp(8));
                 dialogStoriesCell.setProgressToCollapse(1f);
                 dialogStoriesCell.setClipTop((int) (AndroidUtilities.statusBarHeight - dialogStoriesCell.getY()));
             }
@@ -1724,6 +1801,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         private boolean ignoreLayout;
         private final ViewPage parentPage;
         private int appliedPaddingTop;
+        private final xyz.nextalone.nagram.hgram.HgramDialogsClip.Cache hgramClipCache =
+                new xyz.nextalone.nagram.hgram.HgramDialogsClip.Cache();
         private int lastTop;
         private int lastListPadding;
         private float rightFragmentOpenedProgress;
@@ -1972,9 +2051,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     if (view instanceof DialogCell) {
                         int position = animationSupportListView.getChildLayoutPosition(view);
                         DialogCell dialogCell = (DialogCell) view;
-                        dialogCell.isTransitionSupport = false;
-                        dialogCell.buildLayout();
-                        dialogCell.isTransitionSupport = true;
+                        // Nagram: buildLayout() rebuilds every text layout of the cell and used
+                        // to run for each support view on every frame of the transition. The
+                        // layout is already up to date, so it is only rebuilt when the cell was
+                        // invalidated in the meantime.
+                        if (dialogCell.needsTransitionSupportLayoutRebuild) {
+                            dialogCell.isTransitionSupport = false;
+                            dialogCell.buildLayout();
+                            dialogCell.isTransitionSupport = true;
+                            dialogCell.needsTransitionSupportLayoutRebuild = false;
+                        }
                         dialogCell.setRightFragmentOpenedProgress(rightFragmentOpenedProgress);
 
                         int restoreCount = canvas.save();
@@ -1996,6 +2082,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 invalidate();
             }
 
+            canvas.save();
+            canvas.clipRect(0, hgramClipCache.clipTop, getWidth(), getHeight());
             if (animationSupportListView == null) {
                 super.dispatchDraw(canvas);
             }
@@ -2020,6 +2108,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 }
                 invalidate();
             }
+            canvas.restore();
             if (slidingView != null && pacmanAnimation != null) {
                 pacmanAnimation.draw(canvas, slidingView.getTop() + slidingView.getMeasuredHeight() / 2);
             }
@@ -2029,9 +2118,22 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             poller.checkList( this);
         }
 
+        private void updateHgramClipTop(float headerBottom) {
+            final float listTop = hgramYInParent(parentPage, hgramYInParent(this, 0));
+            final float scale = parentPage.getScaleY() * getScaleY();
+            final int next = xyz.nextalone.nagram.hgram.HgramDialogsClip.clipTop(
+                    scale > 0 ? (headerBottom - listTop) / scale : 0, 0, getHeight());
+            if (hgramClipCache.commit(next)) {
+                invalidate();
+            }
+        }
+
+        
+
         @Override
         public boolean dispatchTouchEvent(MotionEvent ev) {
-            if (ev.getAction() == MotionEvent.ACTION_DOWN && ev.getY() < (getPaddingTop() + scrollYOffset)) {
+            if (ev.getAction() == MotionEvent.ACTION_DOWN
+                    && !xyz.nextalone.nagram.hgram.HgramDialogsClip.acceptsDown(ev.getY(), hgramClipCache.clipTop)) {
                 return false;
             }
 
@@ -2099,19 +2201,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             additionalPadding = 0;
 
             final float filterTabsVisibility = getFilterTabsVisibilityFactor(false);
-            final float topPanelsVisibility = topPanelLayout != null ? topPanelLayout.getMetadata().getTotalVisibility() : 0f;
 
-            t += (int) (dp(36 + 14) * filterTabsVisibility);
-            additionalPadding += (int) (dp(36 + 14) * filterTabsVisibility);
+            final int tabsReserve = (int) reservedFilterTabsHeight(filterTabsVisibility);
+            t += tabsReserve;
+            additionalPadding += tabsReserve;
 
             if (topPanelLayout != null) {
                 final int h = (int) topPanelLayout.getAnimatedHeightWithPadding(lerp((float) dp(14), dp(7), filterTabsVisibility));
                 t += h;
                 additionalPadding += h;
             }
-
-            t -= dp(5 * Math.max(filterTabsVisibility, topPanelsVisibility));
-            additionalPadding -= dp(5 * Math.max(filterTabsVisibility, topPanelsVisibility));
 
             final int b = calculateListViewPaddingBottom();
             if (t != topPadding || b != getPaddingBottom()) {
@@ -3613,21 +3712,21 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 statusDrawable = new AnimatedEmojiDrawable.SwapAnimatedEmojiDrawable(null, dp(26));
                 statusDrawable.center = true;
                 String title = NaConfig.INSTANCE.getCustomTitle().String();
+                if (title != null) {
+                    title = title.trim();
+                }
+                if (title == null || title.isEmpty()
+                        || "Nagram".equalsIgnoreCase(title)
+                        || "NekoX".equalsIgnoreCase(title)
+                        || "hgram".equalsIgnoreCase(title)) {
+                    title = "Hgram";
+                }
                 if (NaConfig.INSTANCE.getCustomTitleUserName().Bool()) {
                     TLRPC.User self = UserConfig.getInstance(currentAccount).getCurrentUser();
                     if (self != null && self.first_name != null) title = self.first_name;
                 }
                 actionBar.centerTitle(false);
-                if (title.equals(getString(R.string.NekoX)) && !NaConfig.INSTANCE.getUseSystemFontInTitle().Bool()) {
-                    logoDrawable = context.getResources().getDrawable(R.drawable.nagram_logo_2).mutate();
-                    logoDrawable.setBounds(0, dp(2), logoDrawable.getIntrinsicWidth(), dp(2) + logoDrawable.getIntrinsicHeight());
-                    logoDrawable.setColorFilter(getThemedColor(Theme.key_telegram_color_dialogsLogo), PorterDuff.Mode.MULTIPLY);
-                    SpannableStringBuilder ssb = new SpannableStringBuilder(title);
-                    ssb.setSpan(new ImageSpan(logoDrawable), 0, ssb.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-                    actionBar.setTitle(ssb, statusDrawable);
-                } else {
-                    actionBar.setTitle(title, statusDrawable);
-                }
+                actionBar.setTitle(title, statusDrawable);
                 actionBar.setOnLongClickListener(v -> {
                     if (NekoConfig.hideAllTab.Bool() && filterTabsView != null && filterTabsView.getCurrentTabId() != Integer.MAX_VALUE) {
                         filterTabsView.toggleAllTabs(true);
@@ -3762,13 +3861,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     if (progress == 1 && viewPages[1].getVisibility() != View.VISIBLE && !searching) {
                         return;
                     }
-                    if (animatingForward) {
-                        viewPages[0].setTranslationX(-progress * viewPages[0].getMeasuredWidth());
-                        viewPages[1].setTranslationX(viewPages[0].getMeasuredWidth() - progress * viewPages[0].getMeasuredWidth());
-                    } else {
-                        viewPages[0].setTranslationX(progress * viewPages[0].getMeasuredWidth());
-                        viewPages[1].setTranslationX(progress * viewPages[0].getMeasuredWidth() - viewPages[0].getMeasuredWidth());
-                    }
+                    applyFolderSwipeHeaderFrame(progress);
                     if (progress == 1) {
                         ViewPage tempPage = viewPages[0];
                         viewPages[0] = viewPages[1];
@@ -3780,6 +3873,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         checkListLoad(viewPages[0]);
                         viewPages[0].dialogsAdapter.resume();
                         viewPages[1].dialogsAdapter.pause();
+                        applyHeaderGeometryAndCommitClips();
                     }
                 }
 
@@ -4038,8 +4132,67 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     showArchiveHelp();
                 } else if (id == 11) {
                     openAccountSelector(switchItem);
-                } else if (id == add_to_folder) {
-                    FiltersListBottomSheet sheet = new FiltersListBottomSheet(DialogsActivity.this, selectedDialogs);
+                } else if (id == hgram_decoy_space) {
+                    if (!PasscodeHelper.isHgramDecoyConfigured()) {
+                        FileLog.e("HgramSecretSpace toggle skipped: decoy passcode is not configured");
+                        Toast.makeText(getParentActivity(), LocaleController.getString(R.string.HgramSecretToggleFailed), Toast.LENGTH_SHORT).show();
+                        hgramRefreshAfterRejectedToggle();
+                        hideActionMode(true);
+                        return;
+                    }
+                    if (selectedDialogs.isEmpty()) {
+                        FileLog.e("HgramSecretSpace toggle skipped: no selected dialogs");
+                        Toast.makeText(getParentActivity(), LocaleController.getString(R.string.HgramSecretToggleFailed), Toast.LENGTH_SHORT).show();
+                        hgramRefreshAfterRejectedToggle();
+                        hideActionMode(true);
+                        return;
+                    }
+                    final ArrayList<Long> hgramHiddenUserIds = new ArrayList<>();
+                    final ArrayList<Long> hgramNewlyHiddenDids = new ArrayList<>();
+                    int hgramChanged = 0;
+                    boolean hgramPersistFailed = false;
+                    for (Long did : new ArrayList<>(selectedDialogs)) {
+                        if (did == null) {
+                            continue;
+                        }
+                        if (HgramSecretSpace.toggle(currentAccount, did)) {
+                            hgramChanged++;
+                            hgramNewlyHiddenDids.add(did);
+                            if (did > 0) {
+                                hgramHiddenUserIds.add(did);
+                            }
+                        } else {
+                            hgramChanged++;
+                        }
+                        if (!HgramSecretSpace.wasLastTogglePersisted()) {
+                            hgramPersistFailed = true;
+                        }
+                    }
+                    if (hgramChanged == 0 || hgramPersistFailed) {
+                        Toast.makeText(getParentActivity(), LocaleController.getString(R.string.HgramSecretToggleFailed), Toast.LENGTH_SHORT).show();
+                    }
+                    final int hgramAccount = currentAccount;
+                    Utilities.globalQueue.postRunnable(() -> {
+                        MediaDataController.getInstance(hgramAccount).reconcileHgramShortcuts();
+                        for (int i = 0; i < hgramNewlyHiddenDids.size(); i++) {
+                            HgramSecretCache.migrateHiddenDialog(hgramAccount, hgramNewlyHiddenDids.get(i));
+                        }
+                    });
+                    ContactsWidgetProvider.updateAllWidgets();
+                    if (!hgramHiddenUserIds.isEmpty()) {
+                        final ArrayList<Long> userIds = new ArrayList<>(hgramHiddenUserIds);
+                        final int account = currentAccount;
+                        Utilities.globalQueue.postRunnable(() -> ContactsController.getInstance(account).deleteConnectionServiceContacts(userIds));
+                    }
+                    getNotificationsController().removeNotificationsForHiddenDialogs();
+                    refreshAfterSecretSpaceChange();
+                    hgramForceRefresh();
+                    if (searchViewPager != null && searchViewPager.dialogsSearchAdapter != null) {
+                        searchViewPager.dialogsSearchAdapter.hgramForceRefresh();
+                    }
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.dialogsNeedReload);
+                    hideActionMode(true);
+                } else if (id == add_to_folder) {                    FiltersListBottomSheet sheet = new FiltersListBottomSheet(DialogsActivity.this, selectedDialogs);
                     sheet.setDelegate((filter, checked) -> {
                         ArrayList<Long> alwaysShow = FiltersListBottomSheet.getDialogsCount(DialogsActivity.this, filter, selectedDialogs, true, false);
                         if (!checked) {
@@ -4150,29 +4303,64 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         iBlur3FactoryBlur.setSourceRootView(viewPositionWatcher, contentView);
 
         final PointF tmpPoint = new PointF();
-        iBlur3Capture = (canvas, position) -> {
-            final int searchViewAlpha = searchViewPager != null ? (int) (searchViewPager.getAlpha() * 255) : 0;
+        iBlur3Capture = new IBlur3Capture() {
+            @Override
+            public void capture(Canvas canvas, RectF position) {
+                final int searchViewAlpha = searchViewPager != null ? (int) (searchViewPager.getAlpha() * 255) : 0;
 
-            for (ViewPage viewPage : viewPages) {
-                if (viewPage != null && viewPage.getVisibility() == View.VISIBLE && viewPage.getAlpha() > 0f) {
-                    float rp = getRightSlidingProgress();
-                    if (viewPage.animationSupportListView != null && rp > 0) {
-                        if (!ViewPositionWatcher.computeCoordinatesInParent(viewPage.listView, contentView, tmpPoint)) {
-                            return;
+                for (ViewPage viewPage : viewPages) {
+                    if (viewPage != null && viewPage.getVisibility() == View.VISIBLE && viewPage.getAlpha() > 0f) {
+                        float rp = getRightSlidingProgress();
+                        if (viewPage.animationSupportListView != null && rp > 0) {
+                            if (!ViewPositionWatcher.computeCoordinatesInParent(viewPage.listView, contentView, tmpPoint)) {
+                                return;
+                            }
+
+                            canvas.save();
+                            canvas.clipRect(position);
+                            canvas.translate(tmpPoint.x, tmpPoint.y);
+                            viewPage.listView.dispatchDraw(canvas);
+                            canvas.restore();
+                        } else {
+                            Blur3Utils.captureRelativeParent(viewPage.listView, canvas, position, viewPage.listView, contentView, 255 - searchViewAlpha);
                         }
-
-                        canvas.save();
-                        canvas.clipRect(position);
-                        canvas.translate(tmpPoint.x, tmpPoint.y);
-                        viewPage.listView.dispatchDraw(canvas);
-                        canvas.restore();
-                    } else {
-                        Blur3Utils.captureRelativeParent(viewPage.listView, canvas, position, viewPage.listView, contentView, 255 - searchViewAlpha);
                     }
                 }
+                if (searchViewPager != null && searchViewPager.getVisibility() == View.VISIBLE && searchViewPager.getAlpha() > 0f) {
+                    Blur3Utils.captureRelativeParent(searchViewPager, canvas, position, searchViewPager, contentView, searchViewAlpha);
+                }
             }
-            if (searchViewPager != null && searchViewPager.getVisibility() == View.VISIBLE && searchViewPager.getAlpha() > 0f) {
-                Blur3Utils.captureRelativeParent(searchViewPager, canvas, position, searchViewPager, contentView, searchViewAlpha);
+
+            @Override
+            public void captureCalculateHash(IBlur3Hash builder, RectF position) {
+                final int searchViewAlpha = searchViewPager != null ? (int) (searchViewPager.getAlpha() * 255) : 0;
+                builder.add(searchViewAlpha);
+                final float rp = getRightSlidingProgress();
+                for (ViewPage viewPage : viewPages) {
+                    if (viewPage == null || viewPage.listView == null || viewPage.getVisibility() != View.VISIBLE || viewPage.getAlpha() <= 0f) {
+                        continue;
+                    }
+                    builder.addF(viewPage.getAlpha());
+                    builder.addF(rp);
+                    // Nagram: the blur snapshot must not be invalidated on every scrolled pixel.
+                    // The scroll offset is quantized to the height of one list row, so the snapshot
+                    // is re-recorded only when the content under the blur actually changes.
+                    builder.add(viewPage.listView.computeVerticalScrollOffset() / Math.max(1, dp(56)));
+                    if (!(viewPage.listView instanceof IBlur3Capture)) {
+                        builder.unsupported();
+                        continue;
+                    }
+                    if (!ViewPositionWatcher.computeRectInParent(viewPage.listView, contentView, tmpBlur3Rect)) {
+                        builder.unsupported();
+                        continue;
+                    }
+                    tmpBlur3ListRect.set(position);
+                    tmpBlur3ListRect.offset(-tmpBlur3Rect.left, -tmpBlur3Rect.top);
+                    ((IBlur3Capture) viewPage.listView).captureCalculateHash(builder, tmpBlur3ListRect);
+                }
+                if (searchViewPager != null && searchViewPager.getVisibility() == View.VISIBLE && searchViewPager.getAlpha() > 0f) {
+                    builder.add(searchViewPager.getUniqueDrawingId());
+                }
             }
         };
 
@@ -4623,17 +4811,35 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                 viewPage.listView.updatePullState();
                                 updatePullAfterScroll = false;
                             }
-                            viewPage.dialogsAdapter.notifyDataSetChanged();
+                            // Nagram: notifyDataSetChanged() rebuilds the whole item list and
+                            // rebinds every visible cell. Running it in the frame where the
+                            // fling stops is exactly the moment the eye expects a smooth
+                            // deceleration, so the work is moved to the next frame.
+                            viewPage.listView.postOnAnimation(() -> {
+                                if (viewPage.listView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+                                    return;
+                                }
+                                viewPage.dialogsAdapter.notifyDataSetChanged();
+                            });
                         }
                         checkAutoscrollToStories(viewPage);
+                    }
+                    // Nagram: the blur snapshot is frozen while the list scrolls (see
+                    // blur3_InvalidateBlur()); refresh it once the list settles.
+                    if (newState == RecyclerView.SCROLL_STATE_IDLE) {
+                        blur3_InvalidateBlur();
+                        if (contentView != null) {
+                            contentView.updateBlurContent();
+                        }
                     }
                 }
 
                 @Override
                 public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
-                    if (contentView != null) {
-                        contentView.updateBlurContent();
-                    }
+                    // Nagram: invalidating the root view here re-draws the whole content tree
+                    // (action bar, stories row, both list pages) on every scrolled pixel. Only
+                    // the list itself moved, so the root is invalidated below only when the
+                    // scroll offset actually changes.
                     viewPage.dialogsItemAnimator.onListScroll(-dy);
                     int firstVisiblePosition = -1;
                     int lastVisiblePosition = -1;
@@ -4649,10 +4855,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         }
                     }
                     checkListLoad(viewPage);
+                    // Nagram: invalidating the root view on every scrolled pixel re-draws the
+                    // whole content tree. The root is invalidated only when the scroll offset
+                    // really changes - setScrollY() does that on its own.
                     invalidateScrollY = true;
-                    if (fragmentView != null) {
-                        fragmentView.invalidate();
-                    }
                     if (initialDialogsType != DIALOGS_TYPE_WIDGET && wasManualScroll && recyclerView.getChildCount() > 0) {
                         if (firstVisiblePosition != RecyclerView.NO_POSITION) {
                             RecyclerView.ViewHolder holder = recyclerView.findViewHolderForAdapterPosition(firstVisiblePosition);
@@ -4700,10 +4906,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         float newTranslation = currentTranslation - dy;
                         boolean applyScrollY = true;
                         applyScrollY = false;
-                        invalidateScrollY = true;
-                        if (fragmentView != null) {
-                            fragmentView.invalidate();
-                        }
                         if (applyScrollY) {
                             int maxScrollYOffset = getMaxScrollYOffset();
                             if (!(filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && animatorFilterTabsVisible.getValue())) {
@@ -4729,6 +4931,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         dialogStoriesCell.getPremiumHint().hide();
                     }
 
+                    if (viewPage == viewPages[0] && !wasManualScroll && fragmentView instanceof ContentView) {
+                        ((ContentView) fragmentView).restoreHeaderScrollOffset();
+                    }
                     final int topIndex = hasHiddenArchive() ? 1 : 0;
                     final View topChild = viewPage.listView.getChildAt(topIndex);
                     final int firstViewTop = topChild != null ? topChild.getTop() : 0;
@@ -4924,7 +5129,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     topicsFragment.checkUi_listViewPadding();
                 }
                 checkUi_searchPagesPaddings(false);
-                updateContextViewPosition();
+                applyHeaderGeometryAndCommitClips();
                 if (searchViewPager != null) {
                     searchViewPager.invalidate();
                 }
@@ -5675,7 +5880,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 if (fragmentView != null) {
                     fragmentView.invalidate();
                 }
-
+            
                 if (actionBar.getTitleTextView() != null) {
                     actionBar.getTitleTextView().setAlpha(1f - progress);
                     if (actionBar.getTitleTextView().getAlpha() > 0) {
@@ -5685,7 +5890,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 if (actionBar.getBackButton() != null) {
                     actionBar.getBackButton().setAlpha(progress == 1f ? 0f : 1f);
                 }
-
+            
                 if (folderId != 0 || communityId != 0) {
                     actionBarDefaultPaint.setColor(
                             ColorUtils.blendARGB(
@@ -5695,15 +5900,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             )
                     );
                 }
-
+            
                 if (transitionPage != null) {
                     transitionPage.listView.setOpenRightFragmentProgress(progress);
                 }
-
+            
                 checkUi_menuItems();
                 checkUi_topPanelVisible();
                 checkUi_filterTabsVisible();
                 checkUi_searchFieldVisibility();
+                applyHeaderGeometryAndCommitClips();
                 if (viewPages[0] != null && viewPages[0].listView != null) {
                     viewPages[0].listView.requestLayout();
                 }
@@ -5786,6 +5992,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         dialogStoriesCell.setOverscroll(storiesOverscroll);
         viewPage.listView.setViewsOffset(storiesOverscroll);
         viewPage.listView.setOverScrollMode(storiesOverscroll != 0 ? RecyclerView.OVER_SCROLL_NEVER : RecyclerView.OVER_SCROLL_ALWAYS);
+        applyHeaderGeometryAndCommitClips();
         fragmentView.invalidate();
         if (storiesOverscroll > dp(90) && !storiesOverscrollCalled) {
             if (dialogStoriesCell.openOverscrollSelectedStory()) {
@@ -6729,24 +6936,35 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         float topPanelsVisibility = 0;
         float fadeViewT = totalOffset;
 
+        // Nagram: assigning an unchanged translation still invalidates the view, so the
+        // panels above the list are only touched when the value really changes.
         if (filterTabsView != null) {
-            filterTabsView.setTranslationY(totalOffset - searchOffset);
+            final float filterTabsTranslation = totalOffset - searchOffset;
+            if (filterTabsView.getTranslationY() != filterTabsTranslation) {
+                filterTabsView.setTranslationY(filterTabsTranslation);
+            }
             filtersTabVisibility = filterTabsView.getAlpha();
             filtersTabHeight = dp(36 + 7) * filtersTabVisibility;
             totalOffset += filtersTabHeight;
         }
 
         if (topPanelLayout != null) {
-            topPanelLayout.setTranslationY(lerp(
+            final float topPanelTranslation = lerp(
                 totalOffset - searchOffset,
                 -dp(3) - (searchTabsView == null ? dp(44) : 0),
-                animatorSearchVisible.getFloatValue()));
+                animatorSearchVisible.getFloatValue());
+            if (topPanelLayout.getTranslationY() != topPanelTranslation) {
+                topPanelLayout.setTranslationY(topPanelTranslation);
+            }
             topPanelsVisibility = topPanelLayout.getMetadata().getTotalVisibility();
             topPanelsHeight = topPanelLayout.getAnimatedHeightWithPadding(0);
         }
 
         if (topBubblesFadeView != null) {
-            topBubblesFadeView.setTranslationY(fadeViewT - searchOffset);
+            final float bubblesTranslation = fadeViewT - searchOffset;
+            if (topBubblesFadeView.getTranslationY() != bubblesTranslation) {
+                topBubblesFadeView.setTranslationY(bubblesTranslation);
+            }
             final float s = lerp(dp(7), dp(50), Math.min(topPanelsVisibility, filtersTabVisibility));
             topBubblesFadeView.setPosition(s, Math.min(dp(40), topPanelsHeight + filtersTabHeight - s));
             topBubblesFadeView.setAlpha(Math.max(filtersTabVisibility, topPanelsVisibility));
@@ -6885,6 +7103,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         readItem = otherItem.addSubItem(read, R.drawable.msg_markread, LocaleController.getString(R.string.MarkAsRead));
         clearItem = otherItem.addSubItem(clear, R.drawable.msg_clear, LocaleController.getString(R.string.ClearHistory));
         blockItem = otherItem.addSubItem(block, R.drawable.msg_block, LocaleController.getString(R.string.BlockUser));
+        if (PasscodeHelper.isHgramDecoyConfigured()) {
+            otherItem.addSubItem(hgram_decoy_space, R.drawable.msg_secret, LocaleController.getString(R.string.HgramDecoyToggleChat));
+        }
 
         muteItem.setOnLongClickListener(e -> {
             performSelectedDialogsAction(selectedDialogs, mute, true, true);
@@ -7191,9 +7412,56 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
     }
 
+    private void hgramRefreshAfterRejectedToggle() {
+        refreshAfterSecretSpaceChange();
+        hgramForceRefresh();
+        if (searchViewPager != null && searchViewPager.dialogsSearchAdapter != null) {
+            searchViewPager.dialogsSearchAdapter.hgramForceRefresh();
+        }
+    }
+
+    private void refreshAfterSecretSpaceChange() {
+        if (viewPages != null) {
+            for (ViewPage page : viewPages) {
+                if (page == null || page.dialogsAdapter == null || page.listView == null) {
+                    continue;
+                }
+                final LinearLayoutManager layoutManager = page.listView.getLayoutManager() instanceof LinearLayoutManager
+                        ? (LinearLayoutManager) page.listView.getLayoutManager() : null;
+                final int firstVisible = layoutManager != null ? layoutManager.findFirstVisibleItemPosition() : RecyclerView.NO_POSITION;
+                page.dialogsAdapter.updateList(page.saveScrollPositionRunnable);
+                page.dialogsAdapter.notifyDataSetChanged();
+                if (layoutManager != null && firstVisible != RecyclerView.NO_POSITION && firstVisible < page.dialogsAdapter.getItemCount()) {
+                    layoutManager.scrollToPosition(firstVisible);
+                }
+                page.listView.invalidate();
+            }
+        }
+        if (searchViewPager != null && searchViewPager.dialogsSearchAdapter != null) {
+            searchViewPager.dialogsSearchAdapter.checkSecretSpaceState();
+        }
+        NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.updateInterfaces,
+                MessagesController.UPDATE_MASK_AVATAR | MessagesController.UPDATE_MASK_NAME | MessagesController.UPDATE_MASK_STATUS);
+    }
+
+    public void hgramForceRefresh() {
+        if (viewPages == null) {
+            return;
+        }
+        for (ViewPage page : viewPages) {
+            if (page == null) {
+                continue;
+            }
+            page.dialogsAdapter.notifyDataSetChanged();
+            page.listView.invalidate();
+            page.listView.requestLayout();
+        }
+    }
+
     @Override
     public void onResume() {
         super.onResume();
+        HgramAntiPeek.onScopeResume(this, getClass().getName());
         if (dialogStoriesCell != null) {
             dialogStoriesCell.onResume();
         }
@@ -7205,8 +7473,22 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             blurredView.setBackground(null);
         }
         if (viewPages != null) {
+            // Nagram: notifyDataSetChanged() rebuilds the whole item list and rebinds every
+            // visible cell. It used to run for both list pages in the frame where the Chats tab
+            // became visible again, which is exactly the moment the user perceives a stutter.
+            // Only the page that is actually shown is refreshed, and the work is moved out of
+            // the current frame.
             for (int a = 0; a < viewPages.length; a++) {
-                viewPages[a].dialogsAdapter.notifyDataSetChanged();
+                final ViewPage page = viewPages[a];
+                if (page == null || page.listView == null || page.getVisibility() != View.VISIBLE) {
+                    continue;
+                }
+                page.listView.postOnAnimation(() -> {
+                    if (page.listView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+                        return;
+                    }
+                    page.dialogsAdapter.notifyDataSetChanged();
+                });
             }
         }
         if (commentView != null) {
@@ -7416,6 +7698,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     @Override
     public void onPause() {
         super.onPause();
+        HgramAntiPeek.onScopePause(this);
         if (storiesBulletin != null) {
             storiesBulletin.hide();
             storiesBulletin = null;
@@ -7953,7 +8236,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 }
             }
         }
-        updateContextViewPosition();
+        applyHeaderGeometryAndCommitClips();
     }
 
     private void findAndUpdateCheckBox(long dialogId, boolean checked) {
@@ -7975,15 +8258,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
     }
 
-    private void checkListLoad(ViewPage viewPage) {
-        checkListLoad(viewPage, viewPage.layoutManager.findFirstVisibleItemPosition(), viewPage.layoutManager.findLastVisibleItemPosition());
-    }
+    private final java.util.HashMap<ViewPage, Long> lastCheckListLoadTimes = new java.util.HashMap<>();
 
-    private void checkListLoad(ViewPage viewPage, int firstVisibleItem, int lastVisibleItem) {
-        if (tabsAnimationInProgress || startedTracking || filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && filterTabsView.isAnimatingIndicator()) {
-            return;
-        }
-        int visibleItemCount = Math.abs(lastVisibleItem - firstVisibleItem) + 1;
+    /**
+     * Nagram: the check runs on every scrolled pixel. Near the end of the list its conditions
+     * stay true, so loadDialogs() used to be posted on every single frame. While the user is
+     * scrolling the check is throttled to a few times per second.
+     */
+    private void checkListLoad(ViewPage viewPage) {
+        // Nagram: the floating button over the archive cell is driven by the last visible
+        // item, so this part always runs - it is cheap and must not be throttled.
+        final int lastVisibleItem = viewPage.layoutManager.findLastVisibleItemPosition();
         if (lastVisibleItem != RecyclerView.NO_POSITION) {
             RecyclerView.ViewHolder holder = viewPage.listView.findViewHolderForAdapterPosition(lastVisibleItem);
             if (floatingForceVisible = holder != null && holder.getItemViewType() == 11) {
@@ -7992,6 +8277,23 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         } else {
             floatingForceVisible = false;
         }
+
+        final long now = SystemClock.elapsedRealtime();
+        final boolean scrolling = viewPage.listView != null && viewPage.listView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE;
+        final Long last = lastCheckListLoadTimes.get(viewPage);
+        if (scrolling && last != null && now - last < 300) {
+            return;
+        }
+        lastCheckListLoadTimes.put(viewPage, now);
+        checkListLoad(viewPage, viewPage.layoutManager.findFirstVisibleItemPosition(), lastVisibleItem);
+    }
+
+    private void checkListLoad(ViewPage viewPage, int firstVisibleItem, int lastVisibleItem) {
+        if (tabsAnimationInProgress || startedTracking || filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && filterTabsView.isAnimatingIndicator()) {
+            return;
+        }
+        int visibleItemCount = Math.abs(lastVisibleItem - firstVisibleItem) + 1;
+
         boolean loadArchived = false;
         boolean loadArchivedFromCache = false;
         boolean load = false;
@@ -9104,6 +9406,81 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }, 300);
     }
 
+    private void applyFolderSwipeHeaderFrame(float progress) {
+        final int width = viewPages[0].getMeasuredWidth();
+        final float direction = animatingForward ? -1f : 1f;
+        final float firstX = direction * progress * width;
+        viewPages[0].setTranslationX(firstX);
+        viewPages[1].setTranslationX(firstX - direction * width);
+        applyHeaderGeometryAndCommitClips();
+    }
+    
+    private void applyActionModeHeaderFrame(float progress, float pageTranslationY) {
+        progressToActionMode = progress;
+        viewPages[0].setTranslationY(pageTranslationY);
+        for (int i = 0; i < actionBar.getChildCount(); i++) {
+            final View child = actionBar.getChildAt(i);
+            if (child.getVisibility() == View.VISIBLE && child != actionBar.getActionMode()
+                    && child != actionBar.getBackButton()) {
+                child.setAlpha(1f - progress);
+            }
+        }
+        checkUi_searchFieldVisibility();
+        checkUi_itemBackButtonVisibility();
+        applyHeaderGeometryAndCommitClips();
+        if (fragmentView != null) {
+            fragmentView.invalidate();
+        }
+    }
+    
+    private void applyHeaderGeometryAndCommitClips() {
+        if (hgramSuppressHeaderPublish) return;
+        if (fragmentView instanceof ContentView) {
+            hgramHeaderPublishCount++;
+            ((ContentView) fragmentView).applyHeaderGeometryAndCommitClips();
+        }
+        hgramLastPublishedSignature = hgramHeaderInputSignature();
+    }
+    
+    private static float hgramYInParent(View view, float localY) {
+        final float scale = view.getScaleY();
+        return view.getY() + (1f - scale) * view.getPivotY() + scale * localY;
+    }
+    
+    private static float hgramPanelBottom(View panel, float height) {
+        if (panel == null || panel.getVisibility() != View.VISIBLE || panel.getAlpha() <= 0 || height <= 0) {
+            return Float.NEGATIVE_INFINITY;
+        }
+        return hgramYInParent(panel, height);
+    }
+    
+    private static float hgramPanelBottom(View panel) {
+        return panel == null ? Float.NEGATIVE_INFINITY : hgramPanelBottom(panel, panel.getHeight());
+    }
+    
+    private void updateHgramClipTops(ContentView content) {
+        // Panels and pages are siblings in ContentView. Work in that common space so
+        // fractional translations and scaling survive until the single list-local rounding.
+        float headerBottom = -content.getY() + content.getActionBarTop() + content.getActionBarFullHeight();
+        headerBottom = Math.max(headerBottom, hgramPanelBottom(actionBar));
+        if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE) {
+            final float tabsFactor = getFilterTabsVisibilityFactor(false);
+            final float occupiedTabsHeight = reservedFilterTabsHeight(tabsFactor);
+            headerBottom = Math.max(headerBottom, filterTabsView.getY() + occupiedTabsHeight);
+        }
+        headerBottom = Math.max(headerBottom, hgramPanelBottom(fragmentSearchField));
+        headerBottom = Math.max(headerBottom, hgramPanelBottom(searchTabsAndFiltersLayout));
+        if (topPanelLayout != null) {
+            headerBottom = Math.max(headerBottom,
+                    hgramPanelBottom(topPanelLayout, topPanelLayout.getAnimatedHeightWithPadding(0)));
+        }
+        for (ViewPage page : viewPages) {
+            if (page != null && page.listView != null) {
+                page.listView.updateHgramClipTop(headerBottom);
+            }
+        }
+    }
+
     private void setScrollY(float value) {
         if (viewPages != null) {
             int glowOffset = viewPages[0].listView.getPaddingTop() + (int) value;
@@ -9111,7 +9488,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 viewPages[a].listView.setTopGlowOffset(glowOffset);
             }
         }
-        if (fragmentView == null || value == scrollYOffset) {
+        if (fragmentView == null) {
+            return;
+        }
+        if (value == scrollYOffset) {
+            applyHeaderGeometryAndCommitClips();
             return;
         }
         scrollYOffset = value;
@@ -9120,12 +9501,13 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
         if (animatedStatusView != null) {
             final float alphaToSet = 1f - -value / ActionBar.getCurrentActionBarHeight();
-
+    
             animatedStatusView.translateY2((int) value);
             animatedStatusView.setAlpha(MathUtils.clamp(alphaToSet, 0f, 1f));
             animatedStatusView.setVisibility(alphaToSet > 0 ? View.VISIBLE : View.INVISIBLE);
         }
         checkUi_searchFieldVisibility();
+        applyHeaderGeometryAndCommitClips();
         fragmentView.invalidate();
     }
 
@@ -9230,18 +9612,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         float finalTranslateListHeight = translateListHeight;
         actionBarColorAnimator = ValueAnimator.ofFloat(progressToActionMode, 0);
         actionBarColorAnimator.addUpdateListener(valueAnimator -> {
-            viewPages[0].setTranslationY(finalTranslateListHeight * (1f - progressToActionMode));
-            progressToActionMode = (float) valueAnimator.getAnimatedValue();
-            for (int i = 0; i < actionBar.getChildCount(); i++) {
-                if (actionBar.getChildAt(i).getVisibility() == View.VISIBLE && actionBar.getChildAt(i) != actionBar.getActionMode() && actionBar.getChildAt(i) != actionBar.getBackButton()) {
-                    actionBar.getChildAt(i).setAlpha(1f - progressToActionMode);
-                }
-            }
-            checkUi_searchFieldVisibility();
-            checkUi_itemBackButtonVisibility();
-            if (fragmentView != null) {
-                fragmentView.invalidate();
-            }
+            final float progress = (float) valueAnimator.getAnimatedValue();
+            applyActionModeHeaderFrame(progress, finalTranslateListHeight * (1f - progress));
         });
         actionBarColorAnimator.addListener(new AnimatorListenerAdapter() {
             @Override
@@ -9254,6 +9626,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 fragmentView.invalidate();
                 scrollAdditionalOffset = -(dp(hasStories ? DialogStoriesCell.HEIGHT_IN_DP : 0) + searchFieldHeight() - finalTranslateListHeight);
                 viewPages[0].setTranslationY(0);
+                applyHeaderGeometryAndCommitClips();
                 for (int i = 0; i < viewPages.length; i++) {
                     if (viewPages[i] != null) {
                         viewPages[i].listView.requestLayout();
@@ -10247,18 +10620,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             float finalTranslateListHeight = translateListHeight;
             actionBarColorAnimator.addUpdateListener(valueAnimator -> {
-                progressToActionMode = (float) valueAnimator.getAnimatedValue();
-                viewPages[0].setTranslationY(-finalTranslateListHeight * progressToActionMode);
-                for (int i = 0; i < actionBar.getChildCount(); i++) {
-                    if (actionBar.getChildAt(i).getVisibility() == View.VISIBLE && actionBar.getChildAt(i) != actionBar.getActionMode() && actionBar.getChildAt(i) != actionBar.getBackButton()) {
-                        actionBar.getChildAt(i).setAlpha(1f - progressToActionMode);
-                    }
-                }
-                if (fragmentView != null) {
-                    fragmentView.invalidate();
-                }
-                checkUi_searchFieldVisibility();
-                checkUi_itemBackButtonVisibility();
+                final float progress = (float) valueAnimator.getAnimatedValue();
+                applyActionModeHeaderFrame(progress, -finalTranslateListHeight * progress);
             });
             actionBarColorAnimator.addListener(new AnimatorListenerAdapter() {
                 @Override
@@ -10269,6 +10632,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     actionModeFullyShowed = true;
                     scrollAdditionalOffset = dp(hasStories ? DialogStoriesCell.HEIGHT_IN_DP : 0) + searchFieldHeight() - finalTranslateListHeight;
                     viewPages[0].setTranslationY(0);
+                    applyHeaderGeometryAndCommitClips();
                     for (int i = 0; i < viewPages.length; i++) {
                         if (viewPages[i] != null) {
                             viewPages[i].listView.requestLayout();
@@ -10706,6 +11070,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             if (viewPages == null || dialogsListFrozen) {
                 return;
             }
+            if (searchViewPager != null && searchViewPager.dialogsSearchAdapter != null) {
+                searchViewPager.dialogsSearchAdapter.checkSecretSpaceState();
+            }
             for (int a = 0; a < viewPages.length; a++) {
                 final ViewPage viewPage = viewPages[a];
                 MessagesController.DialogFilter filter = null;
@@ -10777,6 +11144,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         } else if (id == NotificationCenter.updateInterfaces) {
             Integer mask = (Integer) args[0];
             updateVisibleRows(mask);
+            if (searchViewPager != null && searchViewPager.dialogsSearchAdapter != null) {
+                searchViewPager.dialogsSearchAdapter.checkSecretSpaceState();
+            }
             if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && (mask & MessagesController.UPDATE_MASK_READ_DIALOG_MESSAGE) != 0) {
                 filterTabsView.checkTabsCounter();
             }
@@ -11371,8 +11741,14 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             return;
         }
 
+        // Nagram: hideFloatingButton() runs on nearly every scrolled pixel, and
+        // updateFloatingButtonVisibility() starts an animation. Skip the repeated work when
+        // the button is already in the requested state.
+        final boolean stateChanged = floatingButtonHidden != hide;
         floatingButtonHidden = hide;
-        updateFloatingButtonVisibility(true);
+        if (stateChanged) {
+            updateFloatingButtonVisibility(true);
+        }
 
         if (hide) {
             if (storyHint != null) {
@@ -12995,6 +13371,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     @Override
                     public void onAnimationUpdate(@NonNull ValueAnimator animation) {
                         progressToDialogStoriesCell = (float) animation.getAnimatedValue();
+                        applyHeaderGeometryAndCommitClips();
                         if (fragmentView != null) {
                             fragmentView.invalidate();
                         }
@@ -13004,6 +13381,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     @Override
                     public void onAnimationEnd(Animator animation) {
                         progressToDialogStoriesCell = dialogStoriesCellVisible ? 1f : 0;
+                        applyHeaderGeometryAndCommitClips();
                         if (!dialogStoriesCellVisible) {
                             dialogStoriesCell.setVisibility(View.GONE);
                         }
@@ -13018,6 +13396,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             } else {
                 dialogStoriesCell.setVisibility(dialogStoriesCellVisible && !isInPreviewMode() ? View.VISIBLE : View.GONE);
                 progressToDialogStoriesCell = dialogStoriesCellVisible ? 1f : 0;
+                applyHeaderGeometryAndCommitClips();
                 if (fragmentView != null) {
                     fragmentView.invalidate();
                 }
@@ -13177,9 +13556,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             @Override
             public void setTranslationY(float translationY) {
                 super.setTranslationY(translationY);
-                if (searchTabsAndFiltersLayout != null) {
-                    searchTabsAndFiltersLayout.setTranslationY(translationY);
-                }
+                onSearchPagerTranslation(translationY);
             }
 
             @Override
@@ -14114,6 +14491,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         } else if (id == ANIMATOR_ID_SCANQR_BUTTON_VISIBLE) {
             checkUi_itemScanVisibility();
         }
+        if (id == ANIMATOR_ID_SEARCH_VISIBLE || id == ANIMATOR_ID_DONE_BUTTON_VISIBLE
+                || id == ANIMATOR_ID_ACTION_MODE_VISIBLE || id == ANIMATOR_ID_FILTER_TABS_VISIBLE
+                || id == ANIMATOR_ID_SEARCH_FILTER_TABS_VISIBLE) {
+            applyHeaderGeometryAndCommitClips();
+        }
     }
 
     @Override
@@ -14190,6 +14572,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             filtersView.setAlpha(alpha);
             filtersView.setVisibility(alpha > 0 ? View.VISIBLE : View.GONE);
         }
+        applyHeaderGeometryAndCommitClips();
     }
 
     private void checkUi_forwardCommentFieldVisible() {
@@ -14237,6 +14620,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
     }
 
+    private float reservedFilterTabsHeight(float factor) {
+        if (factor <= 0f) {
+            return 0f;
+        }
+        final float topPanelsVisibility = topPanelLayout != null
+                ? topPanelLayout.getMetadata().getTotalVisibility() : 0f;
+        return Math.max(0, (int) (dp(FILTER_TABS_HEIGHT + 14) * factor)
+                - dp(5 * Math.max(factor, topPanelsVisibility)));
+    }
+
     private float getFilterTabsVisibilityFactor(boolean includeSearch) {
         final float factor1 = includeSearch ? (1f - animatorSearchVisible.getFloatValue()) : 1f;
         final float factor2 = 1f - getRightSlidingProgress();
@@ -14248,18 +14641,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         final float factor = getFilterTabsVisibilityFactor(true);
         if (filterTabsView != null) {
             final boolean alphaChanged = filterTabsView.getAlpha() != factor;
-
+    
             final float s = lerp(0.98f, 1f, factor);
             filterTabsView.setAlpha(factor);
             filterTabsView.setScaleX(s);
             filterTabsView.setScaleY(s);
             filterTabsView.setVisibility(factor > 0 ? View.VISIBLE : View.GONE);
-
+    
             if (alphaChanged && viewPages[0] != null) {
                 viewPages[0].listView.requestLayout();
             }
         }
-        updateContextViewPosition();
     }
 
     private void checkUi_mainTabsVisible() {
@@ -14273,19 +14665,19 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         if (fragmentSearchField == null) {
             return;
         }
-
+    
         final int maxScrollWithoutSearch = getMaxScrollYOffsetWithoutSearch();
         final float alphaByScrollOffset = NekoConfig.disablePullDownSearch.Bool() ? 0 : 1f - MathUtils.clamp((-scrollYOffset - maxScrollWithoutSearch) / dp(SEARCH_FIELD_HEIGHT), 0, 1);
-
+    
         final float actionModeVisible = Math.max(progressToActionMode, animatorActionModeVisible.getFloatValue());
         final float searchFieldVisible = animatorSearchVisible.getFloatValue();
-
+    
         final float factor0 = isSupportSearch() ? 1 : 0;
         final float factor1 = (1f - actionModeVisible) * (1f - animatorDoneButtonVisible.getFloatValue());
         final float factor2 = Math.max(searchFieldVisible, alphaByScrollOffset * (1f - getRightSlidingProgress()));
-
+    
         final float alpha = factor0 * factor1 * factor2;
-
+    
         fragmentSearchField.setAlpha(alpha);
         fragmentSearchField.setVisibility(alpha > 0 ? View.VISIBLE : View.GONE);
         animatorSearchButtonVisible.setValue(alpha <= 0.01f, true);
@@ -14405,6 +14797,17 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
 
     private IBlur3Capture iBlur3Capture;
+    private final RectF tmpBlur3Rect = new RectF();
+    private final RectF tmpBlur3ListRect = new RectF();
+
+
+    private int blur3LastWidth = -1;
+    private int blur3LastHeight = -1;
+    private int blur3LastActionBarHeight = -1;
+    private int blur3LastSearchHeight = -1;
+    private float blur3LastSearchProgress = -1f;
+    private int blur3LastNavHeight = -1;
+    private int blur3LastBottomPadding = -1;
 
     private final ArrayList<RectF> iBlur3Positions = new ArrayList<>();
     private final RectF iBlur3PositionActionBar = new RectF();
@@ -14418,39 +14821,78 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             return;
         }
 
-        final int additionalList = dp(48);
-        final int mainTabBottom = fragmentView.getMeasuredHeight() - navigationBarHeight - dp(DialogsActivity.MAIN_TABS_MARGIN);
-        final int mainTabTop = mainTabBottom - dp(DialogsActivity.MAIN_TABS_HEIGHT);
+        // Nagram: while the list is scrolling the blur snapshot is frozen anyway (it is
+        // refreshed once the list settles). Calculating the hash of the list means walking
+        // every visible cell, so it is skipped entirely for the duration of the scroll.
+        if (blur3_IsScrolling()) {
+            return;
+        }
 
-        final int actionBarHeight = actionBar.getMeasuredHeight()
+        // Nagram: this is called from every draw pass. Recomputing the blur rectangles and
+        // re-running setupRenderNodes() on each frame is pure overhead when nothing moved.
+        // Remember the inputs and skip the whole update while they stay the same.
+        final int blur3Width = fragmentView.getMeasuredWidth();
+        final int blur3Height = fragmentView.getMeasuredHeight();
+        final int blur3ActionBarHeight = actionBar.getMeasuredHeight()
             + searchFieldHeight()
             + dp(hasStories ? DialogStoriesCell.HEIGHT_IN_DP : 0)
             + (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE ? filterTabsView.getMeasuredHeight() : 0)
             + (topPanelLayout != null && topPanelLayout.getVisibility() == View.VISIBLE ? topPanelLayout.getSumHeightOfAllVisibleChild() : 0)
             + ((int) scrollYOffset);
+        final int blur3SearchHeight = (searchTabsAndFiltersLayout != null ? searchTabsAndFiltersLayout.getMeasuredHeight() : 0) + dp(30);
+        final float blur3SearchProgress = animatorSearchVisible.getFloatValue();
+        final int blur3NavHeight = navigationBarHeight;
+        // Nagram: the bottom blur rectangle depends on the padding of the list, which changes
+        // with the keyboard inset and the input bubble height.
+        final int blur3BottomPadding = commentView != null && chatInputViewsContainer != null ? calculateListViewPaddingBottom() : 0;
 
-        final int actionBarHeightSearch = actionBar.getMeasuredHeight()
-            + (searchTabsAndFiltersLayout != null ? searchTabsAndFiltersLayout.getMeasuredHeight() : 0)
-            + dp(30);
+        final boolean positionsUnchanged = blur3Width == blur3LastWidth && blur3Height == blur3LastHeight
+                && blur3ActionBarHeight == blur3LastActionBarHeight
+                && blur3SearchHeight == blur3LastSearchHeight
+                && blur3SearchProgress == blur3LastSearchProgress
+                && blur3NavHeight == blur3LastNavHeight
+                && blur3BottomPadding == blur3LastBottomPadding;
+        blur3LastWidth = blur3Width;
+        blur3LastHeight = blur3Height;
+        blur3LastActionBarHeight = blur3ActionBarHeight;
+        blur3LastSearchHeight = blur3SearchHeight;
+        blur3LastSearchProgress = blur3SearchProgress;
+        blur3LastNavHeight = blur3NavHeight;
+        blur3LastBottomPadding = blur3BottomPadding;
 
-        iBlur3PositionActionBar.set(0, -additionalList, fragmentView.getMeasuredWidth(), lerp(actionBarHeight, actionBarHeightSearch, animatorSearchVisible.getFloatValue()) + additionalList );
+        if (!positionsUnchanged) {
+            final int additionalList = dp(48);
+            final int mainTabBottom = fragmentView.getMeasuredHeight() - navigationBarHeight - dp(DialogsActivity.MAIN_TABS_MARGIN);
+            final int mainTabTop = mainTabBottom - dp(DialogsActivity.MAIN_TABS_HEIGHT);
 
-        boolean hasBottomBlur = false;
-        if (hasMainTabs) {
-            iBlur3PositionMainTabs.set(0, mainTabTop, fragmentView.getMeasuredWidth(), mainTabBottom);
-            iBlur3PositionMainTabs.inset(0, LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0 : -dp(48));
+            final int actionBarHeightSearch = actionBar.getMeasuredHeight()
+                + (searchTabsAndFiltersLayout != null ? searchTabsAndFiltersLayout.getMeasuredHeight() : 0)
+                + dp(30);
 
-            hasBottomBlur = true;
-        } else if (commentView != null && chatInputViewsContainer != null) {
-            iBlur3PositionMainTabs.set(0,
-                fragmentView.getMeasuredHeight() - calculateListViewPaddingBottom(),
-                fragmentView.getMeasuredWidth(), fragmentView.getMeasuredHeight());
-            iBlur3PositionMainTabs.inset(0, LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0 : -dp(48));
+            iBlur3PositionActionBar.set(0, -additionalList, fragmentView.getMeasuredWidth(), lerp(blur3ActionBarHeight, actionBarHeightSearch, blur3SearchProgress) + additionalList );
 
-            hasBottomBlur = true;
+            boolean hasBottomBlur = false;
+            if (hasMainTabs) {
+                iBlur3PositionMainTabs.set(0, mainTabTop, fragmentView.getMeasuredWidth(), mainTabBottom);
+                iBlur3PositionMainTabs.inset(0, LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0 : -dp(48));
+
+                hasBottomBlur = true;
+            } else if (commentView != null && chatInputViewsContainer != null) {
+                iBlur3PositionMainTabs.set(0,
+                    fragmentView.getMeasuredHeight() - calculateListViewPaddingBottom(),
+                    fragmentView.getMeasuredWidth(), fragmentView.getMeasuredHeight());
+                iBlur3PositionMainTabs.inset(0, LiteMode.isEnabled(LiteMode.FLAG_LIQUID_GLASS) ? 0 : -dp(48));
+
+                hasBottomBlur = true;
+            }
+
+            scrollableViewNoiseSuppressor.setupRenderNodes(iBlur3Positions, hasBottomBlur ? 2 : 1);
         }
 
-        scrollableViewNoiseSuppressor.setupRenderNodes(iBlur3Positions, hasBottomBlur ? 2 : 1);
+        // Nagram: re-recording the blur snapshot walks the whole visible list and draws every
+        // DialogCell a second time. Doing that on every scrolled pixel doubles the per-frame
+        // drawing work and makes fast scrolling stutter. The snapshot is refreshed once, as
+        // soon as the list settles.
         scrollableViewNoiseSuppressor.invalidateResultRenderNodes(iBlur3Capture, fragmentView.getMeasuredWidth(), fragmentView.getMeasuredHeight());
 
         if (iBlur3SourceGlassFrosted != null) {
@@ -14461,6 +14903,27 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             iBlur3SourceGlass.setSize(fragmentView.getMeasuredWidth(), fragmentView.getMeasuredHeight());
             iBlur3SourceGlass.updateDisplayListIfNeeded();
         }
+    }
+
+    /**
+     * Nagram: true while any chat list page is scrolling.
+     *
+     * <p>While scrolling, the blur snapshot is not re-recorded (see {@link #blur3_InvalidateBlur()}),
+     * so it is refreshed once the list settles.
+     */
+    private boolean blur3_IsScrolling() {
+        if (viewPages == null) {
+            return false;
+        }
+        for (ViewPage viewPage : viewPages) {
+            if (viewPage == null || viewPage.listView == null) {
+                continue;
+            }
+            if (viewPage.listView.getScrollState() != RecyclerView.SCROLL_STATE_IDLE) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private int calculateListViewPaddingBottom() {

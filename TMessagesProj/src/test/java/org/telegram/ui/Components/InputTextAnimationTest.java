@@ -20,6 +20,9 @@ import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
 import org.robolectric.annotation.GraphicsMode;
+import org.robolectric.annotation.Implementation;
+import org.robolectric.annotation.Implements;
+import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 
@@ -30,7 +33,7 @@ import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.ui.Components.InputTextAnimation;
 
 @RunWith(RobolectricTestRunner.class)
-@Config(application = android.app.Application.class)
+@Config(application = android.app.Application.class, shadows = InputTextAnimationTest.ShadowLocaleController.class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 public class InputTextAnimationTest {
     private EditTextEffects view;
@@ -85,7 +88,7 @@ public class InputTextAnimationTest {
     }
 
     @Test
-    public void compositionAnimatesButPasswordAndStyledTextAreNotCaptured() throws Exception {
+    public void compositionAnimatesButPasswordTextIsNotCaptured() throws Exception {
         NaConfig.INSTANCE.getInputTextAnimations().value = true;
         view.setTransformationMethod(PasswordTransformationMethod.getInstance());
         view.getText().append("secret");
@@ -97,6 +100,13 @@ public class InputTextAnimationTest {
         draw();
         assertNotNull(field("insertion"));
         BaseInputConnection.removeComposingSpans(view.getText());
+    }
+
+    @Test
+    public void styledTextIsNotCapturedOnDeletion() throws Exception {
+        NaConfig.INSTANCE.getInputTextAnimations().value = true;
+        view.getText().append("styled");
+        draw();
         view.getText().setSpan(new StyleSpan(android.graphics.Typeface.BOLD), 0, 2, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         view.getText().delete(0, 1);
         draw();
@@ -120,6 +130,14 @@ public class InputTextAnimationTest {
         Bitmap bitmap = Bitmap.createBitmap(400, 160, Bitmap.Config.ARGB_8888);
         view.draw(new Canvas(bitmap));
         bitmap.recycle();
+    }
+
+    @Implements(LocaleController.class)
+    public static class ShadowLocaleController {
+        @Implementation
+        protected static String getString(int resourceId) { return "test"; }
+        @Implementation
+        protected static String getString(String key, int resourceId) { return key; }
     }
 
     // Keep these tests scoped to editing/layout; Telegram emoji/quote rendering needs JNI.

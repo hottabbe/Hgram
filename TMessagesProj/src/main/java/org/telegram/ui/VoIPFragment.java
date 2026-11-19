@@ -92,6 +92,7 @@ import org.telegram.messenger.pip.utils.PipUtils;
 import org.telegram.messenger.voip.EncryptionKeyEmojifier;
 import org.telegram.messenger.voip.Instance;
 import org.telegram.messenger.voip.VideoCapturerDevice;
+import org.telegram.messenger.voip.VoIPGroupNotification;
 import org.telegram.messenger.voip.VoIPService;
 import org.telegram.messenger.voip.VoIPServiceState;
 import org.telegram.messenger.voip.VoipAudioManager;
@@ -149,6 +150,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
+
 public class VoIPFragment implements
     VoIPService.StateListener,
     NotificationCenter.NotificationCenterDelegate,
@@ -165,6 +168,7 @@ public class VoIPFragment implements
 
     TLRPC.User currentUser;
     TLRPC.User callingUser;
+    private boolean hgramCallMasked;
 
     private VoIpSwitchLayout bottomSpeakerBtn;
     private VoIpSwitchLayout bottomVideoBtn;
@@ -526,6 +530,8 @@ public class VoIPFragment implements
         final VoIPServiceState state = VoIPService.getSharedState();
         if (state == null) return;
         callingUser = state.getUser();
+        final long hgramCallDialogId = resolveHgramCallDialogId(state);
+        hgramCallMasked = hgramCallDialogId != 0 && !HgramSecretSpace.isVisible(currentAccount, hgramCallDialogId);
         if (VoIPService.getSharedInstance() != null) {
             VoIPService.getSharedInstance().registerStateListener(this);
         }
@@ -537,6 +543,28 @@ public class VoIPFragment implements
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.emojiLoaded);
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.closeInCallActivity);
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.nearEarEvent);
+    }
+
+    private static long resolveHgramCallDialogId(VoIPServiceState state) {
+        if (state == null) {
+            return 0;
+        }
+        if (state instanceof VoIPGroupNotification.State) {
+            return ((VoIPGroupNotification.State) state).dialogId;
+        }
+        final VoIPService service = VoIPService.getSharedInstance();
+        if (service != null) {
+            final TLRPC.Chat chat = service.getChat();
+            if (chat != null && chat.id != 0) {
+                return -chat.id;
+            }
+            final long callerId = service.getCallerId();
+            if (callerId != 0) {
+                return callerId;
+            }
+        }
+        final TLRPC.User user = state.getUser();
+        return user != null ? user.id : 0;
     }
 
     private void destroy() {
@@ -980,7 +1008,7 @@ public class VoIPFragment implements
         emojiRationalTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 15);
         emojiRationalTextView.setTextColor(Color.WHITE);
         emojiRationalTextView.setGravity(Gravity.CENTER);
-        CharSequence ellipsizeName = TextUtils.ellipsize(UserObject.getFirstName(callingUser), emojiRationalTextView.getPaint(), dp(300), TextUtils.TruncateAt.END);
+        CharSequence ellipsizeName = TextUtils.ellipsize(hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : UserObject.getFirstName(callingUser), emojiRationalTextView.getPaint(), dp(300), TextUtils.TruncateAt.END);
         emojiRationalTextView.setText(LocaleController.formatString("CallEmojiKeyTooltip", R.string.CallEmojiKeyTooltip, ellipsizeName));
 
         emojiRationalLayout.setVisibility(View.GONE);
@@ -1025,13 +1053,19 @@ public class VoIPFragment implements
 
         callingUserPhotoViewMini = new ImageWithWavesView(context);
         AvatarDrawable avatarDrawable = new AvatarDrawable();
-        avatarDrawable.setInfo(callingUser);
-        callingUserPhotoViewMini.setImage(ImageLocation.getForUserOrChat(currentAccount, callingUser, ImageLocation.TYPE_BIG), null, avatarDrawable, callingUser);
+        if (hgramCallMasked) {
+            avatarDrawable.setInfo(0);
+            avatarDrawable.setColor(Theme.getColor(Theme.key_avatar_backgroundGray));
+            callingUserPhotoViewMini.setImage(null, null, avatarDrawable, null);
+        } else {
+            avatarDrawable.setInfo(callingUser);
+            callingUserPhotoViewMini.setImage(ImageLocation.getForUserOrChat(currentAccount, callingUser, ImageLocation.TYPE_BIG), null, avatarDrawable, callingUser);
+        }
         callingUserPhotoViewMini.setRoundRadius(AndroidUtilities.dp(135) / 2);
 
         callingUserTitle = new TextView(context);
         callingUserTitle.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 28);
-        CharSequence name = ContactsController.formatName(callingUser.first_name, callingUser.last_name);
+        CharSequence name = hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : ContactsController.formatName(callingUser.first_name, callingUser.last_name);
         name = Emoji.replaceEmoji(name, callingUserTitle.getPaint().getFontMetricsInt(), false);
         callingUserTitle.setText(name);
         callingUserTitle.setMaxLines(2);
@@ -1045,7 +1079,7 @@ public class VoIPFragment implements
         ViewCompat.setImportantForAccessibility(statusTextView, ViewCompat.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         statusLayout.addView(statusTextView, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 6));
 
-        if (state != null && state.getUser() != null && state.isConference() && state.getGroupCall() != null) {
+        if (!hgramCallMasked && state != null && state.getUser() != null && state.isConference() && state.getGroupCall() != null) {
             participantsView = new ConferenceParticipantsView(context);
             participantsView.set(currentAccount, state.getUser().id, state.getGroupParticipants(), state.getGroupCall().participants_count);
             statusLayout.addView(participantsView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 30, 0, 22, 0, 0));
@@ -1937,12 +1971,12 @@ public class VoIPFragment implements
                 final String lastError = voipService != null ? voipService.getLastError() : Instance.ERROR_UNKNOWN;
                 if (!TextUtils.equals(lastError, Instance.ERROR_UNKNOWN)) {
                     if (TextUtils.equals(lastError, Instance.ERROR_INCOMPATIBLE)) {
-                        final String name = ContactsController.formatName(callingUser.first_name, callingUser.last_name);
+                        final String name = (hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : ContactsController.formatName(callingUser.first_name, callingUser.last_name));
                         final String message = LocaleController.formatString("VoipPeerIncompatible", R.string.VoipPeerIncompatible, name);
                         showErrorDialog(AndroidUtilities.replaceTags(message));
                     } else if (TextUtils.equals(lastError, Instance.ERROR_PEER_OUTDATED)) {
                         if (isVideoCall) {
-                            final String name = UserObject.getFirstName(callingUser);
+                            final String name = (hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : UserObject.getFirstName(callingUser));
                             final String message = LocaleController.formatString("VoipPeerVideoOutdated", R.string.VoipPeerVideoOutdated, name);
                             boolean[] callAgain = new boolean[1];
                             AlertDialog dlg = new DarkAlertDialog.Builder(activity)
@@ -1973,12 +2007,12 @@ public class VoIPFragment implements
                                 }
                             });
                         } else {
-                            final String name = UserObject.getFirstName(callingUser);
+                            final String name = (hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : UserObject.getFirstName(callingUser));
                             final String message = LocaleController.formatString("VoipPeerOutdated", R.string.VoipPeerOutdated, name);
                             showErrorDialog(AndroidUtilities.replaceTags(message));
                         }
                     } else if (TextUtils.equals(lastError, Instance.ERROR_PRIVACY)) {
-                        final String name = ContactsController.formatName(callingUser.first_name, callingUser.last_name);
+                        final String name = (hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : ContactsController.formatName(callingUser.first_name, callingUser.last_name));
                         final String message = LocaleController.formatString(R.string.CallNotAvailable, name);
                         showErrorDialog(AndroidUtilities.replaceTags(message));
                         AlertsCreator.showCallsForbidden(activity, currentAccount, callingUser.id, null);
@@ -2155,18 +2189,18 @@ public class VoIPFragment implements
             }
             if ((currentUserIsVideo || callingUserIsVideo) && (currentState == VoIPService.STATE_ESTABLISHED || currentState == VoIPService.STATE_RECONNECTING) && service.getCallDuration() > 500) {
                 if (service.getRemoteAudioState() == Instance.AUDIO_STATE_MUTED) {
-                    notificationsLayout.addNotification(R.drawable.calls_mute_mini, LocaleController.formatString("VoipUserMicrophoneIsOff", R.string.VoipUserMicrophoneIsOff, notificationsLayout.ellipsize(UserObject.getFirstName(callingUser))), "muted", animated);
+                    notificationsLayout.addNotification(R.drawable.calls_mute_mini, LocaleController.formatString("VoipUserMicrophoneIsOff", R.string.VoipUserMicrophoneIsOff, notificationsLayout.ellipsize((hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : UserObject.getFirstName(callingUser)))), "muted", animated);
                 } else {
                     notificationsLayout.removeNotification("muted");
                 }
                 if (service.getRemoteVideoState() == Instance.VIDEO_STATE_INACTIVE) {
-                    notificationsLayout.addNotification(R.drawable.calls_camera_mini, LocaleController.formatString("VoipUserCameraIsOff", R.string.VoipUserCameraIsOff, notificationsLayout.ellipsize(UserObject.getFirstName(callingUser))), "video", animated);
+                    notificationsLayout.addNotification(R.drawable.calls_camera_mini, LocaleController.formatString("VoipUserCameraIsOff", R.string.VoipUserCameraIsOff, notificationsLayout.ellipsize((hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : UserObject.getFirstName(callingUser)))), "video", animated);
                 } else {
                     notificationsLayout.removeNotification("video");
                 }
             } else {
                 if (service.getRemoteAudioState() == Instance.AUDIO_STATE_MUTED) {
-                    notificationsLayout.addNotification(R.drawable.calls_mute_mini, LocaleController.formatString("VoipUserMicrophoneIsOff", R.string.VoipUserMicrophoneIsOff, notificationsLayout.ellipsize(UserObject.getFirstName(callingUser))), "muted", animated);
+                    notificationsLayout.addNotification(R.drawable.calls_mute_mini, LocaleController.formatString("VoipUserMicrophoneIsOff", R.string.VoipUserMicrophoneIsOff, notificationsLayout.ellipsize((hgramCallMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : UserObject.getFirstName(callingUser)))), "muted", animated);
                 } else {
                     notificationsLayout.removeNotification("muted");
                 }

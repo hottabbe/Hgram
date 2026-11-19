@@ -51,6 +51,7 @@ import org.telegram.ui.Components.UpdateAppAlertDialog;
 import org.telegram.ui.Components.UpdateLayout;
 import org.telegram.ui.IUpdateLayout;
 import org.telegram.ui.LauncherIconController;
+import org.telegram.ui.web.WebInstantView;
 
 import java.io.File;
 import java.util.Locale;
@@ -59,9 +60,14 @@ import java.util.LinkedList;
 
 import tw.nekomimi.nekogram.NekoConfig;
 import tw.nekomimi.nekogram.helpers.AnalyticsHelper;
+import tw.nekomimi.nekogram.helpers.AyuFilter;
 import tw.nekomimi.nekogram.parts.SignturesKt;
 import tw.nekomimi.nekogram.utils.FileUtil;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramAntiPeek;
+import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramSecretCache;
+import xyz.nextalone.nagram.hgram.HgramDcAddressCache;
 
 import static android.os.Build.VERSION.SDK_INT;
 
@@ -104,10 +110,7 @@ public class ApplicationLoader extends Application {
             applicationContext = getApplicationContext();
         } catch (Throwable ignore) {
         }
-        Thread.currentThread().setUncaughtExceptionHandler((thread, error) -> {
-            Log.e("nagram", "from " + thread.toString(), error);
-            AnalyticsHelper.captureException(error);
-        });
+        // Telemetry exception forwarding removed
     }
 
     public static ILocationServiceProvider getLocationServiceProvider() {
@@ -222,6 +225,18 @@ public class ApplicationLoader extends Application {
 
         SharedConfig.loadConfig();
         try {
+            SharedPreferences hgramPreferences = applicationContext.getSharedPreferences("hgram_settings", Context.MODE_PRIVATE);
+            if (!hgramPreferences.getBoolean("network_safe_v3", false)) {
+                // The experimental Hgram DoH path could leave the app stuck on "Connecting".
+                // Reset it once and keep the proven system resolver as the baseline.
+                NekoConfig.useSystemDNS.setConfigBool(true);
+                NekoConfig.customDoH.setConfigString("");
+                hgramPreferences.edit().putBoolean("network_safe_v3", true).apply();
+            }
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+        try {
             LocaleController.getInstance(); //TODO improve
         } catch (Exception e) {
             e.printStackTrace();
@@ -239,8 +254,18 @@ public class ApplicationLoader extends Application {
                     } catch (Throwable ignore) {
 
                     }
-
-                    boolean isSlow = isConnectionSlow();
+                    // The network may have changed without any bandwidth estimate update, and
+                    // duplicate broadcasts are common while the radio flaps between cells.
+                    invalidateConnectionSlowCache();
+                    final boolean isOnline = isNetworkOnline();
+                    final int networkType = getCurrentNetworkType();
+                    final boolean isSlow = isConnectionSlow();
+                    if (isSlow == lastConnectionSlow && isOnline == lastConnectionOnline && networkType == lastConnectionType) {
+                        return;
+                    }
+                    lastConnectionSlow = isSlow;
+                    lastConnectionOnline = isOnline;
+                    lastConnectionType = networkType;
                     for (int a : SharedConfig.activeAccounts) {
                         ConnectionsManager.getInstance(a).checkConnection();
                         FileLoader.getInstance(a).onNetworkChanged(isSlow);
@@ -316,6 +341,7 @@ public class ApplicationLoader extends Application {
         if (user != null) {
             MessagesController.getInstance(account).putUser(user, true);
         }
+        HgramDcAddressCache.prepareAccount(account);
         Utilities.stageQueue.postRunnable(() -> {
             SendMessagesHelper.getInstance(account).checkUnsentMessages();
             ContactsController.getInstance(account).checkAppAccount();
@@ -328,6 +354,34 @@ public class ApplicationLoader extends Application {
         super();
     }
 
+    private static volatile boolean hgramSttNativeInitFailed;
+
+    public static boolean isHgramSttNativeInitFailed() {
+        return hgramSttNativeInitFailed;
+    }
+
+    public static boolean isHgramSttProcess() {
+        String processName = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                processName = Application.getProcessName();
+            } catch (Throwable ignored) {
+            }
+        }
+        if (processName == null) {
+            try (java.io.FileInputStream input = new java.io.FileInputStream("/proc/self/cmdline")) {
+                final StringBuilder builder = new StringBuilder();
+                int value;
+                while ((value = input.read()) > 0 && value != '\0') {
+                    builder.append((char) value);
+                }
+                processName = builder.toString();
+            } catch (Throwable ignored) {
+            }
+        }
+        return processName != null && processName.endsWith(":stt");
+    }
+
     @Override
     public void onCreate() {
         applicationLoaderInstance = this;
@@ -337,6 +391,7 @@ public class ApplicationLoader extends Application {
         }
 
         super.onCreate();
+
 
         // AndroidUtilities must be initialized before FileLog
         final String helloWorld = AndroidUtilities.getHelloWorld();
@@ -355,7 +410,23 @@ public class ApplicationLoader extends Application {
             applicationContext = getApplicationContext();
         }
 
-        Utilities.stageQueue.postRunnable(() -> SignturesKt.checkMT(this));
+        // The isolated speech-to-text process only needs native libraries and a main-thread
+        // handler. Skipping the normal app initialization keeps its base PSS small while the
+        // GigaAM/ONNX model lives there instead of in the main process.
+        if (isHgramSttProcess()) {
+            // Content providers are created before Application.onCreate, so this is not a
+            // provider barrier. The isolated process still needs the JavaVM registered before
+            // the service or any later native path starts ConnectionsManager/ThreadProc.
+            try {
+                NativeLoader.initNativeLibs(applicationContext);
+                ConnectionsManager.native_setJava(false);
+            } catch (Throwable t) {
+                hgramSttNativeInitFailed = true;
+                FileLog.e(t);
+            }
+            applicationHandler = new Handler(applicationContext.getMainLooper());
+            return;
+        }
 
         NativeLoader.initNativeLibs(ApplicationLoader.applicationContext);
 
@@ -365,9 +436,8 @@ public class ApplicationLoader extends Application {
             throw new RuntimeException("can't load native libraries " +  Build.CPU_ABI + " lookup folder " + NativeLoader.getAbiFolder());
         }
 
-        AnalyticsHelper.start(this);
 
-        new ForegroundDetector(this) {
+        final ForegroundDetector foregroundDetector = new ForegroundDetector(this) {
             @Override
             public void onActivityStarted(Activity activity) {
                 boolean wasInBackground = isBackground();
@@ -377,6 +447,22 @@ public class ApplicationLoader extends Application {
                 }
             }
         };
+        foregroundDetector.addListener(new ForegroundDetector.Listener() {
+            @Override
+            public void onBecameForeground() {
+                HgramAntiPeek.start(applicationContext);
+            }
+
+            @Override
+            public void onBecameBackground() {
+                HgramAntiPeek.stop();
+                HgramSecretCache.cleanupTempFiles();
+            }
+        });
+        if (foregroundDetector.isForeground()) {
+            HgramAntiPeek.start(applicationContext);
+        }
+        HgramSecretCache.onProcessStart();
         if (BuildConfig.DEBUG) {
             new ANRDetector(FileLog::dumpANR);
         }
@@ -399,6 +485,44 @@ public class ApplicationLoader extends Application {
         NotificationCenter.sanitize();
     });
 
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        try {
+            if (level >= TRIM_MEMORY_UI_HIDDEN) {
+                releaseBackgroundMemory();
+            }
+            if (level == TRIM_MEMORY_RUNNING_LOW || level == TRIM_MEMORY_RUNNING_CRITICAL) {
+                releaseBackgroundMemory();
+                releaseHeavyMemory();
+            }
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+    }
+
+    @Override
+    public void onLowMemory() {
+        super.onLowMemory();
+        try {
+            releaseBackgroundMemory();
+            releaseHeavyMemory();
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+    }
+
+    private void releaseBackgroundMemory() {
+        ImageLoader.getInstance().clearMemory();
+        Emoji.clearEmojiMemory();
+        // Gallery selections and open articles may still own these objects while hidden.
+        // Do not recycle their bitmaps or replace their backing lists here.
+    }
+
+    private void releaseHeavyMemory() {
+        AyuFilter.clearCache();
+    }
+
     // Local Push Service, TFoss implementation
     public static void startPushService() {
         Utilities.stageQueue.postRunnable(ApplicationLoader::startPushServiceInternal);
@@ -415,15 +539,15 @@ public class ApplicationLoader extends Application {
     }
 
     private static void startPushServiceInternal() {
-        if (PushListenerController.getProvider().hasServices()) {
-            return;
-        }
+        // Nagram: the background connection service is started even when Google services (FCM) exist.
+        // FCM pushes for this package are not delivered by the Telegram servers, so without this
+        // service messages were only loaded while the app was in the foreground.
         SharedPreferences preferences = MessagesController.getNotificationsSettings(UserConfig.selectedAccount);
         boolean enabled;
         if (preferences.contains("pushService")) {
-            enabled = preferences.getBoolean("pushService", false);
+            enabled = preferences.getBoolean("pushService", true);
         } else {
-            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", false);
+            enabled = true;
             SharedPreferences.Editor editor = preferences.edit();
             editor.putBoolean("pushService", enabled);
             editor.putBoolean("pushConnection", enabled);
@@ -512,11 +636,20 @@ public class ApplicationLoader extends Application {
                             @Override
                             public void onAvailable(@NonNull Network network) {
                                 lastKnownNetworkType = -1;
+                                if (HgramConfig.isFastNetworkHandoverEnabled()) {
+                                    for (int account : SharedConfig.activeAccounts) {
+                                        ConnectionsManager.getInstance(account).resumeNetworkMaybe();
+                                    }
+                                    if (SharedConfig.loginingAccount != -1) {
+                                        ConnectionsManager.getInstance(SharedConfig.loginingAccount).resumeNetworkMaybe();
+                                    }
+                                }
                             }
 
                             @Override
                             public void onCapabilitiesChanged(@NonNull Network network, @NonNull NetworkCapabilities networkCapabilities) {
                                 lastKnownNetworkType = -1;
+                                notifyConnectionQualityChanged();
                             }
                         };
                         connectivityManager.registerDefaultNetworkCallback(networkCallback);
@@ -566,22 +699,120 @@ public class ApplicationLoader extends Application {
     }
 
     public static boolean isConnectionSlow() {
+        final int mode = HgramConfig.getWeakNetworkMode();
+        if (mode == HgramConfig.WEAK_NETWORK_ALWAYS) {
+            return true;
+        }
+        if (mode == HgramConfig.WEAK_NETWORK_OFF) {
+            return false;
+        }
+        // This is called for every media decision and every download start, while
+        // getNetworkCapabilities() is a binder round trip. A short TTL keeps the hot path cheap
+        // and is still fresh enough for the connectivity callbacks to invalidate.
+        final long now = System.currentTimeMillis();
+        if (slowCacheValid && now - slowCacheTime < SLOW_CACHE_TTL) {
+            return slowCacheValue;
+        }
+        final boolean result = computeConnectionSlow(now);
+        slowCacheValue = result;
+        slowCacheTime = now;
+        slowCacheValid = true;
+        return result;
+    }
+
+    private static boolean computeConnectionSlow(long now) {
         try {
             ensureCurrentNetworkGet(false);
-            if (currentNetworkInfo != null && currentNetworkInfo.getType() == ConnectivityManager.TYPE_MOBILE) {
-                switch (currentNetworkInfo.getSubtype()) {
-                    case TelephonyManager.NETWORK_TYPE_1xRTT:
-                    case TelephonyManager.NETWORK_TYPE_CDMA:
-                    case TelephonyManager.NETWORK_TYPE_EDGE:
-                    case TelephonyManager.NETWORK_TYPE_GPRS:
-                    case TelephonyManager.NETWORK_TYPE_IDEN:
-                        return true;
+            if (currentNetworkInfo == null || currentNetworkInfo.getType() != ConnectivityManager.TYPE_MOBILE) {
+                return false;
+            }
+            boolean slowSubtype = false;
+            boolean threeGSubtype = false;
+            switch (currentNetworkInfo.getSubtype()) {
+                case TelephonyManager.NETWORK_TYPE_1xRTT:
+                case TelephonyManager.NETWORK_TYPE_CDMA:
+                case TelephonyManager.NETWORK_TYPE_EDGE:
+                case TelephonyManager.NETWORK_TYPE_GPRS:
+                case TelephonyManager.NETWORK_TYPE_IDEN:
+                    slowSubtype = true;
+                    break;
+                case TelephonyManager.NETWORK_TYPE_EVDO_0:
+                case TelephonyManager.NETWORK_TYPE_EVDO_A:
+                case TelephonyManager.NETWORK_TYPE_EVDO_B:
+                case TelephonyManager.NETWORK_TYPE_UMTS:
+                case TelephonyManager.NETWORK_TYPE_HSDPA:
+                case TelephonyManager.NETWORK_TYPE_HSUPA:
+                case TelephonyManager.NETWORK_TYPE_HSPA:
+                case TelephonyManager.NETWORK_TYPE_EHRPD:
+                    threeGSubtype = true;
+                    break;
+            }
+            if (slowSubtype) {
+                return true;
+            }
+            // Subtype alone is not reliable: many carriers report LTE/NR while the actual
+            // throughput is close to 3G. The estimated link bandwidth is a better hint.
+            int down = 0;
+            int up = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                final NetworkCapabilities capabilities =
+                        connectivityManager.getNetworkCapabilities(connectivityManager.getActiveNetwork());
+                if (capabilities != null) {
+                    down = capabilities.getLinkDownstreamBandwidthKbps();
+                    up = capabilities.getLinkUpstreamBandwidthKbps();
                 }
+            }
+            if (threeGSubtype) {
+                // HSPA+ and DC-HSPA report the same subtype as plain UMTS, so only downgrade
+                // when the reported bandwidth does not look like a fast 3G network.
+                return down <= 0 || down < 2500;
+            }
+            if (down > 0 && down < 1500) {
+                return true;
+            }
+            if (up > 0 && up < 700) {
+                return true;
             }
         } catch (Throwable ignore) {
 
         }
         return false;
+    }
+
+    private static volatile boolean lastConnectionSlow;
+    private static volatile boolean lastConnectionOnline;
+    private static volatile int lastConnectionType = -1;
+
+    private static volatile boolean slowCacheValid;
+    private static volatile long slowCacheTime;
+    private static volatile boolean slowCacheValue;
+    private static final long SLOW_CACHE_TTL = 3000;
+
+    static void invalidateConnectionSlowCache() {
+        slowCacheValid = false;
+    }
+
+    /**
+     * Re-evaluates the slow-connection state and notifies every account when it changes.
+     * Called from {@link ConnectivityManager.NetworkCallback#onCapabilitiesChanged} because the
+     * bandwidth estimate can change without a CONNECTIVITY_ACTION broadcast (for example while
+     * moving between cells), and by the settings screen when the user forces the mode.
+     */
+    public static void notifyConnectionQualityChanged() {
+        invalidateConnectionSlowCache();
+        final boolean slow = isConnectionSlow();
+        if (slow == lastConnectionSlow) {
+            return;
+        }
+        lastConnectionSlow = slow;
+        for (int a : SharedConfig.activeAccounts) {
+            ConnectionsManager.getInstance(a).checkConnection();
+            FileLoader.getInstance(a).onNetworkChanged(slow);
+        }
+        if (SharedConfig.loginingAccount != -1) {
+            ConnectionsManager.getInstance(SharedConfig.loginingAccount).checkConnection();
+            FileLoader.getInstance(SharedConfig.loginingAccount).onNetworkChanged(slow);
+        }
     }
 
     public static int getAutodownloadNetworkType() {

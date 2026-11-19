@@ -45,6 +45,7 @@ import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.R;
 import org.telegram.messenger.R;
 import org.telegram.messenger.NotificationCenter;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
@@ -78,6 +79,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
 
@@ -122,6 +124,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
     private int searchHashtagRequest = -1;
     private Runnable searchHashtagRunnable;
     private ArrayList<Object> searchResult = new ArrayList<>();
+    private boolean hgramSecretSpaceActive = HgramSecretSpace.isActive();
     public int publicPostsTotalCount;
     public int publicPostsLastRate;
     public ArrayList<MessageObject> publicPosts = new ArrayList<>();
@@ -135,6 +138,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
     public final ArrayList<TLRPC.TL_sponsoredPeer> sponsoredPeers = new ArrayList<>();
     private final HashSet<byte[]> seenSponsoredPeers = new HashSet<>();
     private String lastSearchText;
+    private boolean lastAllowPublicPosts = true;
     private boolean searchWas;
     private int reqId = 0;
     private int lastReqId;
@@ -285,7 +289,49 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
         }
     }
 
+    static void filterAligned(ArrayList<Object> result, ArrayList<CharSequence> names, Predicate<Object> predicate) {
+        final ArrayList<Object> keptResult = new ArrayList<>(result.size());
+        final ArrayList<CharSequence> keptNames = new ArrayList<>(names.size());
+        for (int i = 0; i < result.size(); i++) {
+            final Object item = result.get(i);
+            if (predicate.test(item)) {
+                keptResult.add(item);
+                keptNames.add(i < names.size() ? names.get(i) : null);
+            }
+        }
+        result.clear();
+        result.addAll(keptResult);
+        names.clear();
+        names.addAll(keptNames);
+        while (names.size() > result.size()) {
+            names.remove(names.size() - 1);
+        }
+        while (names.size() < result.size()) {
+            names.add(null);
+        }
+    }
+
+    private void clearResults() {
+        searchResult.clear();
+        searchResultNames.clear();
+    }
+
     private boolean filter(Object obj) {
+        long hgramDialogId = 0;
+        if (obj instanceof TLRPC.Dialog) {
+            hgramDialogId = ((TLRPC.Dialog) obj).id;
+        } else if (obj instanceof TLRPC.User) {
+            hgramDialogId = ((TLRPC.User) obj).id;
+        } else if (obj instanceof TLRPC.Chat) {
+            hgramDialogId = -((TLRPC.Chat) obj).id;
+        } else if (obj instanceof TLRPC.EncryptedChat) {
+            hgramDialogId = -((TLRPC.EncryptedChat) obj).id;
+        } else if (obj instanceof MessageObject) {
+            hgramDialogId = ((MessageObject) obj).getDialogId();
+        }
+        if (hgramDialogId != 0 && !HgramSecretSpace.isVisible(currentAccount, hgramDialogId)) {
+            return false;
+        }
         if (dialogsType != DialogsActivity.DIALOGS_TYPE_START_ATTACH_BOT) {
             return true;
         }
@@ -308,6 +354,57 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
         return false;
     }
 
+    public void hgramForceRefresh() {
+        filterAligned(searchResult, searchResultNames, this::filter);
+        hgramFilterHiddenMessages(searchResultMessages);
+        hgramFilterHiddenMessages(searchForumResultMessages);
+        hgramFilterHiddenRecent(filteredRecentSearchObjects);
+        hgramFilterHiddenRecent(filtered2RecentSearchObjects);
+        for (int i = publicPosts.size() - 1; i >= 0; i--) {
+            final MessageObject messageObject = publicPosts.get(i);
+            if (!HgramSecretSpace.isVisible(currentAccount, messageObject.getDialogId())) {
+                publicPosts.remove(i);
+            }
+        }
+        if (searchAdapterHelper != null) {
+            searchAdapterHelper.hgramFilterHiddenResults(this::filter);
+        }
+        notifyDataSetChanged();
+    }
+
+    private void hgramFilterHiddenMessages(ArrayList<MessageObject> messages) {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            final MessageObject messageObject = messages.get(i);
+            if (!HgramSecretSpace.isVisible(currentAccount, messageObject.getDialogId())) {
+                messages.remove(i);
+            }
+        }
+    }
+
+    private void hgramFilterHiddenRecent(ArrayList<RecentSearchObject> recent) {
+        for (int i = recent.size() - 1; i >= 0; i--) {
+            if (!filter(recent.get(i).object)) {
+                recent.remove(i);
+            }
+        }
+    }
+
+    public void checkSecretSpaceState() {
+        final boolean nowActive = HgramSecretSpace.isActive();
+        if (nowActive == hgramSecretSpaceActive) {
+            return;
+        }
+        hgramSecretSpaceActive = nowActive;
+        hgramForceRefresh();
+        searchResultMessages.clear();
+        clearResults();
+        searchForumResultMessages.clear();
+        notifyDataSetChanged();
+        final String query = lastSearchText;
+        lastSearchText = null;
+        searchDialogs(query != null ? query : "", folderId, lastAllowPublicPosts);
+    }
+
     public DialogsSearchAdapter(Context context, DialogsActivity dialogsActivity, int messagesSearch, int type, DefaultItemAnimator itemAnimator, boolean allowGlobalSearch, Theme.ResourcesProvider resourcesProvider) {
         this.itemAnimator = itemAnimator;
         this.dialogsActivity = dialogsActivity;
@@ -324,7 +421,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
                 waitingResponseCount--;
                 lastGlobalSearchId = searchId;
                 if (lastLocalSearchId != searchId) {
-                    searchResult.clear();
+                    clearResults();
                 }
                 if (lastMessagesSearchId != searchId) {
                     searchResultMessages.clear();
@@ -469,6 +566,9 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
                         for (int a = 0; a < res.messages.size(); a++) {
                             TLRPC.Message message = res.messages.get(a);
                             long did = MessageObject.getDialogId(message);
+                            if (!HgramSecretSpace.isVisible(currentAccount, did)) {
+                                continue;
+                            }
                             int maxId = MessagesController.getInstance(currentAccount).deletedHistory.get(did);
                             if (maxId != 0 && message.id <= maxId) {
                                 continue;
@@ -480,7 +580,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
                         if (searchId > 0) {
                             lastMessagesSearchId = searchId;
                             if (lastLocalSearchId != searchId) {
-                                searchResult.clear();
+                                clearResults();
                             }
                             if (lastGlobalSearchId != searchId) {
                                 searchAdapterHelper.clear();
@@ -627,6 +727,9 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
                         for (int a = 0; a < res.messages.size(); a++) {
                             TLRPC.Message message = res.messages.get(a);
                             long did = MessageObject.getDialogId(message);
+                            if (!HgramSecretSpace.isVisible(currentAccount, did)) {
+                                continue;
+                            }
                             int maxId = MessagesController.getInstance(currentAccount).deletedHistory.get(did);
                             if (maxId != 0 && message.id <= maxId) {
                                 continue;
@@ -658,7 +761,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
                         if (searchId > 0) {
                             lastMessagesSearchId = searchId;
                             if (lastLocalSearchId != searchId) {
-                                searchResult.clear();
+                                clearResults();
                             }
                             if (lastGlobalSearchId != searchId) {
                                 searchAdapterHelper.clear();
@@ -1010,12 +1113,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
                 searchResultMessages.clear();
             }
             searchWas = true;
-            for (int i = 0; i < result.size(); ++i) {
-                if (!filter(result.get(i))) {
-                    result.remove(i);
-                    i--;
-                }
-            }
+            filterAligned(result, names, this::filter);
             final int recentCount = filtered2RecentSearchObjects.size();
             for (int a = 0; a < result.size(); a++) {
                 Object obj = result.get(a);
@@ -1103,6 +1201,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
             return;
         }
         lastSearchText = text;
+        lastAllowPublicPosts = allowPublicPosts;
         this.folderId = folderId;
         if (searchRunnable != null) {
             Utilities.searchQueue.cancelRunnable(searchRunnable);

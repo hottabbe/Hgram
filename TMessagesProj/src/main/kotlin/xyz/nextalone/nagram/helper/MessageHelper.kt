@@ -173,23 +173,19 @@ object MessageHelper {
         return zalgoFilter(text as CharSequence?).toString()
     }
 
+    private val ZALGO_DETECT_REGEX = Regex("\\p{Mn}{4}")
+    private val ZALGO_CLEAN_1_REGEX = Regex("(?i)([aeiouy]̈)|[̀-ͯ҉]")
+    private val ZALGO_CLEAN_2_REGEX = Regex("[\\p{Mn}]")
+
     fun zalgoFilter(
         text: CharSequence?
     ): CharSequence {
-        return if (text == null) {
-            ""
-        } else if (NaConfig.zalgoFilter.Bool() && text.matches(
-                ".*\\p{Mn}{4}.*".toRegex()
-            )
-        ) {
-            text.replace(
-                "(?i)([aeiouy]̈)|[̀-ͯ҉]".toRegex(),
-                ""
-            )
-                .replace(
-                    "[\\p{Mn}]".toRegex(),
-                    ""
-                )
+        if (text.isNullOrEmpty()) {
+            return ""
+        }
+        return if (NaConfig.zalgoFilter.Bool() && ZALGO_DETECT_REGEX.containsMatchIn(text)) {
+            val step1 = ZALGO_CLEAN_1_REGEX.replace(text, "")
+            ZALGO_CLEAN_2_REGEX.replace(step1, "")
         } else {
             text
         }
@@ -591,10 +587,10 @@ object MessageHelper {
 
                 if (gifEncoder.addFrame(bitmap)) {
                     successCount++
-                    Log.d("GifEncoder", "Successfully added frame $index")
                 } else {
                     Log.e("GifEncoder", "Failed to add frame $index")
                 }
+                bitmap.recycle()
             }
 
             Log.d("GifEncoder", "Successfully added $successCount out of ${bitmaps.size} frames")

@@ -45,6 +45,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.service.notification.StatusBarNotification;
 import android.provider.Settings;
 import android.text.TextPaint;
 import android.text.TextUtils;
@@ -106,6 +107,15 @@ import java.util.function.Consumer;
 import tw.nekomimi.nekogram.NekoXConfig;
 import tw.nekomimi.nekogram.NekoConfig;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramNotificationCatchup;
+import xyz.nextalone.nagram.hgram.HgramNotificationChannels;
+import xyz.nextalone.nagram.hgram.HgramNotificationDebouncer;
+import xyz.nextalone.nagram.hgram.HgramNotificationMedia;
+import xyz.nextalone.nagram.hgram.HgramNotificationStyle;
+import xyz.nextalone.nagram.hgram.HgramOfflineTranscriber;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
+import xyz.nextalone.nagram.hgram.HgramVoiceNotificationActions;
 
 public class NotificationsController extends BaseController implements NotificationCenter.NotificationCenterDelegate {
 
@@ -114,6 +124,7 @@ public class NotificationsController extends BaseController implements Notificat
 
     private static final DispatchQueue notificationsQueue = new DispatchQueue("notificationsQueue");
     private final ArrayList<MessageObject> pushMessages = new ArrayList<>();
+    private final HgramNotificationDebouncer hgramNotificationDebouncer = new HgramNotificationDebouncer();
     private final ArrayList<MessageObject> delayedPushMessages = new ArrayList<>();
     private final LongSparseArray<SparseArray<MessageObject>> pushMessagesDict = new LongSparseArray<>();
     private final LongSparseArray<MessageObject> fcmRandomMessagesDict = new LongSparseArray<>();
@@ -425,6 +436,7 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void cleanup() {
+        HgramNotificationMedia.cancelAllPreviews();
         popupMessages.clear();
         popupReplyMessages.clear();
         channelGroupsCreated = false;
@@ -574,10 +586,15 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     public void removeNotificationsForDialog(long did) {
+        HgramNotificationMedia.cancelPreviewsForDialog(currentAccount, did);
         processReadMessages(null, did, 0, Integer.MAX_VALUE, false);
         LongSparseIntArray dialogsToUpdate = new LongSparseIntArray();
         dialogsToUpdate.put(did, 0);
         processDialogsUpdateRead(dialogsToUpdate);
+    }
+
+    public void removeNotificationsForHiddenDialogs() {
+        HgramSecretSpace.forEachHidden(currentAccount, this::removeNotificationsForDialog);
     }
 
     public boolean hasMessagesToReply() {
@@ -1181,6 +1198,9 @@ public class NotificationsController extends BaseController implements Notificat
 
             for (int a = 0; a < messageObjects.size(); a++) {
                 MessageObject messageObject = messageObjects.get(a);
+                if (HgramSecretSpace.isHidden(currentAccount, messageObject.getDialogId())) {
+                    continue;
+                }
                 if (messageObject.messageOwner != null && (messageObject.isImportedForward() ||
                         messageObject.messageOwner.action instanceof TLRPC.TL_messageActionSetMessagesTTL ||
                         messageObject.messageOwner.silent && (messageObject.messageOwner.action instanceof TLRPC.TL_messageActionContactSignUp || messageObject.messageOwner.action instanceof TLRPC.TL_messageActionUserJoined)) ||
@@ -1406,7 +1426,23 @@ public class NotificationsController extends BaseController implements Notificat
                     if (BuildVars.LOGS_ENABLED) {
                         FileLog.d("NotificationsController processNewMessages: added branch");
                     }
-                    MessageObject messageObject = messageObjects.get(0);
+                    MessageObject messageObject = null;
+                    for (int a = 0; a < messageObjects.size(); a++) {
+                        final MessageObject candidate = messageObjects.get(a);
+                        if (candidate != null && !HgramSecretSpace.isHidden(currentAccount, candidate.getDialogId())) {
+                            messageObject = candidate;
+                            break;
+                        }
+                    }
+                    if (messageObject == null) {
+                        if (BuildVars.LOGS_ENABLED) {
+                            FileLog.d("NotificationsController processNewMessages: added branch skipped, all dialogs hidden");
+                        }
+                        if (countDownLatch != null) {
+                            countDownLatch.countDown();
+                        }
+                        return;
+                    }
                     long dialog_id = messageObject.getDialogId();
                     long topicId = MessageObject.getTopicId(currentAccount, messageObject.messageOwner, getMessagesController().isForum(dialog_id));
                     Boolean isChannel;
@@ -3943,41 +3979,50 @@ public class NotificationsController extends BaseController implements Notificat
 
         boolean secretChat = !isDefault && DialogObject.isEncryptedDialog(dialogId);
         boolean shouldOverwrite = !isInApp && overwriteKey != null && preferences.getBoolean(overwriteKey, false);
+        final int effectiveImportance = HgramNotificationChannels.effectiveImportance(
+                importance, isSilent,
+                type == TYPE_PRIVATE || type == TYPE_GROUP || type == TYPE_REACTIONS_MESSAGES);
 
         int nosoundPatch = 2; // when changing code here about no-sound issues, make sure to increment this value
         String soundHash = Utilities.MD5(sound == null ? "NoSound" + nosoundPatch : sound.toString());
         if (soundHash != null && soundHash.length() > 5) {
             soundHash = soundHash.substring(0, 5);
         }
+        String baseKey;
         if (isSilent) {
             name = LocaleController.getString(R.string.NotificationsSilent);
-            key = "silent";
+            baseKey = "silent";
         } else if (isDefault) {
             name = isInApp ? LocaleController.getString(R.string.NotificationsInAppDefault) : LocaleController.getString(R.string.NotificationsDefault);
             if (type == TYPE_CHANNEL) {
-                key = isInApp ? "channels_ia" : "channels";
+                baseKey = isInApp ? "channels_ia" : "channels";
             } else if (type == TYPE_GROUP) {
-                key = isInApp ? "groups_ia" : "groups";
+                baseKey = isInApp ? "groups_ia" : "groups";
             } else if (type == TYPE_STORIES) {
-                key = isInApp ? "stories_ia" : "stories";
+                baseKey = isInApp ? "stories_ia" : "stories";
             } else if (type == TYPE_REACTIONS_MESSAGES || type == TYPE_REACTIONS_STORIES) {
-                key = isInApp ? "reactions_ia" : "reactions";
+                baseKey = isInApp ? "reactions_ia" : "reactions";
             } else {
-                key = isInApp ? "private_ia" : "private";
+                baseKey = isInApp ? "private_ia" : "private";
             }
         } else {
             if (isInApp) {
                 name = LocaleController.formatString(R.string.NotificationsChatInApp, name);
             }
             //TODO notifications
-            key = (isInApp ? "org.telegram.keyia" : "org.telegram.key") + dialogId + "_" + topicId;
+            baseKey = (isInApp ? "org.telegram.keyia" : "org.telegram.key") + dialogId + "_" + topicId;
         }
-        key += "_" + soundHash;
+        key = baseKey + "_" + soundHash;
+        final String acceptedImportanceKey = isInApp && !isDefault && !isSilent
+                ? baseKey + "_hgram_imp" : null;
+        int acceptedImportance = acceptedImportanceKey != null
+                ? preferences.getInt(acceptedImportanceKey, -1) : -1;
         String channelId = preferences.getString(key, null);
         String settings = preferences.getString(key + "_s", null);
         boolean edited = false;
-        StringBuilder newSettings = new StringBuilder();
         String newSettingsHash = null;
+        int actualImportance = -1;
+        String actualSettingsHash = null;
 
         if (channelId != null) {
             NotificationChannel existingChannel = systemNotificationManager.getNotificationChannel(channelId);
@@ -3987,6 +4032,19 @@ public class NotificationsController extends BaseController implements Notificat
             if (existingChannel != null) {
                 if (!isSilent && !shouldOverwrite) {
                     int channelImportance = existingChannel.getImportance();
+                    actualImportance = channelImportance;
+                    if (acceptedImportanceKey != null) {
+                        final int storedAcceptedImportance = acceptedImportance;
+                        acceptedImportance = HgramNotificationChannels.effectiveAcceptedImportance(
+                                storedAcceptedImportance, channelImportance);
+                        if (acceptedImportance == -1) {
+                            if (storedAcceptedImportance != -1) {
+                                preferences.edit().remove(acceptedImportanceKey).apply();
+                            }
+                        } else if (acceptedImportance != storedAcceptedImportance) {
+                            preferences.edit().putInt(acceptedImportanceKey, acceptedImportance).apply();
+                        }
+                    }
                     Uri channelSound = existingChannel.getSound();
                     long[] channelVibrationPattern = existingChannel.getVibrationPattern();
                     boolean vibrate = existingChannel.shouldVibrate();
@@ -3994,25 +4052,15 @@ public class NotificationsController extends BaseController implements Notificat
                         channelVibrationPattern = new long[]{0, 0};
                     }
                     int channelLedColor = existingChannel.getLightColor();
-                    if (channelVibrationPattern != null) {
-                        for (int a = 0; a < channelVibrationPattern.length; a++) {
-                            newSettings.append(channelVibrationPattern[a]);
-                        }
-                    }
-                    newSettings.append(channelLedColor);
-                    if (channelSound != null) {
-                        newSettings.append(channelSound.toString());
-                    }
-                    newSettings.append(channelImportance);
-                    if (!isDefault && secretChat) {
-                        newSettings.append("secret");
-                    }
                     if (BuildVars.LOGS_ENABLED) {
-                        FileLog.d("current channel settings for " + channelId + " = " + newSettings + " old = " + settings);
+                        FileLog.d("current channel settings for " + channelId + " importance=" + channelImportance + " old=" + settings);
                     }
-                    newSettingsHash = Utilities.MD5(newSettings.toString());
-                    newSettings.setLength(0);
-                    if (isInApp && importance != channelImportance) {
+                    newSettingsHash = HgramNotificationChannels.channelSettingsHash(
+                            channelVibrationPattern, channelLedColor, channelSound,
+                            channelImportance, !isDefault && secretChat);
+                    actualSettingsHash = newSettingsHash;
+                    if (isInApp && HgramNotificationChannels.shouldOverwriteInApp(
+                            effectiveImportance, channelImportance)) {
                         shouldOverwrite = true;
                     } else if (!newSettingsHash.equals(settings)) {
                         SharedPreferences.Editor editor = null;
@@ -4039,7 +4087,7 @@ public class NotificationsController extends BaseController implements Notificat
                                 updateServerNotificationsSettings(dialogId, 0, true);
                             }
                             edited = true;
-                        } else if (channelImportance != importance) {
+                        } else if (channelImportance != effectiveImportance) {
                             if (!isInApp) {
                                 editor = preferences.edit();
                                 int priority;
@@ -4149,21 +4197,25 @@ public class NotificationsController extends BaseController implements Notificat
             if (BuildVars.LOGS_ENABLED) {
                 FileLog.d("change edited channel " + channelId);
             }
+        } else if (HgramNotificationChannels.acceptsSystemOverride(
+                isInApp, isDefault, actualImportance)) {
+            // The system override was accepted on a previous validation or just now. Keep the
+            // same channel id and its real settings hash instead of rebuilding HIGH.
+            newSettingsHash = actualSettingsHash;
+            if (channelId != null && newSettingsHash != null && !newSettingsHash.equals(settings)) {
+                preferences.edit().putString(key, channelId)
+                        .putString(key + "_s", newSettingsHash).commit();
+            }
+            if (BuildVars.LOGS_ENABLED) {
+                FileLog.d("keep accepted channel " + channelId + " importance=" + actualImportance);
+            }
         } else if (shouldOverwrite || newSettingsHash == null || !isInApp || !isDefault) {
-            for (int a = 0; a < vibrationPattern.length; a++) {
-                newSettings.append(vibrationPattern[a]);
-            }
-            newSettings.append(ledColor);
-            if (sound != null) {
-                newSettings.append(sound.toString());
-            }
-            newSettings.append(importance);
-            if (!isDefault && secretChat) {
-                newSettings.append("secret");
-            }
-            newSettingsHash = Utilities.MD5(newSettings.toString());
+            newSettingsHash = HgramNotificationChannels.finalChannelSettingsHash(
+                    isInApp, isDefault, actualImportance, actualSettingsHash,
+                    vibrationPattern, ledColor, sound, effectiveImportance,
+                    !isDefault && secretChat);
 
-            if (!isSilent && channelId != null && (shouldOverwrite || !settings.equals(newSettingsHash))) {
+            if (!isSilent && channelId != null && (shouldOverwrite || !newSettingsHash.equals(settings))) {
                 try {
                     systemNotificationManager.deleteNotificationChannel(channelId);
                 } catch (Exception e) {
@@ -4181,7 +4233,16 @@ public class NotificationsController extends BaseController implements Notificat
             } else {
                 channelId = currentAccount + "channel_" + dialogId + "_" + Utilities.random.nextLong();
             }
-            NotificationChannel notificationChannel = new NotificationChannel(channelId, secretChat ? LocaleController.getString(R.string.SecretChatName) : name, importance);
+            // A sound change changes the lookup key and forces a new channel. Preserve an
+            // accepted system LOW/MIN/MAX/NONE instead of promoting the replacement to HIGH.
+            final int channelImportance = HgramNotificationChannels.creationImportance(
+                    isInApp, isDefault, effectiveImportance, acceptedImportance);
+            if (channelImportance != effectiveImportance) {
+                newSettingsHash = HgramNotificationChannels.channelSettingsHash(
+                        vibrationPattern, ledColor, sound, channelImportance,
+                        !isDefault && secretChat);
+            }
+            NotificationChannel notificationChannel = new NotificationChannel(channelId, secretChat ? LocaleController.getString(R.string.SecretChatName) : name, channelImportance);
             notificationChannel.setGroup(groupId);
             if (ledColor != 0) {
                 notificationChannel.enableLights(true);
@@ -4648,6 +4709,23 @@ public class NotificationsController extends BaseController implements Notificat
                 soundPath = null;
             }
 
+            if (notifyAboutLast && !notifyDisabled && !isSilentMessage(lastMessageObject)
+                    && HgramConfig.isSmartNotificationDebounceEnabled()
+                    && !lastMessageObject.isStoryPush && lastMessageObject.isFromUser()
+                    && lastMessageObject.messageOwner.from_id != null
+                    && (vibrate != 2 || soundPath != null && !soundPath.equalsIgnoreCase("NoSound"))) {
+                long senderId = lastMessageObject.messageOwner.from_id.user_id;
+                if (senderId != 0 && hgramNotificationDebouncer.shouldSuppress(senderId, SystemClock.elapsedRealtime())) {
+                    // Keep the notification content current, but don't alert again for the same sender
+                    // during the configured window.
+                    notifyDisabled = true;
+                    vibrate = 0;
+                    importance = 0;
+                    ledColor = 0;
+                    soundPath = null;
+                }
+            }
+
             Intent intent = new Intent(ApplicationLoader.applicationContext, LaunchActivity.class);
             intent.setAction("com.tmessages.openchat" + Math.random() + Integer.MAX_VALUE);
             intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -4876,7 +4954,7 @@ public class NotificationsController extends BaseController implements Notificat
                     mBuilder.addAction(R.drawable.ic_ab_reply, LocaleController.getString(R.string.Reply), PendingIntent.getBroadcast(ApplicationLoader.applicationContext, 2, replyIntent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
                 }
             }
-            showExtraNotifications(mBuilder, detailText, dialog_id, topicId, chatName, vibrationPattern, ledColor, sound, configImportance, isDefault, isInApp, notifyDisabled, chatType);
+            showExtraNotifications(mBuilder, detailText, dialog_id, topicId, chatName, vibrationPattern, ledColor, sound, configImportance, isDefault, isInApp, notifyDisabled, chatType, contentIntent);
             scheduleNotificationRepeat();
         } catch (Exception e) {
             FileLog.e(e);
@@ -4941,11 +5019,90 @@ public class NotificationsController extends BaseController implements Notificat
         }
     }
 
+
+    private boolean isHgramNotificationActive(int id) {
+        if (Build.VERSION.SDK_INT < 23 || notificationManager == null) {
+            return true;
+        }
+        try {
+            for (StatusBarNotification notification : notificationManager.getActiveNotifications()) {
+                if (notification.getId() == id) {
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            return true;
+        }
+        return false;
+    }
+
     @SuppressLint("InlinedApi")
-    private void showExtraNotifications(NotificationCompat.Builder notificationBuilder, String summary, long lastDialogId, long lastTopicId, String chatName, long[] vibrationPattern, int ledColor, Uri sound, int importance, boolean isDefault, boolean isInApp, boolean isSilent, int chatType) {
+    private boolean hgramCanShowPreview(DialogKey key) {
+        if (key == null) {
+            return false;
+        }
+        return hgramCanShowPreview(key.dialogId, key.story);
+    }
+
+    private boolean hgramCanShowPreview(long dialogId, boolean story) {
+        return dialogId != 0
+                && !story
+                && HgramNotificationMedia.canPreview(currentAccount, dialogId)
+                && !AndroidUtilities.needShowPasscode(false)
+                && !SharedConfig.isWaitingForPasscodeEnter
+                && !DialogObject.isEncryptedDialog(dialogId);
+    }
+
+    private void showExtraNotifications(NotificationCompat.Builder notificationBuilder, String summary, long lastDialogId, long lastTopicId, String chatName, long[] vibrationPattern, int ledColor, Uri sound, int importance, boolean isDefault, boolean isInApp, boolean isSilent, int chatType, PendingIntent summaryContentIntent) {
         FileLog.d("showExtraNotifications pushMessages.size()=" + pushMessages.size());
+        final String hgramChannel = Build.VERSION.SDK_INT >= 26
+                ? validateChannelId(lastDialogId, lastTopicId, chatName, vibrationPattern,
+                ledColor, sound, importance, isDefault, isInApp, isSilent, chatType)
+                : "legacy";
         if (Build.VERSION.SDK_INT >= 26) {
-            notificationBuilder.setChannelId(validateChannelId(lastDialogId, lastTopicId, chatName, vibrationPattern, ledColor, sound, importance, isDefault, isInApp, isSilent, chatType));
+            notificationBuilder.setChannelId(hgramChannel);
+        }
+        HgramNotificationMedia.Preview hgramSummaryPreview = null;
+        boolean hgramSingleDialog = !pushMessages.isEmpty();
+        long hgramOnlyDialog = 0;
+        for (int i = 0; i < pushMessages.size(); i++) {
+            final MessageObject item = pushMessages.get(i);
+            final long itemDialog = item.getDialogId();
+            if (i == 0) {
+                hgramOnlyDialog = itemDialog;
+            } else if (itemDialog != hgramOnlyDialog) {
+                hgramSingleDialog = false;
+                break;
+            }
+            if (item.isStoryPush) {
+                hgramSingleDialog = false;
+                break;
+            }
+        }
+        if (hgramSingleDialog && hgramCanShowPreview(hgramOnlyDialog, false)) {
+            final MessageObject last = pushMessages.get(pushMessages.size() - 1);
+            final MessageObject preview = HgramNotificationMedia.findNotificationPreview(
+                    pushMessages, last);
+            if (preview != null) {
+                final long summaryPreviewDialog = hgramOnlyDialog;
+                hgramSummaryPreview = HgramNotificationMedia.previewForFirstPost(
+                        currentAccount, preview, 400L,
+                        () -> hgramCanShowPreview(summaryPreviewDialog, false));
+                if (hgramSummaryPreview != null) {
+                    if (!hgramCanShowPreview(summaryPreviewDialog, false)) {
+                        hgramSummaryPreview.bitmap.recycle();
+                        HgramNotificationMedia.logDenied(currentAccount, preview);
+                        hgramSummaryPreview = null;
+                    } else {
+                        HgramNotificationStyle.apply(notificationBuilder,
+                                hgramSummaryPreview.bitmap, pushMessages.size(), summary,
+                                summaryContentIntent);
+                        HgramNotificationStyle.logPost(
+                                "big",
+                                pushMessages.size());
+                    }
+                }
+            }
         }
         Notification mainNotification = notificationBuilder.build();
         if (Build.VERSION.SDK_INT <= 19) {
@@ -5023,6 +5180,7 @@ public class NotificationsController extends BaseController implements Notificat
             }
         }
 
+        final HgramNotificationCatchup hgramCatchup = new HgramNotificationCatchup();
         ArrayList<NotificationHolder> holders = new ArrayList<>();
 
         boolean useSummaryNotification = Build.VERSION.SDK_INT <= Build.VERSION_CODES.O_MR1 || sortedDialogs.size() > (storyPushMessages.isEmpty() ? 1 : 2);
@@ -5727,6 +5885,7 @@ public class NotificationsController extends BaseController implements Notificat
                 date = ((long) messageObjects.get(0).messageOwner.date) * 1000;
             }
 
+            boolean hgramBigPictureApplied = false;
             NotificationCompat.Builder builder = new NotificationCompat.Builder(ApplicationLoader.applicationContext)
                     .setContentTitle(name)
                     .setSmallIcon(getNotificationIconResId())
@@ -5737,7 +5896,7 @@ public class NotificationsController extends BaseController implements Notificat
                     .setGroupSummary(false)
                     .setWhen(date)
                     .setShowWhen(true)
-                    .setStyle(messagingStyle)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
                     .setContentIntent(contentIntent)
                     .extend(wearableExtender)
                     .setSortKey(String.valueOf(Long.MAX_VALUE - date))
@@ -5797,6 +5956,33 @@ public class NotificationsController extends BaseController implements Notificat
                 }
                 if (!waitingForPasscode && !dialogKey.story && (lastMessageObject == null || !lastMessageObject.isStoryReactionPush)) {
                     builder.addAction(readAction);
+                    if (HgramVoiceNotificationActions.shouldOffer(
+                            HgramVoiceNotificationActions.isVoiceLike(lastMessageObject),
+                            false, dialogKey.story)) {
+                        final int actionId = internalId ^ 0x5a17;
+                        builder.addAction(new NotificationCompat.Action.Builder(
+                                R.drawable.msg_round_play_m,
+                                ApplicationLoader.applicationContext.getString(
+                                        R.string.HgramVoiceActionListen),
+                                HgramVoiceNotificationActions.listenIntent(
+                                        ApplicationLoader.applicationContext, currentAccount,
+                                        dialogId, lastMessageObject.getId(),
+                                        name, actionId)).build());
+                        final boolean hidden = HgramSecretSpace.isHidden(currentAccount, dialogId);
+                        final boolean antiPeek = HgramConfig.isAntiPeekActive();
+                        if (HgramVoiceNotificationActions.isTranscriptionActionAvailable()
+                                && HgramVoiceNotificationActions.canTranscribe(
+                                HgramOfflineTranscriber.hasAnyModelInstalled(), hidden, antiPeek)) {
+                            builder.addAction(new NotificationCompat.Action.Builder(
+                                    R.drawable.msg_text_outlined,
+                                    ApplicationLoader.applicationContext.getString(
+                                            R.string.HgramVoiceActionText),
+                                    HgramVoiceNotificationActions.transcribeIntent(
+                                            ApplicationLoader.applicationContext, currentAccount,
+                                            dialogId, lastMessageObject.getId(),
+                                            name, actionId ^ 0x1f)).build());
+                        }
+                    }
                 }
             }
             if (sortedDialogs.size() == 1 && !TextUtils.isEmpty(summary) && !dialogKey.story) {
@@ -5808,7 +5994,110 @@ public class NotificationsController extends BaseController implements Notificat
             if (avatarBitmap != null) {
                 builder.setLargeIcon(avatarBitmap);
             }
-
+            if (!waitingForPasscode && hgramCanShowPreview(dialogKey)) {
+                HgramNotificationMedia.cancelPreviewsForDialog(currentAccount, dialogId);
+                final MessageObject previewMessage =
+                        HgramNotificationMedia.findNotificationPreview(
+                                messageObjects, lastMessageObject);
+                if (previewMessage != null) {
+                    final boolean album = messageObjects.size() > 1
+                            && previewMessage.messageOwner.grouped_id != 0;
+                    HgramNotificationMedia.Preview mediaPreview = null;
+                    if (album) {
+                        mediaPreview = HgramNotificationMedia.loadFirstCachedPreview(
+                                currentAccount, messageObjects);
+                    } else {
+                        final Bitmap cached = HgramNotificationMedia.loadCachedPreview(
+                                currentAccount, previewMessage);
+                        if (cached != null) {
+                            mediaPreview = new HgramNotificationMedia.Preview(
+                                    previewMessage, cached);
+                        }
+                    }
+                    final int seriesCount = messageObjects.size();
+                    if (mediaPreview == null) {
+                        mediaPreview = HgramNotificationMedia.previewForFirstPost(
+                                currentAccount, previewMessage, 400L,
+                                () -> hgramCanShowPreview(dialogKey));
+                    }
+                    if (mediaPreview != null) {
+                        if (!hgramCanShowPreview(dialogKey)) {
+                            mediaPreview.bitmap.recycle();
+                            HgramNotificationMedia.logDenied(currentAccount, previewMessage);
+                            mediaPreview = null;
+                        } else {
+                            HgramNotificationStyle.apply(builder, mediaPreview.bitmap, seriesCount,
+                                    summary, contentIntent);
+                            hgramBigPictureApplied = true;
+                            HgramNotificationStyle.logPost(
+                                    "big", seriesCount);
+                        }
+                    }
+                    if (mediaPreview == null && hgramCanShowPreview(dialogKey)) {
+                        final NotificationCompat.Builder previewBuilder = builder;
+                        final int previewId = internalId;
+                        final boolean previewAlbum = album;
+                        final MessageObject previewMessageFinal = previewMessage;
+                        final ArrayList<MessageObject> previewMessages = previewAlbum
+                                ? new ArrayList<>(messageObjects) : null;
+                        final int previewSeriesCount = seriesCount;
+                        final String previewSummary = summary;
+                        final PendingIntent previewContentIntent = contentIntent;
+                        // Do not start the fetch while holders are still being assembled: its
+                        // callback could arrive before this dialog has been posted and would be
+                        // discarded as "not active". Start it only after every holder is posted.
+                        hgramCatchup.enqueue(() -> {
+                            if (!hgramCanShowPreview(dialogKey)) {
+                                return;
+                            }
+                            final HgramNotificationMedia.PreviewCallback previewCallback =
+                                    (previewKey, bitmap) -> {
+                                        final Runnable update = () -> {
+                                            HgramNotificationMedia.unregisterPostedCallback(previewKey);
+                                            if (bitmap == null
+                                                    || previewKey == null
+                                                    || !HgramNotificationMedia.isCurrentPreview(previewKey)
+                                                    || !hgramCanShowPreview(dialogKey)
+                                                    || !isHgramNotificationActive(previewId)) {
+                                                if (bitmap != null) {
+                                                    bitmap.recycle();
+                                                }
+                                                return;
+                                            }
+                                            previewBuilder.setOnlyAlertOnce(true);
+                                            previewBuilder.setSound(null);
+                                            previewBuilder.setVibrate(null);
+                                            previewBuilder.setDefaults(0);
+                                            previewBuilder.setSilent(true);
+                                            HgramNotificationStyle.apply(previewBuilder, bitmap,
+                                                    previewSeriesCount, previewSummary,
+                                                    previewContentIntent);
+                                            HgramNotificationStyle.logPost(
+                                                    "big",
+                                                    previewSeriesCount);
+                                            try {
+                                                notificationManager.notify(
+                                                        previewId, previewBuilder.build());
+                                            } catch (Throwable e) {
+                                                FileLog.e(e);
+                                                bitmap.recycle();
+                                            }
+                                        };
+                                        HgramNotificationMedia.registerPostedCallback(
+                                                previewKey, update);
+                                        AndroidUtilities.runOnUIThread(update);
+                                    };
+                            if (previewAlbum) {
+                                HgramNotificationMedia.requestPreview(
+                                        currentAccount, dialogId, previewMessages, previewCallback);
+                            } else {
+                                HgramNotificationMedia.requestPreview(
+                                        currentAccount, dialogId, previewMessageFinal, previewCallback);
+                            }
+                        });
+                    }
+                }
+            }
             if (!AndroidUtilities.needShowPasscode(false) && !SharedConfig.isWaitingForPasscodeEnter) {
                 if (rows != null) {
                     for (int r = 0, rc = rows.size(); r < rc; r++) {
@@ -5837,6 +6126,9 @@ public class NotificationsController extends BaseController implements Notificat
 
             if (Build.VERSION.SDK_INT >= 26) {
                 setNotificationChannel(mainNotification, builder, useSummaryNotification);
+            }
+            if (!hgramBigPictureApplied) {
+                builder.setStyle(messagingStyle);
             }
             FileLog.d("showExtraNotifications: holders.add " + dialogId);
             holders.add(new NotificationHolder(internalId, dialogId, dialogKey.story, topicId, name, user, chat, builder));
@@ -5891,6 +6183,8 @@ public class NotificationsController extends BaseController implements Notificat
                 ShortcutManagerCompat.removeDynamicShortcuts(ApplicationLoader.applicationContext, ids);
             }
         }
+        // All holders are published now; only at this point may a catch-up mutate its builder.
+        hgramCatchup.publish();
     }
 
     private String cutLastName(String name) {

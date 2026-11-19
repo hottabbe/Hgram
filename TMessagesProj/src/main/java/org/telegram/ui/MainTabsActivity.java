@@ -48,6 +48,7 @@ import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.LiteMode;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessageObject;
+import org.telegram.messenger.AccountInstance;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
@@ -93,6 +94,7 @@ import tw.nekomimi.nekogram.BackButtonMenuRecent;
 import tw.nekomimi.nekogram.helpers.PasscodeHelper;
 import xyz.nextalone.nagram.MainTabsStyle;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 
 public class MainTabsActivity extends ViewPagerActivity implements NotificationCenter.NotificationCenterDelegate, FactorAnimator.Target {
 
@@ -195,8 +197,14 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
                             TabFragmentDelegate delegate = (TabFragmentDelegate) fragment;
                             BlurredBackgroundSourceRenderNode source = delegate.getGlassSource();
                             if (source != null) {
-                                hash.addF(fragmentPosition.left);
-                                hash.addF(fragmentPosition.top);
+                                // Nagram: the position of a fragment changes on every frame of
+                                // the tab animation, so the hash changed on every frame too and
+                                // the whole screen sized blur source was re-recorded each time.
+                                // The position is quantized to a few pixels, which is far below
+                                // the visible difference under the blurred tab bar, so the
+                                // snapshot is reused instead of being rebuilt every frame.
+                                hash.addF(Math.round(fragmentPosition.left / blur3PositionQuantum) * blur3PositionQuantum);
+                                hash.addF(Math.round(fragmentPosition.top / blur3PositionQuantum) * blur3PositionQuantum);
                                 hash.add(fragment.getClassGuid());
                             }
                         }
@@ -470,8 +478,22 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
         if (tabsView == null) {
             return;
         }
+        if (tabs[INDEX_PROFILE] != null) {
+            tabs[INDEX_PROFILE].invalidate();
+        }
 
-        final int unreadCount = MessagesStorage.getInstance(currentAccount).getMainUnreadCount();
+        int unreadCount = MessagesStorage.getInstance(currentAccount).getMainUnreadCount();
+        if (!HgramSecretSpace.isActive()) {
+            final int[] hiddenUnread = new int[1];
+            final MessagesController controller = getMessagesController();
+            HgramSecretSpace.forEachHidden(currentAccount, dialogId -> {
+                TLRPC.Dialog dialog = controller.dialogs_dict.get(dialogId);
+                if (dialog != null) {
+                    hiddenUnread[0] += dialog.unread_count;
+                }
+            });
+            unreadCount = Math.max(0, unreadCount - hiddenUnread[0]);
+        }
         if (unreadCount > 0) {
             final String unreadCountFmt = LocaleController.formatNumber(unreadCount, ',');
             tabs[INDEX_CHATS].setCounter(unreadCountFmt, false, animated);
@@ -544,9 +566,21 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
             if (!folder.isDefault()) {
                 title = MessageObject.replaceAnimatedEmoji(title, folder.entities, folderItem.getTextView().getPaint().getFontMetricsInt());
             }
-            final int unreadCount = folder.isDefault()
+            int unreadCount = folder.isDefault()
                     ? MessagesStorage.getInstance(currentAccount).getMainUnreadCount()
                     : folder.unreadCount;
+            if (!HgramSecretSpace.isActive()) {
+                final int[] hiddenUnread = new int[1];
+                final MessagesController controller = getMessagesController();
+                final AccountInstance accountInstance = AccountInstance.getInstance(currentAccount);
+                HgramSecretSpace.forEachHidden(currentAccount, dialogId -> {
+                    TLRPC.Dialog dialog = controller.dialogs_dict.get(dialogId);
+                    if (dialog != null && folder.includesDialog(accountInstance, dialogId, dialog)) {
+                        hiddenUnread[0] += dialog.unread_count;
+                    }
+                });
+                unreadCount = Math.max(0, unreadCount - hiddenUnread[0]);
+            }
             if (unreadCount > 0) {
                 final SpannableStringBuilder titleWithCounter = new SpannableStringBuilder(title);
                 final int counterStart = titleWithCounter.length();
@@ -852,6 +886,8 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
             selectTab(viewPager.getCurrentPosition(), true);
             setGestureSelectedOverride(0, false);
         }
+        // Nagram: the tab animation is over, the frozen blur snapshot can be refreshed.
+        blur3_isTabAnimating = false;
         blur3_invalidateBlur();
 
         if (viewPager != null) {
@@ -884,8 +920,10 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
         }
 
         checkUi_fadeView();
+        // Nagram: the pages move on their own through setTranslationX(), so invalidating the
+        // whole content tree here only forced a full re-render of the viewport every frame.
+        blur3_isTabAnimating = true;
         blur3_invalidateBlur();
-        contentView.invalidate();
     }
 
 
@@ -1322,8 +1360,27 @@ public class MainTabsActivity extends ViewPagerActivity implements NotificationC
     private final @Nullable BlurredBackgroundSourceRenderNode iBlur3SourceTabGlass;
 
     private final RectF fragmentPosition = new RectF();
+
+    /**
+     * Nagram: the horizontal position of the fragments changes on every frame of the tab
+     * animation, so the hash of the blur source changed every frame as well and the whole
+     * screen sized snapshot was re-recorded each time. While the tab bar is animating the
+     * snapshot is frozen instead and refreshed once the animation is over.
+     */
+    private boolean blur3_isTabAnimating;
+    private boolean blur3_blurDirty = true;
+
+    /** Nagram: position quantization step of the tab blur snapshot, in pixels. */
+    private static final float blur3PositionQuantum = 16f;
+
     private void blur3_invalidateBlur() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || iBlur3SourceTabGlass == null || fragmentView == null) {
+            return;
+        }
+
+        // Nagram: do not rebuild the snapshot while the tab bar is animating.
+        if (blur3_isTabAnimating) {
+            blur3_blurDirty = true;
             return;
         }
 

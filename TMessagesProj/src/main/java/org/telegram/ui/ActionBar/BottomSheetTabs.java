@@ -252,6 +252,24 @@ public class BottomSheetTabs extends FrameLayout {
     public static final HashMap<Integer, ArrayList<WebTabData>> tabs = new HashMap<>();
     public static final HashMap<Integer, ArrayList<TabDrawable>> tabDrawables = new HashMap<>();
 
+    public static void destroyAllTabs() {
+        try {
+            for (ArrayList<WebTabData> list : tabs.values()) {
+                for (WebTabData tab : list) {
+                    tab.destroy();
+                }
+                list.clear();
+            }
+            tabs.clear();
+            for (ArrayList<TabDrawable> list : tabDrawables.values()) {
+                list.clear();
+            }
+            tabDrawables.clear();
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+    }
+
     public void updateCurrentAccount() {
         setCurrentAccount(UserConfig.selectedAccount);
     }

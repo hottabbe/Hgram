@@ -447,6 +447,33 @@ public class FilePathDatabase {
         return metaTmp;
     }
 
+    /**
+     * Returns cached files recorded for one dialog. Used by the encrypted second-space cache
+     * migration; call from a background queue.
+     */
+    public ArrayList<File> getFilesForDialog(long dialogId) {
+        final ArrayList<File> files = new ArrayList<>();
+        ensureDatabaseCreated();
+        SQLiteCursor cursor = null;
+        try {
+            cursor = database.queryFinalized(
+                    "SELECT path FROM paths_by_dialog_id WHERE dialog_id = " + dialogId);
+            while (cursor.next()) {
+                final String path = cursor.stringValue(0);
+                if (path != null && !path.isEmpty()) {
+                    files.add(new File(path));
+                }
+            }
+        } catch (Throwable t) {
+            FileLog.e(t);
+        } finally {
+            if (cursor != null) {
+                cursor.dispose();
+            }
+        }
+        return files;
+    }
+
     private String shield(String path) {
         return path.replace("'","").replace("\"","");
     }

@@ -1,5 +1,6 @@
 package tw.nekomimi.nekogram.transtale.source
 
+import android.util.Log
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -12,6 +13,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import tw.nekomimi.nekogram.transtale.Translator
 import xyz.nextalone.nagram.NaConfig
+import xyz.nextalone.nagram.hgram.HgramSummarizer
+import xyz.nextalone.nagram.hgram.HgramSummarizerModel
 import xyz.nextalone.nagram.network.NetworkRequestBuilder
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -545,6 +548,74 @@ object LLMTranslator : Translator {
     fun getProviderUrl(provider: Int): String? = providerUrls[provider]
 
     fun getDefaultModel(provider: Int): String? = providerModels[provider]
+
+    /** OpenRouter text completion for the local Hgram summarizer (no translation prompt). */
+    fun completeBlocking(apiKey: String, model: String, systemPrompt: String, userPrompt: String): String {
+        return runBlocking {
+            val body = buildOpenAIChatRequestBody(model, systemPrompt, userPrompt, 0.3)
+            val response = NetworkRequestBuilder.post("https://openrouter.ai/api/v1/chat/completions") {
+                header("Authorization", "Bearer $apiKey")
+                header("Content-Type", "application/json")
+                header("HTTP-Referer", "https://t.me/hgram_updates")
+                header("X-Title", "Hgram")
+                setBody(body.toString())
+            }.execute()
+            checkResponseStatus(HttpStatusCode(response.statusCode, ""), response.body)
+            val choices = Json.parseToJsonElement(response.body).jsonObject["choices"]?.jsonArray
+            if (choices.isNullOrEmpty()) throw Exception("OpenRouter returned no choices")
+            choices[0].jsonObject["message"]?.jsonObject?.get("content")?.jsonPrimitive?.content?.trim()
+                ?: throw Exception("OpenRouter returned empty content")
+        }
+    }
+
+    /** All text models advertised by OpenRouter `/models`, with prices per 1M tokens. */
+    fun fetchOpenRouterModelsBlocking(apiKey: String): List<HgramSummarizerModel>? {
+        return runBlocking {
+            try {
+                val response = NetworkRequestBuilder.get("https://openrouter.ai/api/v1/models") {
+                    header("HTTP-Referer", "https://t.me/hgram_updates")
+                    header("X-Title", "Hgram")
+                }.execute()
+                if (response.statusCode !in 200..299) return@runBlocking null
+                val data = Json.parseToJsonElement(response.body).jsonObject["data"]?.jsonArray
+                    ?: return@runBlocking null
+                val result = data.mapNotNull { element ->
+                    val obj = element.jsonObject
+                    val id = obj["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                    val name = obj["name"]?.jsonPrimitive?.content
+                    val pricing = obj["pricing"]?.jsonObject
+                    val promptPrice = HgramSummarizerModel.parsePricePerMillion(
+                        pricing?.get("prompt")?.jsonPrimitive?.content
+                    )
+                    val completionPrice = HgramSummarizerModel.parsePricePerMillion(
+                        pricing?.get("completion")?.jsonPrimitive?.content
+                    )
+                    val architecture = obj["architecture"]?.jsonObject
+                    val input = architecture?.get("input_modalities")?.jsonArray?.mapNotNull { it.jsonPrimitive.content }
+                    val output = architecture?.get("output_modalities")?.jsonArray?.mapNotNull { it.jsonPrimitive.content }
+                    val outputTextOnly = !output.isNullOrEmpty() &&
+                            output.all { it.equals("text", ignoreCase = true) }
+                    val textOnly = HgramSummarizer.acceptsModel(
+                        !input.isNullOrEmpty(), !input.isNullOrEmpty() && input.contains("text"),
+                        !output.isNullOrEmpty(), outputTextOnly, id
+                    )
+                    if (!textOnly) return@mapNotNull null
+                    val free = HgramSummarizerModel.isFreeModel(id, promptPrice, completionPrice)
+                    HgramSummarizerModel(id, name, promptPrice, completionPrice, free, true)
+                }
+                Log.d("HGRAM_SUM", "models raw=" + data.size + " textOnly=" + result.size + " free=" + result.count { it.isFree } + " paid=" + result.count { !it.isFree } + " freeIds=" + result.filter { it.isFree }.joinToString(",") { it.id })
+                result
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    /** Free models only, as advertised by OpenRouter `/models`. */
+    fun fetchOpenRouterFreeModelsBlocking(apiKey: String): List<String> {
+        return fetchOpenRouterModelsBlocking(apiKey)?.filter { it.isFree }?.map { it.id }?.sorted()
+            ?: emptyList()
+    }
 
     private class RateLimitException(message: String) : Exception(message)
 }

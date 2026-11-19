@@ -9,7 +9,7 @@ ENV ANDROID_API_LEVEL=android-36
 ENV ANDROID_VERSION=36
 ENV ANDROID_BUILD_TOOLS_VERSION=36.0.0
 
-ENV ANDROID_NDK_VERSION=27.2.12479018
+ENV ANDROID_NDK_VERSION=29.0.14206865
 ENV ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}
 
 ENV PATH=${PATH}:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/platform-tools
@@ -28,6 +28,7 @@ RUN sdkmanager \
     --sdk_root="${ANDROID_HOME}" \
     "build-tools;36.0.0" \
     "build-tools;${ANDROID_BUILD_TOOLS_VERSION}" \
+    "build-tools;29.0.3" \
     "platforms;android-${ANDROID_VERSION}" \
     "platform-tools" \
     "ndk;${ANDROID_NDK_VERSION}" \
@@ -37,6 +38,7 @@ CMD mkdir -p /home/source/TMessagesProj/build/outputs/apk && \
     mkdir -p /home/gradle/TMessagesProj/build/outputs/bundle && \
     mkdir -p /home/source/TMessagesProj/build/outputs/native-debug-symbols && \
     cp -R /home/source/. /home/gradle && \
+    rm -f /home/gradle/local.properties && \
     cd /home/gradle && \
     gradle --parallel \
         :TMessagesProj_App:bundleBundleAfatRelease \

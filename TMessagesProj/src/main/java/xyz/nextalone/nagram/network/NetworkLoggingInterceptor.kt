@@ -4,14 +4,11 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.client.plugins.logging.LogLevel
-import io.ktor.client.plugins.logging.Logger
-import io.ktor.client.plugins.logging.Logging
-import io.ktor.client.plugins.logging.SIMPLE
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import org.telegram.messenger.BuildVars
 import tw.nekomimi.nekogram.database.NetworkLogItem
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -20,6 +17,12 @@ import java.util.Locale
 object NetworkLoggingInterceptor {
 
     private val dateFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
+    private val sensitiveHeaders = setOf(
+        "authorization",
+        "x-api-key",
+        "x-goog-api-key",
+        "x-authorization"
+    )
 
     val client: HttpClient by lazy {
         HttpClient(OkHttp) {
@@ -35,11 +38,6 @@ object NetworkLoggingInterceptor {
                 requestTimeoutMillis = 30000
                 connectTimeoutMillis = 15000
                 socketTimeoutMillis = 30000
-            }
-
-            install(Logging) {
-                logger = Logger.SIMPLE
-                level = LogLevel.ALL
             }
 
             engine {
@@ -58,6 +56,10 @@ object NetworkLoggingInterceptor {
         requestParams: Map<String, String> = emptyMap(),
         block: suspend HttpClient.() -> HttpResponse
     ): HttpResponse {
+        if (!BuildVars.LOGS_ENABLED) {
+            return client.block()
+        }
+
         val timestamp = System.currentTimeMillis()
         var statusCode = 0
         var responseTime = 0L
@@ -92,7 +94,9 @@ object NetworkLoggingInterceptor {
             throw e
 
         } finally {
-            val headersString = headers.entries.joinToString("\n") { "${it.key}: ${it.value}" }
+            val headersString = headers.entries.joinToString("\n") { (k, v) ->
+                if (k.lowercase(Locale.ROOT) in sensitiveHeaders) "$k: [REDACTED]" else "$k: $v"
+            }
             val paramsString = requestParams.entries.joinToString("&") { "${it.key}=${it.value}" }
 
             val logItem = NetworkLogItem(

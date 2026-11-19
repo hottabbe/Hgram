@@ -49,6 +49,7 @@ import org.telegram.ui.Components.RLottieDrawable;
 import org.telegram.ui.Components.RLottieImageView;
 import org.telegram.ui.Components.ScaleStateListAnimator;
 import org.telegram.ui.MainTabsLayout;
+import xyz.nextalone.nagram.hgram.HgramConfig;
 
 import me.vkryl.android.AnimatorUtils;
 import me.vkryl.android.animator.BoolAnimator;
@@ -60,7 +61,9 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
     private BackupImageView backupImageView;
     private Theme.ResourcesProvider resourcesProvider;
     private final Paint paintCounterBackground = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint hgramAntiPeekPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final AnimatedTextView.AnimatedTextDrawable counter;
+    private boolean hgramAvatarTab;
 
     private static final int ANIMATOR_ID_IS_SELECTED = 0;
     private static final int ANIMATOR_ID_COUNTER_VISIBLE = 1;
@@ -173,6 +176,13 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
         }
 
         super.dispatchDraw(canvas);
+
+        if (hgramAvatarTab && backupImageView != null && HgramConfig.isAntiPeekActive()) {
+            final float left = backupImageView.getLeft() + backupImageView.getTranslationX();
+            final float top = backupImageView.getTop() + backupImageView.getTranslationY();
+            hgramAntiPeekPaint.setColor(Theme.getColor(Theme.key_avatar_backgroundGray, resourcesProvider));
+            canvas.drawCircle(left + backupImageView.getWidth() / 2f, top + backupImageView.getHeight() / 2f, Math.min(backupImageView.getWidth(), backupImageView.getHeight()) / 2f, hgramAntiPeekPaint);
+        }
 
         if (hasCounter > 0) {
             canvas.save();
@@ -415,6 +425,7 @@ public class GlassTabView extends FrameLayout implements MainTabsLayout.Tab, Fac
 
     public static GlassTabView createAvatar(Context context, Theme.ResourcesProvider resourcesProvider, int currentAccount, @StringRes int stringRes) {
         GlassTabView tab = new GlassTabView(context);
+        tab.hgramAvatarTab = true;
         tab.textView.setText(LocaleController.getString(stringRes));
         tab.imageView.setVisibility(GONE);
 

@@ -3015,6 +3015,81 @@ public class ContactsController extends BaseController {
         }
     }
 
+    private int findConnectionServiceRawContactId(ContentResolver resolver, long id) throws Exception {
+        if (systemAccount == null) {
+            return -1;
+        }
+        int groupID = -1;
+        Cursor cursor = resolver.query(ContactsContract.Groups.CONTENT_URI, new String[]{ContactsContract.Groups._ID},
+                ContactsContract.Groups.TITLE + "=? AND " + ContactsContract.Groups.ACCOUNT_TYPE + "=? AND " + ContactsContract.Groups.ACCOUNT_NAME + "=?",
+                new String[]{"TelegramConnectionService", systemAccount.type, systemAccount.name}, null);
+        if (cursor != null) {
+            try {
+                if (cursor.moveToFirst()) {
+                    groupID = cursor.getInt(0);
+                }
+            } finally {
+                cursor.close();
+            }
+        }
+        if (groupID == -1) {
+            return -1;
+        }
+        cursor = resolver.query(ContactsContract.Data.CONTENT_URI, new String[]{ContactsContract.Data.RAW_CONTACT_ID},
+                ContactsContract.Data.MIMETYPE + "=? AND " + ContactsContract.CommonDataKinds.Phone.NUMBER + "=?",
+                new String[]{ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE, "+99084" + id}, null);
+        if (cursor != null) {
+            try {
+                while (cursor.moveToNext()) {
+                    final int rawContactId = cursor.getInt(0);
+                    Cursor membership = resolver.query(ContactsContract.Data.CONTENT_URI, new String[]{ContactsContract.Data.RAW_CONTACT_ID},
+                            ContactsContract.Data.RAW_CONTACT_ID + "=? AND " + ContactsContract.Data.MIMETYPE + "=? AND " + ContactsContract.CommonDataKinds.GroupMembership.GROUP_ROW_ID + "=?",
+                            new String[]{Integer.toString(rawContactId), ContactsContract.CommonDataKinds.GroupMembership.CONTENT_ITEM_TYPE, Integer.toString(groupID)}, null);
+                    boolean belongsToServiceGroup = false;
+                    if (membership != null) {
+                        try {
+                            belongsToServiceGroup = membership.moveToFirst();
+                        } finally {
+                            membership.close();
+                        }
+                    }
+                    if (belongsToServiceGroup) {
+                        return rawContactId;
+                    }
+                }
+            } finally {
+                cursor.close();
+            }
+        }
+        return -1;
+    }
+
+    public void deleteConnectionServiceContacts(ArrayList<Long> userIds) {
+        if (userIds == null || userIds.isEmpty() || !hasContactsPermission()) {
+            return;
+        }
+        final ContentResolver resolver = ApplicationLoader.applicationContext.getContentResolver();
+        for (Long userId : userIds) {
+            if (userId == null || userId <= 0) {
+                continue;
+            }
+            try {
+                final int rawContactId = findConnectionServiceRawContactId(resolver, userId);
+                if (rawContactId != -1) {
+                    resolver.delete(ContactsContract.RawContacts.CONTENT_URI, ContactsContract.RawContacts._ID + "=?", new String[]{Integer.toString(rawContactId)});
+                }
+            } catch (Exception x) {
+                FileLog.e(x);
+            }
+        }
+    }
+
+    public void deleteConnectionServiceContact(long id) {
+        final ArrayList<Long> ids = new ArrayList<>(1);
+        ids.add(id);
+        deleteConnectionServiceContacts(ids);
+    }
+
     public static String formatName(TLObject object) {
         if (object instanceof TLRPC.User) {
             return formatName((TLRPC.User) object);

@@ -273,6 +273,16 @@ public class WebInstantView {
         }
     }
 
+    public static void clearInstances() {
+        if (instants.isEmpty()) {
+            return;
+        }
+        for (WebInstantView instant : new ArrayList<>(instants.values())) {
+            instant.recycle();
+        }
+        instants.clear();
+    }
+
     public void getHTML(WebView webView, boolean unsafe, Utilities.Callback<InputStream> whenDone) {
         if (whenDone == null) return;
         if (webView == null) {

@@ -254,24 +254,24 @@ public class SettingsActivity extends BaseFragment implements NotificationCenter
                     final int width = getMeasuredWidth();
                     final int height = getMeasuredHeight();
                     if (iBlur3SourceGlassFrosted != null && !iBlur3SourceGlassFrosted.inRecording()) {
-                        //if (iBlur3SourceGlassFrosted.needUpdateDisplayList(width, height) || iBlur3Invalidated) {
-                        final Canvas c = iBlur3SourceGlassFrosted.beginRecording(width, height);
-                        c.drawColor(getThemedColor(Theme.key_windowBackgroundWhite));
-                        if (SharedConfig.chatBlurEnabled()) {
-                            scrollableViewNoiseSuppressor.draw(c, DownscaleScrollableNoiseSuppressor.DRAW_FROSTED_GLASS);
+                        if (iBlur3SourceGlassFrosted.needUpdateDisplayList(width, height) || iBlur3Invalidated) {
+                            final Canvas c = iBlur3SourceGlassFrosted.beginRecording(width, height);
+                            c.drawColor(getThemedColor(Theme.key_windowBackgroundWhite));
+                            if (SharedConfig.chatBlurEnabled()) {
+                                scrollableViewNoiseSuppressor.draw(c, DownscaleScrollableNoiseSuppressor.DRAW_FROSTED_GLASS);
+                            }
+                            iBlur3SourceGlassFrosted.endRecording();
                         }
-                        iBlur3SourceGlassFrosted.endRecording();
-                        //}
                     }
                     if (iBlur3SourceGlass != null && !iBlur3SourceGlass.inRecording()) {
-                        //if (iBlur3SourceGlass.needUpdateDisplayList(width, height) || iBlur3Invalidated) {
-                        final Canvas c = iBlur3SourceGlass.beginRecording(width, height);
-                        c.drawColor(getThemedColor(Theme.key_windowBackgroundWhite));
-                        if (SharedConfig.chatBlurEnabled()) {
-                            scrollableViewNoiseSuppressor.draw(c, DownscaleScrollableNoiseSuppressor.DRAW_GLASS);
+                        if (iBlur3SourceGlass.needUpdateDisplayList(width, height) || iBlur3Invalidated) {
+                            final Canvas c = iBlur3SourceGlass.beginRecording(width, height);
+                            c.drawColor(getThemedColor(Theme.key_windowBackgroundWhite));
+                            if (SharedConfig.chatBlurEnabled()) {
+                                scrollableViewNoiseSuppressor.draw(c, DownscaleScrollableNoiseSuppressor.DRAW_GLASS);
+                            }
+                            iBlur3SourceGlass.endRecording();
                         }
-                        iBlur3SourceGlass.endRecording();
-                        //}
                     }
                     iBlur3Invalidated = false;
                 }

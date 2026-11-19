@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "debug": false,
+  "placeholder_prefix": "__VG_",
+  "session": {
+    "ttl": "1h",
+    "max_mappings": 100000
+  },
+  "patterns": {
+    "keywords": [],
+    "regex": [
+      { "pattern": "TELEGRAM_APP_ID\\s*[=:]\\s*\\d{4,}", "category": "TELEGRAM_APP_ID" },
+      { "pattern": "TELEGRAM_APP_HASH\\s*[=:]\\s*[0-9a-fA-F]{32}", "category": "TELEGRAM_APP_HASH" },
+      { "pattern": "sk-[A-Za-z0-9]{32,}", "category": "OPENAI_KEY" },
+      { "pattern": "(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}", "category": "GITHUB_TOKEN" },
+      { "pattern": "AIza[0-9A-Za-z_-]{35}", "category": "GOOGLE_API_KEY" },
+      { "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]*PRIVATE KEY-----", "category": "PRIVATE_KEY" }
+    ],
+    "builtin": ["email"],
+    "exclude": ["example.com", "localhost", "127.0.0.1", "0.0.0.0"]
+  }
+}

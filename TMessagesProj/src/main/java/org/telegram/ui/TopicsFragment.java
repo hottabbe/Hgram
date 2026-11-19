@@ -148,6 +148,7 @@ import java.util.concurrent.CountDownLatch;
 
 import tw.nekomimi.nekogram.BackButtonMenuRecent;
 import tw.nekomimi.nekogram.NekoConfig;
+import xyz.nextalone.nagram.hgram.HgramAntiPeek;
 
 public class TopicsFragment extends BaseFragment implements NotificationCenter.NotificationCenterDelegate, ChatActivityInterface, RightSlidingDialogContainer.BaseFragmentWithFullscreen, MainTabsActivity.TabFragmentDelegate {
 
@@ -3910,6 +3911,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
     @Override
     public void onResume() {
         super.onResume();
+        HgramAntiPeek.onScopeResume(this, getClass().getName());
         getMessagesController().getTopicsController().onTopicFragmentResume(chatId);
         animatedUpdateEnabled = false;
         AndroidUtilities.updateVisibleRows(recyclerListView);
@@ -3928,6 +3930,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
     @Override
     public void onPause() {
         super.onPause();
+        HgramAntiPeek.onScopePause(this);
         getMessagesController().getTopicsController().onTopicFragmentPause(chatId);
         Bulletin.removeDelegate(this);
     }

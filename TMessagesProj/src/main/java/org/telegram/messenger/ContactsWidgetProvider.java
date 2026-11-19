@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -63,6 +64,24 @@ public class ContactsWidgetProvider extends AppWidgetProvider {
             ++n;
         }
         return n - 1;
+    }
+
+    public static void updateAllWidgets() {
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            return;
+        }
+        Utilities.globalQueue.postRunnable(() -> {
+            final AppWidgetManager appWidgetManager = AppWidgetManager.getInstance(context);
+            final int[] appWidgetIds = appWidgetManager.getAppWidgetIds(new ComponentName(context, ContactsWidgetProvider.class));
+            for (int appWidgetId : appWidgetIds) {
+                try {
+                    updateWidget(context, appWidgetManager, appWidgetId);
+                } catch (Throwable t) {
+                    FileLog.e(t);
+                }
+            }
+        });
     }
 
     public static void updateWidget(Context context, AppWidgetManager appWidgetManager, int appWidgetId) {

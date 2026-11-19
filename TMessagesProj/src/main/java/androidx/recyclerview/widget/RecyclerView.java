@@ -2999,6 +2999,18 @@ public class RecyclerView extends ViewGroup implements ScrollingView,
         }
     }
 
+    /**
+     * Nagram: GapWorker caches the frame interval once, on the first attached RecyclerView. If the window
+     * requested a higher refresh rate later (e.g. 120 Hz), prefetching stayed on a 60 Hz cadence.
+     * Call from the UI thread whenever the requested refresh rate changes.
+     */
+    public static void updateFrameIntervalForRefreshRate(float hz) {
+        GapWorker worker = GapWorker.sGapWorker.get();
+        if (worker != null && hz >= 30.0f) {
+            worker.mFrameIntervalNs = (long) (1000000000 / hz);
+        }
+    }
+
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();

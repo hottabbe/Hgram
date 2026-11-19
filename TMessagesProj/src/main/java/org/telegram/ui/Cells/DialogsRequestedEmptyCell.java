@@ -134,7 +134,8 @@ public class DialogsRequestedEmptyCell extends LinearLayout implements Notificat
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
-        NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.diceStickersDidLoad);
+        // Nagram: was addObserver (copy-paste) -> the cell leaked and got extra notifications
+        NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.diceStickersDidLoad);
     }
 
     @Override

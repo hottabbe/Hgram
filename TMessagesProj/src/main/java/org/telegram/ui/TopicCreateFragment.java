@@ -1,5 +1,9 @@
 package org.telegram.ui;
 
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+
+import xyz.nextalone.nagram.hgram.HgramHaptics;
+
 import static org.telegram.messenger.AndroidUtilities.dp;
 
 import android.animation.Animator;
@@ -12,7 +16,6 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
-import android.os.Vibrator;
 import android.text.Editable;
 import android.text.TextUtils;
 import android.text.TextWatcher;
@@ -133,10 +136,7 @@ public class TopicCreateFragment extends BaseFragment {
                 if (id == CREATE_ID) {
                     String topicName = editTextBoldCursor.getText() == null ? null : editTextBoldCursor.getText().toString();
                     if (TextUtils.isEmpty(topicName)) {
-                        Vibrator v = (Vibrator) getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
-                        if (v != null) {
-                            v.vibrate(200);
-                        }
+                        HgramHaptics.play(HgramHapticProfile.PLACE_LIST_ITEMS);
                         AndroidUtilities.shakeView(editTextBoldCursor);
                         return;
                     }
@@ -241,10 +241,7 @@ public class TopicCreateFragment extends BaseFragment {
 
                     String topicName = editTextBoldCursor.getText() == null ? null : editTextBoldCursor.getText().toString();
                     if (TextUtils.isEmpty(topicName)) {
-                        Vibrator v = (Vibrator) getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
-                        if (v != null) {
-                            v.vibrate(200);
-                        }
+                        HgramHaptics.play(HgramHapticProfile.PLACE_LIST_ITEMS);
                         AndroidUtilities.shakeView(editTextBoldCursor);
                         return;
                     }

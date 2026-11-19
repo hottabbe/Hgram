@@ -381,6 +381,7 @@ import tw.nekomimi.nekogram.utils.ProxyUtil;
 import tw.nekomimi.nekogram.utils.ShareUtil;
 import tw.nekomimi.nekogram.utils.UIUtil;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramConfig;
 import xyz.nextalone.nagram.helper.MessageHelper;
 import xyz.nextalone.nagram.ui.ItemOptionsPatch;
 
@@ -443,6 +444,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
     private ProfileGalleryView avatarsViewPager;
     private PagerIndicatorView avatarsViewPagerIndicatorView;
     private AvatarDrawable avatarDrawable;
+    private AvatarDrawable hgramMaskAvatarDrawable;
     private ImageUpdater imageUpdater;
     private int avatarColor;
     TimerDrawable autoDeleteItemDrawable;
@@ -590,6 +592,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
     public ProfileBirthdayEffect.BirthdayEffectFetcher birthdayFetcher;
 
     private CharSequence currentBio;
+    private CharSequence hgramRealBio;
+    private boolean lastAntiPeekMasked = HgramConfig.isAntiPeekActive();
 
     private long selectedUser;
     private int onlineCount = -1;
@@ -3424,14 +3428,14 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     final int width = getMeasuredWidth();
                     final int height = getMeasuredHeight();
                     if (iBlur3SourceGlass != null && !iBlur3SourceGlass.inRecording()) {
-                        //if (iBlur3SourceGlass.needUpdateDisplayList(width, height) || iBlur3Invalidated) {
-                        final Canvas c = iBlur3SourceGlass.beginRecording(width, height);
-                        c.drawColor(getThemedColor(Theme.key_windowBackgroundGray));
-                        if (SharedConfig.chatBlurEnabled()) {
-                            scrollableViewNoiseSuppressor.draw(c, DownscaleScrollableNoiseSuppressor.DRAW_GLASS);
+                        if (iBlur3SourceGlass.needUpdateDisplayList(width, height) || iBlur3Invalidated) {
+                            final Canvas c = iBlur3SourceGlass.beginRecording(width, height);
+                            c.drawColor(getThemedColor(Theme.key_windowBackgroundGray));
+                            if (SharedConfig.chatBlurEnabled()) {
+                                scrollableViewNoiseSuppressor.draw(c, DownscaleScrollableNoiseSuppressor.DRAW_GLASS);
+                            }
+                            iBlur3SourceGlass.endRecording();
                         }
-                        iBlur3SourceGlass.endRecording();
-                        //}
                     }
                     iBlur3Invalidated = false;
                 }
@@ -4456,6 +4460,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             if (getParentActivity() == null) {
                 return;
             }
+            if (isHgramMaskedProfileRow(position)) {
+                return;
+            }
             listView.stopScroll();
             if (position == affiliateRow) {
                 TLRPC.User user = getMessagesController().getUser(userId);
@@ -4968,6 +4975,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
 
             @Override
             public boolean onItemClick(View view, int position) {
+                if (isHgramMaskedProfileRow(position)) {
+                    return true;
+                }
                 if (position == versionRow) {
                     pressCount++;
                     if (pressCount >= 5) {
@@ -7671,6 +7681,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
     }
 
     private boolean processOnClickOrPress(final int position, final View view, final float x, final float y) {
+        if (isHgramMaskedProfileRow(position)) {
+            return true;
+        }
         if (position == usernameRow || position == setUsernameRow) {
             final String username;
             final TLRPC.TL_username usernameObj;
@@ -9518,6 +9531,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             checkCanSendStoryForPosting();
         } else if (id == NotificationCenter.updateInterfaces) {
             int mask = (Integer) args[0];
+            refreshAntiPeekRows();
             boolean infoChanged = (mask & MessagesController.UPDATE_MASK_AVATAR) != 0 || (mask & MessagesController.UPDATE_MASK_NAME) != 0 || (mask & MessagesController.UPDATE_MASK_STATUS) != 0 || (mask & MessagesController.UPDATE_MASK_EMOJI_STATUS) != 0;
             if (userId != 0) {
                 if (infoChanged) {
@@ -10050,6 +10064,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         }
 
         updateProfileData(true);
+        refreshAntiPeekRows();
         fixLayout();
         if (nameTextView[1] != null) {
             setParentActivityTitle(nameTextView[1].getText());
@@ -11782,6 +11797,81 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
 
     private MessagesController.PeerColor peerColor;
 
+    private void applyAntiPeekAvatarMask() {
+        if (HgramConfig.isAntiPeekActive() && avatarImage != null) {
+            if (hgramMaskAvatarDrawable == null) {
+                hgramMaskAvatarDrawable = new AvatarDrawable();
+            }
+            hgramMaskAvatarDrawable.setInfo(0);
+            hgramMaskAvatarDrawable.setColor(getThemedColor(Theme.key_avatar_backgroundGray));
+            avatarImage.setImageDrawable(hgramMaskAvatarDrawable);
+        }
+    }
+
+    private boolean isHgramMaskedProfileRow(int position) {
+        return HgramConfig.isAntiPeekActive()
+                && (position == birthdayRow || position == bizHoursRow || position == bizLocationRow);
+    }
+
+    private TLRPC.TL_businessLocation hgramMaskedLocation(TLRPC.TL_businessLocation location) {
+        if (!HgramConfig.isAntiPeekActive() || location == null) {
+            return location;
+        }
+        final TLRPC.TL_businessLocation masked = new TLRPC.TL_businessLocation();
+        masked.address = LocaleController.getString(R.string.HgramAntiPeekHidden);
+        return masked;
+    }
+
+    private TL_account.TL_businessWorkHours hgramMaskedWorkHours(TL_account.TL_businessWorkHours hours) {
+        if (!HgramConfig.isAntiPeekActive() || hours == null) {
+            return hours;
+        }
+        final TL_account.TL_businessWorkHours masked = new TL_account.TL_businessWorkHours();
+        masked.weekly_open = new ArrayList<>();
+        masked.timezone_id = hours.timezone_id;
+        return masked;
+    }
+
+    private void applyHgramWorkHoursMask(ProfileHoursCell cell) {
+        if (cell == null) {
+            return;
+        }
+        if (!HgramConfig.isAntiPeekActive()) {
+            cell.setContentDescription(null);
+            return;
+        }
+        if (cell.getChildCount() == 0) {
+            return;
+        }
+        final View firstLine = cell.getChildAt(0);
+        if (firstLine instanceof ViewGroup && ((ViewGroup) firstLine).getChildCount() > 0) {
+            final View valueView = ((ViewGroup) firstLine).getChildAt(0);
+            if (valueView instanceof TextView) {
+                ((TextView) valueView).setText(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                ((TextView) valueView).setTextColor(getThemedColor(Theme.key_windowBackgroundWhiteBlackText));
+            }
+        }
+        cell.setContentDescription(LocaleController.getString(R.string.HgramAntiPeekHidden));
+    }
+
+    private void refreshAntiPeekRows() {
+        final boolean masked = HgramConfig.isAntiPeekActive();
+        if (masked == lastAntiPeekMasked) {
+            return;
+        }
+        lastAntiPeekMasked = masked;
+        if (listAdapter == null) {
+            return;
+        }
+        final int itemCount = listAdapter.getItemCount();
+        final int[] rows = new int[]{phoneRow, userInfoRow, channelInfoRow, bioRow, usernameRow, setUsernameRow, birthdayRow, bizHoursRow, bizLocationRow};
+        for (int row : rows) {
+            if (row >= 0 && row < itemCount) {
+                listAdapter.notifyItemChanged(row);
+            }
+        }
+    }
+
     private void updateProfileData(boolean reload) {
         if (avatarContainer == null || nameTextView == null || getParentActivity() == null) {
             return;
@@ -11879,6 +11969,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     avatarImage.setImage(videoLocation, ImageLoader.AUTOPLAY_FILTER, imageLocation, "100_100", thumbLocation, "50_50", avatarDrawable, user);
                 }
             }
+            applyAntiPeekAvatarMask();
 
             if (thumbLocation != null && setAvatarRow != -1 || thumbLocation == null && setAvatarRow == -1) {
                 updateListAnimated(false);
@@ -12037,6 +12128,13 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     nameTextView[a].setLeftDrawableOutside(false);
                 }
                 nameTextView[a].setLeftDrawable(leftIcon);
+                if (HgramConfig.isAntiPeekActive()) {
+                    nameTextView[a].setText(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                    onlineTextView[a].setText(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                    nameTextView[a].setRightDrawable(null);
+                    nameTextView[a].setRightDrawable2(null);
+                    nameTextView[a].setLeftDrawable(null);
+                }
                 if (a == 1 && (rightIconIsStatus || rightIconIsPremium)) {
                     nameTextView[a].setRightDrawableOutside(true);
                 }
@@ -12399,6 +12497,13 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                         onlineTextView[a].setClickable(false);
                     }
                 }
+                if (HgramConfig.isAntiPeekActive()) {
+                    nameTextView[a].setText(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                    onlineTextView[a].setText(LocaleController.getString(R.string.HgramAntiPeekHidden));
+                    nameTextView[a].setRightDrawable(null);
+                    nameTextView[a].setRightDrawable2(null);
+                    nameTextView[a].setLeftDrawable(null);
+                }
             }
             id = chatId;
             if (changed) {
@@ -12451,6 +12556,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             if (avatarBig == null && !isTopic) {
                 avatarImage.setImage(videoLocation, filter, thumbLocation, "50_50", avatarDrawable, chat);
             }
+            applyAntiPeekAvatarMask();
             if (imageLocation != null && (prevLoadedImageLocation == null || imageLocation.photoId != prevLoadedImageLocation.photoId)) {
                 prevLoadedImageLocation = imageLocation;
                 getFileLoader().loadFile(imageLocation, chat, null, FileLoader.PRIORITY_LOW, 1);
@@ -12507,6 +12613,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             });
         }
 
+        refreshAntiPeekRows();
         needLayout(true);
     }
 
@@ -14094,7 +14201,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     if (position == birthdayRow) {
                         TLRPC.UserFull userFull = getMessagesController().getUserFull(userId);
                         if (userFull != null && userFull.birthday != null) {
-                            final boolean today = BirthdayController.isToday(userFull);
+                            final boolean hgramMasked = HgramConfig.isAntiPeekActive();
+                            final boolean today = !hgramMasked && BirthdayController.isToday(userFull);
                             final boolean withYear = (userFull.birthday.flags & 1) != 0;
                             final int age = withYear ? Period.between(LocalDate.of(userFull.birthday.year, userFull.birthday.month, userFull.birthday.day), LocalDate.now()).getYears() : -1;
 
@@ -14105,6 +14213,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                             } else {
                                 text = LocaleController.formatString(today ? R.string.ProfileBirthdayTodayValue : R.string.ProfileBirthdayValue, text);
                             }
+                            if (hgramMasked) {
+                                text = LocaleController.getString(R.string.HgramAntiPeekHidden);
+                            }
 
                             detailCell.setTextAndValue(
                                     Emoji.replaceWithRestrictedEmoji(text, detailCell.textView, () -> {
@@ -14112,11 +14223,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                                             onBindViewHolder(holder, position);
                                         }
                                     }),
-                                    LocaleController.getString(today ? R.string.ProfileBirthdayToday : R.string.ProfileBirthday),
+                                    LocaleController.getString(hgramMasked ? R.string.ProfileBirthday : today ? R.string.ProfileBirthdayToday : R.string.ProfileBirthday),
                                     isTopic || bizHoursRow != -1 || bizLocationRow != -1
                             );
+                            detailCell.setContentDescription(hgramMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : null);
 
-                            containsGift = !myProfile && today && !getMessagesController().premiumPurchaseBlocked();
+                            containsGift = !hgramMasked && !myProfile && today && !getMessagesController().premiumPurchaseBlocked();
                         }
                     } else if (position == phoneRow) {
                         String text;
@@ -14136,7 +14248,15 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                             text = LocaleController.getString(R.string.PhoneHidden);
                         }
                         isFragmentPhoneNumber = phoneNumber != null && phoneNumber.matches("888\\d{8}");
-                        detailCell.setTextAndValue(text, LocaleController.getString(isFragmentPhoneNumber ? R.string.AnonymousNumber : R.string.PhoneMobile), false);
+                        CharSequence phoneType = LocaleController.getString(isFragmentPhoneNumber ? R.string.AnonymousNumber : R.string.PhoneMobile);
+                        if (HgramConfig.isAntiPeekActive()) {
+                            text = LocaleController.getString(R.string.HgramAntiPeekHidden);
+                            phoneType = LocaleController.getString(R.string.HgramAntiPeekHidden);
+                            detailCell.setContentDescription(text);
+                        } else {
+                            detailCell.setContentDescription(null);
+                        }
+                        detailCell.setTextAndValue(text, phoneType, false);
                     } else if (position == noteRow) {
                         final TLRPC.UserFull userInfo = getMessagesController().getUserFull(userId);
                         if (userInfo == null) return;
@@ -14213,7 +14333,11 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                             value = "";
                             usernames = new ArrayList<>();
                         }
-                        detailCell.setTextAndValue(text, alsoUsernamesString(username, usernames, value), infoEndRowEmpty == -1 && (isTopic || bizHoursRow != -1 || bizLocationRow != -1) && birthdayRow < 0);
+                        if (HgramConfig.isAntiPeekActive()) {
+                    detailCell.setTextAndValue(LocaleController.getString(R.string.HgramAntiPeekHidden), LocaleController.getString(R.string.Username), infoEndRowEmpty == -1 && (isTopic || bizHoursRow != -1 || bizLocationRow != -1) && birthdayRow < 0);
+                } else {
+                    detailCell.setTextAndValue(text, alsoUsernamesString(username, usernames, value), infoEndRowEmpty == -1 && (isTopic || bizHoursRow != -1 || bizLocationRow != -1) && birthdayRow < 0);
+                }
                     } else if (position == restrictionReasonRow) {
                         ArrayList<TLRPC.RestrictionReason> reasons = new ArrayList<>();
                         if (userId != 0) {
@@ -14280,7 +14404,11 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                                 text = LocaleController.getString(R.string.UsernameEmpty);
                             }
                         }
-                        detailCell.setTextAndValue(text, value, true);
+                        if (HgramConfig.isAntiPeekActive()) {
+                            detailCell.setTextAndValue(LocaleController.getString(R.string.HgramAntiPeekHidden), LocaleController.getString(R.string.Username), true);
+                        } else {
+                            detailCell.setTextAndValue(text, value, true);
+                        }
                         detailCell.setContentDescriptionValueFirst(true);
                     }
                     if (containsGift) {
@@ -14311,22 +14439,38 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     if (position == userInfoRow) {
 //                        TLRPC.User user = userInfo.user != null ? userInfo.user : getMessagesController().getUser(userInfo.id);
 //                        boolean addlinks = isBot || (user != null && user.premium && userInfo.about != null);
-                        aboutLinkCell.setTextAndValue(MessageHelper.INSTANCE.zalgoFilter(userInfo.about), LocaleController.getString(R.string.UserBio), true);
-                    } else if (position == channelInfoRow) {
-                        String text = chatInfo.about;
-                        while (text.contains("\n\n\n")) {
-                            text = text.replace("\n\n\n", "\n\n");
-                        }
-                        aboutLinkCell.setTextAndValue(MessageHelper.INSTANCE.zalgoFilter(text), LocaleController.getString(R.string.DescriptionPlaceholder), true /* ChatObject.isChannel(currentChat) && !currentChat.megagroup */);
-                    } else if (position == bioRow) {
-                        String value;
-                        if (userInfo == null || !TextUtils.isEmpty(userInfo.about)) {
-                            value = userInfo == null ? LocaleController.getString(R.string.Loading) : userInfo.about;
-                            aboutLinkCell.setTextAndValue(MessageHelper.INSTANCE.zalgoFilter(value), LocaleController.getString(R.string.UserBio), true || getUserConfig().isPremium());
-                            currentBio = userInfo != null ? userInfo.about : null;
+                        if (HgramConfig.isAntiPeekActive()) {
+                            aboutLinkCell.setTextAndValue(LocaleController.getString(R.string.HgramAntiPeekHidden), LocaleController.getString(R.string.UserBio), true);
                         } else {
-                            aboutLinkCell.setTextAndValue(LocaleController.getString(R.string.UserBio), LocaleController.getString(R.string.UserBioDetail), false);
-                            currentBio = null;
+                            aboutLinkCell.setTextAndValue(MessageHelper.INSTANCE.zalgoFilter(userInfo.about), LocaleController.getString(R.string.UserBio), true);
+                        }
+                    } else if (position == channelInfoRow) {
+                        if (HgramConfig.isAntiPeekActive()) {
+                            aboutLinkCell.setTextAndValue(LocaleController.getString(R.string.HgramAntiPeekHidden), LocaleController.getString(R.string.DescriptionPlaceholder), true /* ChatObject.isChannel(currentChat) && !currentChat.megagroup */);
+                        } else {
+                            String text = chatInfo.about;
+                            while (text.contains("\n\n\n")) {
+                                text = text.replace("\n\n\n", "\n\n");
+                            }
+                            aboutLinkCell.setTextAndValue(MessageHelper.INSTANCE.zalgoFilter(text), LocaleController.getString(R.string.DescriptionPlaceholder), true /* ChatObject.isChannel(currentChat) && !currentChat.megagroup */);
+                        }
+                    } else if (position == bioRow) {
+                        if (HgramConfig.isAntiPeekActive()) {
+                            aboutLinkCell.setTextAndValue(LocaleController.getString(R.string.HgramAntiPeekHidden), LocaleController.getString(R.string.UserBio), true);
+                            hgramRealBio = userInfo != null ? userInfo.about : null;
+                            currentBio = hgramRealBio;
+                        } else {
+                            String value;
+                            if (userInfo == null || !TextUtils.isEmpty(userInfo.about)) {
+                                value = userInfo == null ? LocaleController.getString(R.string.Loading) : userInfo.about;
+                                aboutLinkCell.setTextAndValue(MessageHelper.INSTANCE.zalgoFilter(value), LocaleController.getString(R.string.UserBio), true || getUserConfig().isPremium());
+                                hgramRealBio = userInfo != null ? userInfo.about : null;
+                                currentBio = hgramRealBio;
+                            } else {
+                                aboutLinkCell.setTextAndValue(LocaleController.getString(R.string.UserBio), LocaleController.getString(R.string.UserBioDetail), false);
+                                hgramRealBio = null;
+                                currentBio = null;
+                            }
                         }
                         aboutLinkCell.setMoreButtonDisabled(true);
                     }
@@ -14806,7 +14950,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     textCheckCell.setTextAndCheck(LocaleController.getString(R.string.Notifications), !getMessagesController().isDialogMuted(getDialogId(), topicId), false);
                     break;
                 case VIEW_TYPE_LOCATION:
-                    ((ProfileLocationCell) holder.itemView).set(userInfo != null ? userInfo.business_location : null, notificationsDividerRow < 0 && !myProfile);
+                    ((ProfileLocationCell) holder.itemView).set(hgramMaskedLocation(userInfo != null ? userInfo.business_location : null), notificationsDividerRow < 0 && !myProfile);
                     break;
                 case VIEW_TYPE_HOURS:
                     ProfileHoursCell hoursCell = (ProfileHoursCell) holder.itemView;
@@ -14822,7 +14966,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                             layoutManager.scrollToPositionWithOffset(savedScrollPosition, savedScrollOffset - listView.getPaddingTop());
                         }
                     });
-                    hoursCell.set(userInfo != null ? userInfo.business_work_hours : null, hoursExpanded, hoursShownMine, notificationsDividerRow < 0 && !myProfile || bizLocationRow >= 0);
+                    hoursCell.set(hgramMaskedWorkHours(userInfo != null ? userInfo.business_work_hours : null), hoursExpanded, hoursShownMine, notificationsDividerRow < 0 && !myProfile || bizLocationRow >= 0);
+                    applyHgramWorkHoursMask(hoursCell);
                     break;
                 case VIEW_TYPE_CHANNEL:
                     if (userInfo != null) {

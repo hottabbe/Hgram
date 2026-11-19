@@ -1468,7 +1468,61 @@ public class MessagesController extends BaseController implements NotificationCe
         if (dialogs == null) {
             return;
         }
-        Collections.sort(dialogs, dialogComparator);
+        sortDialogsCached(dialogs);
+    }
+
+    // Nagram: per-sort snapshot of muted/contact/date values. Sorting used to read prefs, contacts and
+    // MediaDataController (drafts) on every comparison. Caches live only during one sort call (UI thread).
+    private LongSparseArray<Boolean> sortMutedCache;
+    private LongSparseArray<Boolean> sortContactCache;
+    private LongSparseArray<Long> sortDateCache;
+
+    private boolean isMutedCached(long dialogId) {
+        if (sortMutedCache != null) {
+            Boolean v = sortMutedCache.get(dialogId);
+            if (v != null) return v;
+        }
+        return isDialogMuted(dialogId);
+    }
+
+    private boolean isContactCached(long dialogId) {
+        if (sortContactCache != null) {
+            Boolean v = sortContactCache.get(dialogId);
+            if (v != null) return v;
+        }
+        return getContactsController().isContact((int) dialogId);
+    }
+
+    private long dateCached(TLRPC.Dialog dialog) {
+        if (sortDateCache != null) {
+            Long v = sortDateCache.get(dialog.id);
+            if (v != null) return v;
+        }
+        return DialogObject.getLastMessageOrDraftDate(dialog, getMediaDataController().getDraft(dialog.id, 0));
+    }
+
+    public void sortDialogsCached(List<TLRPC.Dialog> dialogs) {
+        if (dialogs == null || dialogs.size() < 2) {
+            return;
+        }
+        sortMutedCache = new LongSparseArray<>(dialogs.size());
+        sortContactCache = new LongSparseArray<>(dialogs.size());
+        sortDateCache = new LongSparseArray<>(dialogs.size());
+        try {
+            final MediaDataController mediaDataController = getMediaDataController();
+            for (TLRPC.Dialog d : dialogs) {
+                if (d == null) continue;
+                sortMutedCache.put(d.id, isDialogMuted(d.id));
+                boolean isUser = !DialogObject.isChannel(d) && d.id > 0;
+                sortContactCache.put(d.id, isUser && NekoConfig.sortByContacts.Bool() && getContactsController().isContact((int) d.id));
+                sortDateCache.put(d.id, DialogObject.getLastMessageOrDraftDate(d, mediaDataController.getDraft(d.id, 0)));
+            }
+            Collections.sort(dialogs, dialogComparator);
+        } finally {
+            sortMutedCache = null;
+            sortContactCache = null;
+            sortDateCache = null;
+        }
     }
 
     private Comparator<TLRPC.Dialog> dialogComparator = (dialog1, dialog2) -> {
@@ -1500,11 +1554,11 @@ public class MessagesController extends BaseController implements NotificationCe
                 return -1;
             } else if (dialog1.unread_count > 0 && dialog2.unread_count > 0) {
                 if (NekoConfig.sortByUnmuted.Bool()) {
-                    if (isDialogMuted(dialog1.id) && !isDialogMuted(dialog2.id)) {
+                    if (isMutedCached(dialog1.id) && !isMutedCached(dialog2.id)) {
                         return 1;
-                    } else if (!isDialogMuted(dialog1.id) && isDialogMuted(dialog2.id)) {
+                    } else if (!isMutedCached(dialog1.id) && isMutedCached(dialog2.id)) {
                         return -1;
-                    } else if (!isDialogMuted(dialog1.id) && !isDialogMuted(dialog2.id)) {
+                    } else if (!isMutedCached(dialog1.id) && !isMutedCached(dialog2.id)) {
                         if (NekoConfig.sortByUser.Bool()) {
                             if (!is1user && is2user) {
                                 return 1;
@@ -1512,8 +1566,8 @@ public class MessagesController extends BaseController implements NotificationCe
                                 return -1;
                             } else if (is1user && is2user) {
                                 if (NekoConfig.sortByContacts.Bool()) {
-                                    boolean is1contact = is1user && getContactsController().isContact((int) dialog1.id);
-                                    boolean is2contact = is2user && getContactsController().isContact((int) dialog2.id);
+                                    boolean is1contact = is1user && isContactCached((int) dialog1.id);
+                                    boolean is2contact = is2user && isContactCached((int) dialog2.id);
                                     if (!is1contact && is2contact) {
                                         return 1;
                                     } else if (is1contact && !is2contact) {
@@ -1534,11 +1588,11 @@ public class MessagesController extends BaseController implements NotificationCe
                 }
             }
         } else if (NekoConfig.sortByUnmuted.Bool()) {
-            if (dialog1.unread_count == 0 && dialog2.unread_count > 0 && isDialogMuted(dialog1.id) && !isDialogMuted(dialog2.id)) {
+            if (dialog1.unread_count == 0 && dialog2.unread_count > 0 && isMutedCached(dialog1.id) && !isMutedCached(dialog2.id)) {
                 return 1;
-            } else if (dialog1.unread_count > 0 && dialog2.unread_count == 0 && !isDialogMuted(dialog1.id) && isDialogMuted(dialog2.id)) {
+            } else if (dialog1.unread_count > 0 && dialog2.unread_count == 0 && !isMutedCached(dialog1.id) && isMutedCached(dialog2.id)) {
                 return -1;
-            } else if (dialog1.unread_count > 0 && dialog2.unread_count > 0 && !isDialogMuted(dialog1.id) && !isDialogMuted(dialog2.id)) {
+            } else if (dialog1.unread_count > 0 && dialog2.unread_count > 0 && !isMutedCached(dialog1.id) && !isMutedCached(dialog2.id)) {
                 if (NekoConfig.sortByUser.Bool()) {
                     if (!is1user && is2user) {
                         return 1;
@@ -1546,8 +1600,8 @@ public class MessagesController extends BaseController implements NotificationCe
                         return -1;
                     } else if (is1user && is2user) {
                         if (NekoConfig.sortByContacts.Bool()) {
-                            boolean is1contact = is1user && getContactsController().isContact((int) dialog1.id);
-                            boolean is2contact = is2user && getContactsController().isContact((int) dialog2.id);
+                            boolean is1contact = is1user && isContactCached((int) dialog1.id);
+                            boolean is2contact = is2user && isContactCached((int) dialog2.id);
                             if (!is1contact && is2contact) {
                                 return 1;
                             } else if (is1contact && !is2contact) {
@@ -1565,9 +1619,8 @@ public class MessagesController extends BaseController implements NotificationCe
             }
         }
 
-        final MediaDataController mediaDataController = getMediaDataController();
-        final long date1 = DialogObject.getLastMessageOrDraftDate(dialog1, mediaDataController.getDraft(dialog1.id, 0));
-        final long date2 = DialogObject.getLastMessageOrDraftDate(dialog2, mediaDataController.getDraft(dialog2.id, 0));
+        final long date1 = dateCached(dialog1);
+        final long date2 = dateCached(dialog2);
         if (date1 < date2) {
             return 1;
         } else if (date1 > date2) {
@@ -1612,6 +1665,7 @@ public class MessagesController extends BaseController implements NotificationCe
     };
 
     private static final Object lockObject = new Object();
+    private static boolean hgramSttSingletonLogged;
     private static SparseArray<MessagesController> Instance = new SparseArray<>();
     public static MessagesController getInstance(int num) {
         MessagesController localInstance = Instance.get(num);
@@ -1620,6 +1674,10 @@ public class MessagesController extends BaseController implements NotificationCe
                 localInstance = Instance.get(num);
                 if (localInstance == null) {
                     Instance.put(num, localInstance = new MessagesController(num));
+                    if (!hgramSttSingletonLogged && ApplicationLoader.isHgramSttProcess()) {
+                        hgramSttSingletonLogged = true;
+                        FileLog.e("HgramSTT: account singleton created in :stt: MessagesController");
+                    }
                 }
             }
         }
@@ -6897,7 +6955,8 @@ public class MessagesController extends BaseController implements NotificationCe
             ArrayList<TLObject> result = new ArrayList<>();
             getMessagesStorage().getEncryptedChat(chatId, countDownLatch, result);
             try {
-                countDownLatch.await();
+                // Nagram: bounded wait so a busy storage queue cannot freeze the UI thread (ANR)
+                countDownLatch.await(1000, java.util.concurrent.TimeUnit.MILLISECONDS);
             } catch (Exception e) {
                 FileLog.e(e);
             }
@@ -16963,6 +17022,12 @@ public class MessagesController extends BaseController implements NotificationCe
             }
         }
 
+        if (limit == 100 && ApplicationLoader.isConnectionSlow()) {
+            // A hundred channel messages plus their users and chats can easily exceed a hundred
+            // kilobytes; on a narrow link that blocks text traffic for several seconds.
+            limit = 30;
+        }
+
         if (inputChannel == null) {
             TLRPC.Chat chat = getChat(channelId);
             if (chat == null) {
@@ -17227,9 +17292,15 @@ public class MessagesController extends BaseController implements NotificationCe
         req.pts = pts;
         req.date = date;
         req.qts = qts;
-        if (getDifferenceFirstSync) {
+        boolean slowNetwork = ApplicationLoader.isConnectionSlow();
+        if (getDifferenceFirstSync || slowNetwork) {
+            // A difference response can be hundreds of kilobytes; while it is being received no
+            // small user-initiated request can get an answer on the shared downlink. Bounding the
+            // slice keeps a text send or a chat open within a few seconds on narrow links.
             req.flags |= 1;
-            if (ApplicationLoader.isConnectedOrConnectingToWiFi()) {
+            if (slowNetwork) {
+                req.pts_total_limit = 1000;
+            } else if (ApplicationLoader.isConnectedOrConnectingToWiFi()) {
                 req.pts_total_limit = 5000;
             } else {
                 req.pts_total_limit = 1000;
@@ -17256,7 +17327,13 @@ public class MessagesController extends BaseController implements NotificationCe
                     });
                 } else {
                     if (res instanceof TLRPC.TL_updates_differenceSlice) {
-                        getDifference(res.intermediate_state.pts, res.intermediate_state.date, res.intermediate_state.qts, true);
+                        if (ApplicationLoader.isConnectionSlow()) {
+                            // Leave a gap between slices so a message send or chat open can
+                            // overtake the catch-up traffic instead of waiting for the next one.
+                            Utilities.stageQueue.postRunnable(() -> getDifference(res.intermediate_state.pts, res.intermediate_state.date, res.intermediate_state.qts, true), 800);
+                        } else {
+                            getDifference(res.intermediate_state.pts, res.intermediate_state.date, res.intermediate_state.qts, true);
+                        }
                     }
 
                     LongSparseArray<TLRPC.User> usersDict = new LongSparseArray<>();
@@ -22613,7 +22690,7 @@ public class MessagesController extends BaseController implements NotificationCe
             }
         }
         try {
-            Collections.sort(allDialogs, dialogComparator);
+            sortDialogsCached(allDialogs);
         } catch (Exception e) {}
     }
 
@@ -22830,14 +22907,14 @@ public class MessagesController extends BaseController implements NotificationCe
         }
 
         try {
-            Collections.sort(allDialogs, dialogComparator);
+            sortDialogsCached(allDialogs);
         } catch (Exception e) {
             NekoConfig.sortByUnread.setConfigBool(false);
             NekoConfig.sortByUnmuted.setConfigBool(false);
             NekoConfig.sortByUser.setConfigBool(false);
             NekoConfig.sortByContacts.setConfigBool(false);
             try {
-                Collections.sort(allDialogs, dialogComparator);
+                sortDialogsCached(allDialogs);
             } catch (Exception ex) {
                 FileLog.e(ex);
             }

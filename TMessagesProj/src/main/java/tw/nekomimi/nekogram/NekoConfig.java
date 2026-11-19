@@ -145,7 +145,7 @@ public class NekoConfig {
     public static ConfigItem askBeforeCall = addConfig("AskBeforeCalling", configTypeBool, false);
     public static ConfigItem disableNumberRounding = addConfig("DisableNumberRounding", configTypeBool, false);
 
-    public static ConfigItem useSystemDNS = addConfig("useSystemDNS", configTypeBool, false);
+    public static ConfigItem useSystemDNS = addConfig("useSystemDNS", configTypeBool, true);
     public static ConfigItem customDoH = addConfig("customDoH", configTypeString, "");
 
     public static ConfigItem disableAppBarShadow = addConfig("DisableAppBarShadow", configTypeBool, false);
@@ -461,7 +461,7 @@ public class NekoConfig {
             disableNumberRounding.setConfigBool(preferences.getBoolean("disableNumberRounding", false));
 
         if (preferences.contains("useSystemDNS"))
-            useSystemDNS.setConfigBool(preferences.getBoolean("useSystemDNS", false));
+            useSystemDNS.setConfigBool(preferences.getBoolean("useSystemDNS", true));
         if (preferences.contains("customDoH"))
             customDoH.setConfigString(preferences.getString("customDoH", ""));
 

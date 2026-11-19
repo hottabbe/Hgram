@@ -56,7 +56,7 @@ case "$host_os" in
     Linux)
         case "$(uname -m)" in
             x86_64) NDK_HOST_TAG="linux-x86_64" ;;
-            aarch64|arm64) NDK_HOST_TAG="linux-aarch64" ;;
+            aarch64|arm64) NDK_HOST_TAG="linux-arm64" ;;
             *)
                 echo "ERROR: unsupported Linux host architecture: $(uname -m)" >&2
                 return 1 2>/dev/null || exit 1

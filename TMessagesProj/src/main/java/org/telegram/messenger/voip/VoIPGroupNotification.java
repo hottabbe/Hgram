@@ -38,6 +38,8 @@ import org.telegram.ui.GroupCallSheet;
 import org.telegram.ui.LaunchActivity;
 import org.telegram.ui.VoIPFragment;
 
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 
@@ -298,8 +300,9 @@ public class VoIPGroupNotification {
         builder.setDeleteIntent(hidePendingIntent);
 
         TLObject obj = MessagesController.getInstance(account).getUserOrChat(dialogId);
+        final boolean hgramMasked = dialogId != 0 && !HgramSecretSpace.isVisible(account, dialogId);
         Bitmap avatar = VoIPService.getRoundAvatarBitmap(context, account, obj);
-        String personName = !TextUtils.isEmpty(names) ? names : ContactsController.formatName(obj);
+        String personName = hgramMasked ? LocaleController.getString(R.string.HgramAntiPeekHidden) : (!TextUtils.isEmpty(names) ? names : ContactsController.formatName(obj));
         if (TextUtils.isEmpty(personName)) {
             //java.lang.IllegalArgumentException: person must have a non-empty a name
             personName = "___";

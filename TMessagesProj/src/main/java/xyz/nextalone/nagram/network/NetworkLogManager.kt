@@ -268,7 +268,7 @@ class NetworkRequestBuilder(
             responseCode = response.status.value
             responseTime = System.currentTimeMillis() - startTime
 
-            kotlinx.coroutines.runBlocking {
+            return kotlinx.coroutines.runBlocking {
                 try {
                     if (binaryBody != null || contentType?.toString()?.contains("application/dns-message") == true) {
                         val channel = response.bodyAsChannel()
@@ -287,20 +287,18 @@ class NetworkRequestBuilder(
                 } catch (e: Exception) {
                     responseBody = "Unable to read response body: ${e.message}"
                 }
-            }
 
-            kotlinx.coroutines.runBlocking {
                 onCompleteCallback?.invoke()
-            }
 
-            return NetworkResponse(
-                statusCode = responseCode,
-                body = responseBody,
-                bodyBytes = responseBodyBytes,
-                headers = response.headers.entries().joinToString("\n") { "${it.key}: ${it.value.joinToString(", ")}" },
-                responseTime = responseTime,
-                isSuccess = response.status.isSuccess()
-            )
+                NetworkResponse(
+                    statusCode = responseCode,
+                    body = responseBody,
+                    bodyBytes = responseBodyBytes,
+                    headers = response.headers.entries().joinToString("\n") { "${it.key}: ${it.value.joinToString(", ")}" },
+                    responseTime = responseTime,
+                    isSuccess = response.status.isSuccess()
+                )
+            }
 
         } catch (e: Exception) {
             errorMsg = e.message ?: "Unknown error"

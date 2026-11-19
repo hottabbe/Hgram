@@ -1,8 +1,21 @@
 cmake_minimum_required(VERSION 3.16)
 
+# Enable the signature-check bypass only for debug builds
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_compile_definitions(NAGRAM_DEBUG_BUILD)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Nagram: limit parallel compile/link jobs so the build does not exhaust RAM on the device
+# (background apps were being killed). Linking big shared libs is memory-hungry, so keep it serial.
+set(NAGRAM_COMPILE_JOBS 6 CACHE STRING "Parallel compile jobs (ninja pool)")
+set(NAGRAM_LINK_JOBS 1 CACHE STRING "Parallel link jobs (ninja pool)")
+set_property(GLOBAL APPEND PROPERTY JOB_POOLS nagram_compile=${NAGRAM_COMPILE_JOBS} nagram_link=${NAGRAM_LINK_JOBS})
+set(CMAKE_JOB_POOL_COMPILE nagram_compile)
+set(CMAKE_JOB_POOL_LINK nagram_link)
 
 set(CMAKE_CXX_FLAGS "-DANDROID")
 set(CMAKE_C_FLAGS "-w -std=c11 -DANDROID -D_LARGEFILE_SOURCE=1 -Wno-error=implicit-function-declaration")
@@ -339,5 +352,7 @@ target_link_libraries(${NATIVE_LIB}
         breakpad)
 
 
-include(AndroidNdkModules)
-android_ndk_import_module_cpufeatures()
+# AndroidNdkModules.cmake is missing from the installed NDK (r29); build cpufeatures directly
+# from the NDK sources (same as android_ndk_import_module_cpufeatures()).
+add_library(cpufeatures STATIC ${ANDROID_NDK}/sources/android/cpufeatures/cpu-features.c)
+target_include_directories(cpufeatures PUBLIC ${ANDROID_NDK}/sources/android/cpufeatures)

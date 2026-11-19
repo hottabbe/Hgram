@@ -357,7 +357,9 @@ import tw.nekomimi.nekogram.utils.AlertUtil;
 import tw.nekomimi.nekogram.utils.ProxyUtil;
 import tw.nekomimi.nekogram.utils.VibrateUtil;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramAntiPeek;
 import xyz.nextalone.nagram.helper.MessageHelper;
+import xyz.nextalone.nagram.hgram.HgramConfig;
 
 import me.vkryl.android.animator.BoolAnimator;
 import me.vkryl.android.animator.FactorAnimator;
@@ -17824,6 +17826,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
 
         final PlaceProviderObject object = provider.getPlaceForPhoto(messageObject, fileLocation, index, true, false);
+        HgramAntiPeek.setOverlayBlocking(this, true);
         WindowManager wm = (WindowManager) parentActivity.getSystemService(Context.WINDOW_SERVICE);
         if (attachedToWindow) {
             try {
@@ -17846,7 +17849,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 messageObject != null && (MessagesController.getInstance(currentAccount).isPeerNoForwardsWithOverride(messageObject.getDialogId()) ||
                 (messageObject.messageOwner != null && messageObject.messageOwner.noforwards)) || messageObject != null && messageObject.hasRevealedExtendedMedia()
             ) {
-                if (!NekoXConfig.disableFlagSecure)
+                if (!NekoXConfig.disableFlagSecure && !HgramConfig.isAllowScreenshotsEnabled())
                 windowLayoutParams.flags |= WindowManager.LayoutParams.FLAG_SECURE;
                 AndroidUtilities.logFlagSecure();
             } else {
@@ -17878,6 +17881,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
         } catch (Exception e) {
             FileLog.e(e);
+            HgramAntiPeek.setOverlayBlocking(this, false);
             return false;
         }
 
@@ -19016,6 +19020,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     public void destroyPhotoViewer() {
+        // Destruction is a terminal path: release this viewer's block even if the window was
+        // already detached. Owner checking keeps another still-open viewer's block intact.
+        HgramAntiPeek.setOverlayBlocking(this, false);
         if (parentActivity == null || windowView == null) {
             return;
         }
@@ -19059,6 +19066,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         isVisible = false;
         isVisibleOrAnimating = false;
+        HgramAntiPeek.setOverlayBlocking(this, false);
         cropInitied = false;
         disableShowCheck = true;
         currentMessageObject = null;

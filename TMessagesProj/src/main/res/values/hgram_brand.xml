@@ -1,0 +1,9 @@
+<resources>
+    <color name="hgram_brand">#FFFFFF</color>
+    <color name="hgram_icon_dark">#0936D7</color>
+    <color name="hgram_icon_midnight">#101D34</color>
+    <color name="hgram_icon_neon">#091915</color>
+    <color name="hgram_icon_graphite">#343A46</color>
+    <color name="hgram_icon_violet">#7443CE</color>
+    <color name="hgram_icon_mint">#C5F5E6</color>
+</resources>

@@ -16,6 +16,7 @@ import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.LaunchActivity;
+import xyz.nextalone.nagram.hgram.HgramSecretCache;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -756,6 +757,35 @@ public class FileLoader extends BaseController {
         return fileName != null && loadOperationPathsUI.containsKey(fileName);
     }
 
+    /**
+     * True while a download operation still owns this path (temporary part or final file).
+     * Used by the encrypted-cache migration to avoid touching active downloads.
+     */
+    public boolean isFileLoading(File file) {
+        if (file == null) {
+            return false;
+        }
+        for (FileLoadOperation operation : loadOperationPaths.values()) {
+            if (operation == null) {
+                continue;
+            }
+            try {
+                final File current = operation.getCurrentFileFast();
+                if (current != null && current.equals(file)) {
+                    return true;
+                }
+            } catch (Throwable ignored) {
+                // A state transition may be in progress; treat the file as active.
+                return true;
+            }
+            final String name = operation.getFileName();
+            if (name != null && name.equals(file.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public float getBufferedProgressFromPosition(final float position, final String fileName) {
         if (TextUtils.isEmpty(fileName)) {
             return 0;
@@ -1022,8 +1052,11 @@ public class FileLoader extends BaseController {
                     return;
                 }
                 FilePathDatabase.FileMeta fileMeta = getFileMetadataFromParent(currentAccount, parentObject);
+                File deliveredFile = finalFile;
                 if (fileMeta != null) {
                     getFileLoader().getFileDatabase().saveFileDialogId(finalFile, fileMeta);
+                    deliveredFile = HgramSecretCache.encryptHiddenFile(
+                            currentAccount, finalFile, fileMeta.dialogId);
                 }
                 if (parentObject instanceof MessageObject) {
                     MessageObject messageObject = (MessageObject) parentObject;
@@ -1035,7 +1068,7 @@ public class FileLoader extends BaseController {
                 if (!operation.isPreloadVideoOperation()) {
                     loadOperationPathsUI.remove(fileName);
                     if (getDelegate() != null) {
-                        delegate.fileDidLoaded(fileName, finalFile, parentObject, finalType);
+                        delegate.fileDidLoaded(fileName, deliveredFile, parentObject, finalType);
                     }
                 }
 
@@ -1348,6 +1381,11 @@ public class FileLoader extends BaseController {
      * Return real file name. Used before file.exist()
      */
     public File getPathToAttach(TLObject attach, String size, String ext, boolean forceCache, boolean useFileDatabaseQueue) {
+        return HgramSecretCache.resolveReadable(
+                getPathToAttachInternal(attach, size, ext, forceCache, useFileDatabaseQueue));
+    }
+
+    private File getPathToAttachInternal(TLObject attach, String size, String ext, boolean forceCache, boolean useFileDatabaseQueue) {
         File dir = null;
         long documentId = 0;
         int dcId = 0;
@@ -1378,7 +1416,7 @@ public class FileLoader extends BaseController {
                 dir = getDirectory(type);
             } else if (attach instanceof TLRPC.Photo) {
                 TLRPC.PhotoSize photoSize = getClosestPhotoSizeWithSize(((TLRPC.Photo) attach).sizes, AndroidUtilities.getPhotoSize(true));
-                return getPathToAttach(photoSize, ext, false, useFileDatabaseQueue);
+                return getPathToAttachInternal(photoSize, null, ext, false, useFileDatabaseQueue);
             } else if (attach instanceof TLRPC.PhotoSize) {
                 TLRPC.PhotoSize photoSize = (TLRPC.PhotoSize) attach;
                 if (photoSize instanceof TLRPC.TL_photoStrippedSize || photoSize instanceof TLRPC.TL_photoPathSize) {

@@ -10,6 +10,8 @@ import android.view.ViewGroup
 import androidx.core.view.children
 import org.telegram.messenger.ApplicationLoader
 import tw.nekomimi.nekogram.NekoConfig
+import xyz.nextalone.nagram.hgram.HgramHaptics
+import xyz.nextalone.nagram.hgram.HgramHapticProfile
 
 object VibrateUtil {
 
@@ -31,27 +33,14 @@ object VibrateUtil {
     @JvmStatic
     @JvmOverloads
     fun vibrate(time: Long = 200L, effect: VibrationEffect? = null) {
+        vibrate(HgramHapticProfile.PLACE_LIST_ITEMS, time, effect)
+    }
+
+    @JvmStatic
+    @JvmOverloads
+    fun vibrate(place: String, time: Long = 200L, effect: VibrationEffect? = null) {
         if (NekoConfig.disableVibration.Bool()) return
-
-        initVibrator()
-
-        if (!vibrator.hasVibrator()) return
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            runCatching {
-                var vibe = effect
-                if (vibe == null) {
-                    vibe = VibrationEffect.createOneShot(time, VibrationEffect.DEFAULT_AMPLITUDE)
-                }
-                vibrator.cancel()
-                vibrator.vibrate(vibe, null)
-            }
-        } else {
-            runCatching {
-                vibrator.cancel()
-                vibrator.vibrate(time)
-            }
-        }
+        HgramHaptics.play(place)
     }
 
     @JvmStatic
@@ -63,22 +52,6 @@ object VibrateUtil {
     @JvmStatic
     fun vibrate(longs: LongArray, repeat: Int) {
         if (NekoConfig.disableVibration.Bool()) return
-
-        initVibrator()
-
-        if (!vibrator.hasVibrator()) return
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            runCatching {
-                val vibe = VibrationEffect.createWaveform(longs, repeat)
-                vibrator.cancel()
-                vibrator.vibrate(vibe, null)
-            }
-        } else {
-            runCatching {
-                vibrator.cancel()
-                vibrator.vibrate(longs, repeat)
-            }
-        }
+        HgramHaptics.play(HgramHapticProfile.PLACE_MINIAPPS)
     }
 }

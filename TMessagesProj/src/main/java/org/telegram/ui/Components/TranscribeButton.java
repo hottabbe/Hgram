@@ -2,6 +2,7 @@ package org.telegram.ui.Components;
 
 import static org.telegram.messenger.AndroidUtilities.dp;
 
+import android.app.Activity;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorFilter;
@@ -20,6 +21,10 @@ import android.text.TextUtils;
 import android.text.style.ImageSpan;
 import android.util.StateSet;
 import android.view.MotionEvent;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
+import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -28,6 +33,7 @@ import androidx.core.math.MathUtils;
 import androidx.interpolator.view.animation.FastOutSlowInInterpolator;
 
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.DialogObject;
@@ -35,6 +41,7 @@ import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.MessagesStorage;
+import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
 import org.telegram.messenger.UserConfig;
@@ -42,7 +49,12 @@ import org.telegram.messenger.Utilities;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.Cells.ChatMessageCell;
+import xyz.nextalone.nagram.hgram.HgramAsrCompatibility;
+import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramGigaAmRecognizer;
+import xyz.nextalone.nagram.hgram.HgramOfflineTranscriber;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -61,6 +73,7 @@ public class TranscribeButton {
     private final AnimatedFloat animatedDrawLock;
 
     private boolean loading;
+    private boolean cancelling;
     private final AnimatedFloat loadingFloat;
 
     private int inIconDrawableAlpha;
@@ -180,7 +193,11 @@ public class TranscribeButton {
     private long pressId = 0;
     public boolean onTouch(int action, float x, float y) {
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-            if (pressed && action == MotionEvent.ACTION_UP) {
+            // A stale press from a previous gesture must never turn a tap on play/media into
+            // an onTap() of the transcription button.
+            if (pressed && action == MotionEvent.ACTION_UP
+                    && pressBounds.contains((int) x, (int) y)) {
+                pressed = false;
                 onTap();
                 return true;
             }
@@ -188,6 +205,10 @@ public class TranscribeButton {
             return false;
         }
         if (!pressBounds.contains((int) x, (int) y)) {
+            // ACTION_DOWN outside the button cancels any press left by an interrupted gesture.
+            if (action == MotionEvent.ACTION_DOWN) {
+                pressed = false;
+            }
             return false;
         }
         if (action == MotionEvent.ACTION_DOWN) {
@@ -206,7 +227,57 @@ public class TranscribeButton {
             return;
         }
         clickedToOpen = false;
+        final MessageObject transcribingMessage = parent.getMessageObject();
+        if (HgramOfflineTranscriber.isTranscribing(transcribingMessage)) {
+            // The loading flag can be stale for one frame after a rebind, so cancellation is
+            // keyed off the transcriber state instead of the button's visual state. The tap
+            // immediately turns into an explicit stop marker while the worker winds down.
+            cancelling = true;
+            parent.invalidate();
+            HgramOfflineTranscriber.cancel(transcribingMessage);
+            setLoading(false, true);
+            parent.postDelayed(() -> {
+                cancelling = false;
+                parent.invalidate();
+            }, 1200);
+            return;
+        }
         boolean processClick, toOpen = !shouldBeOpen;
+        if (toOpen && HgramConfig.isOfflineTranscriptionEnabled()) {
+            if (!loading) {
+                // A finished offline transcription is already cached on the message. Opening it
+                // must never start a second inference (and tapping play must stay playback).
+                if (transcribingMessage != null && transcribingMessage.messageOwner != null
+                        && transcribingMessage.messageOwner.voiceTranscriptionFinal
+                        && !TextUtils.isEmpty(transcribingMessage.messageOwner.voiceTranscription)) {
+                    transcribePressed(transcribingMessage, true, parent.getDelegate());
+                    setOpen(true, true);
+                    return;
+                }
+                final String engine = HgramConfig.getSttEngine();
+                final boolean onnxEngine = HgramConfig.STT_ENGINE_GIGAAM.equals(engine)
+                        || HgramConfig.STT_ENGINE_SHERPA.equals(engine);
+                if (onnxEngine && HgramAsrCompatibility.isUnsupportedEmulator()) {
+                    Toast.makeText(parent.getContext(), LocaleController.getString(R.string.HgramOfflineTranscriptionUnsupported), Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                if (HgramConfig.STT_ENGINE_GIGAAM.equals(engine) && !HgramGigaAmRecognizer.isInstalled()) {
+                    showGigaAmDownloadDialog();
+                    return;
+                }
+                if (HgramOfflineTranscriber.start(parent.getContext(), parent.getMessageObject())) {
+                    clickedToOpen = true;
+                    cancelling = false;
+                    setLoading(true, true);
+                } else {
+                    int message = HgramOfflineTranscriber.isAvailable(parent.getContext()) && !HgramOfflineTranscriber.isMessageDownloaded(parent.getMessageObject())
+                            ? R.string.HgramOfflineTranscriptionDownloadFirst
+                            : R.string.HgramOfflineTranscriptionUnavailable;
+                    Toast.makeText(parent.getContext(), LocaleController.getString(message), Toast.LENGTH_SHORT).show();
+                }
+            }
+            return;
+        }
         if (!shouldBeOpen) {
             processClick = !loading;
             if ((premium || canTranscribeTrial(parent.getMessageObject())) && parent.getMessageObject().isSent()) {
@@ -246,6 +317,71 @@ public class TranscribeButton {
 
     public void drawGradientBackground(Canvas canvas, Rect bounds, float alpha) {
 
+    }
+
+    private void showGigaAmDownloadDialog() {
+        final Activity activity = AndroidUtilities.findActivity(parent.getContext());
+        if (activity == null) {
+            return;
+        }
+        if (HgramGigaAmRecognizer.downloadProgress() >= 0) {
+            Toast.makeText(activity, LocaleController.getString(R.string.HgramGigaAmAlreadyDownloading), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new AlertDialog.Builder(activity)
+                .setTitle(LocaleController.getString(R.string.HgramSttEngineGigaAm))
+                .setMessage(LocaleController.formatString(R.string.HgramGigaAmDownloadConfirm, (int) (HgramGigaAmRecognizer.TOTAL_SIZE_BYTES / (1024 * 1024))))
+                .setPositiveButton(LocaleController.getString(R.string.HgramModelDownload), (dialog, which) -> startGigaAmDownloadProgress(activity))
+                .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                .show();
+    }
+
+    private void startGigaAmDownloadProgress(Activity activity) {
+        final LinearLayout layout = new LinearLayout(activity);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(24), dp(8), dp(24), 0);
+        final TextView statusView = new TextView(activity);
+        statusView.setTextSize(14);
+        statusView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack));
+        statusView.setText(LocaleController.formatString(R.string.HgramModelDownloading, 0));
+        final ProgressBar progressBar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+        progressBar.setMax(100);
+        layout.addView(statusView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+        layout.addView(progressBar, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 4, 0, 12, 0, 0));
+        final AlertDialog dialog = new AlertDialog.Builder(activity)
+                .setTitle(LocaleController.getString(R.string.HgramSttEngineGigaAm))
+                .setView(layout)
+                .setNegativeButton(LocaleController.getString(R.string.Cancel), (d, which) -> HgramGigaAmRecognizer.cancelDownload())
+                .create();
+        dialog.setCancelable(false);
+        dialog.show();
+        HgramGigaAmRecognizer.download(percent -> {
+            statusView.setText(LocaleController.formatString(R.string.HgramModelDownloading, percent));
+            progressBar.setProgress(percent);
+            return kotlin.Unit.INSTANCE;
+        }, success -> {
+            if (dialog.isShowing()) {
+                dialog.dismiss();
+            }
+            final int message;
+            if (success) {
+                message = R.string.HgramModelInstalled;
+            } else if (HgramGigaAmRecognizer.lastError() == HgramGigaAmRecognizer.ERROR_ALREADY_DOWNLOADING) {
+                message = R.string.HgramGigaAmAlreadyDownloading;
+            } else if (HgramGigaAmRecognizer.lastError() == HgramGigaAmRecognizer.ERROR_NO_SPACE) {
+                message = R.string.HgramGigaAmErrorSpace;
+            } else if (HgramGigaAmRecognizer.lastError() == HgramGigaAmRecognizer.ERROR_NETWORK) {
+                message = R.string.HgramGigaAmErrorNetwork;
+            } else if (HgramGigaAmRecognizer.lastError() == HgramGigaAmRecognizer.ERROR_HASH) {
+                message = R.string.HgramGigaAmErrorHash;
+            } else if (HgramGigaAmRecognizer.lastError() == HgramGigaAmRecognizer.ERROR_CANCELLED) {
+                message = R.string.HgramGigaAmDownloadCancelled;
+            } else {
+                message = R.string.HgramModelDownloadFailed;
+            }
+            Toast.makeText(activity, LocaleController.getString(message), Toast.LENGTH_SHORT).show();
+            return kotlin.Unit.INSTANCE;
+        });
     }
 
     public void setColor(int color, int grayColor, boolean isOut, float bgBack) {
@@ -387,6 +523,22 @@ public class TranscribeButton {
         } else {
             outIconDrawable.setAlpha((int) (outIconDrawableAlpha * alpha));
             outIconDrawable.draw(canvas);
+        }
+        if (cancelling && strokePaint != null) {
+            final float cx = bounds.centerX();
+            final float cy = bounds.centerY();
+            final float r = dp(4);
+            final int oldColor = strokePaint.getColor();
+            final int oldAlpha = strokePaint.getAlpha();
+            final float oldWidth = strokePaint.getStrokeWidth();
+            strokePaint.setColor(iconColor);
+            strokePaint.setAlpha((int) (oldAlpha * alpha));
+            strokePaint.setStrokeWidth(dp(2));
+            canvas.drawLine(cx - r, cy - r, cx + r, cy + r, strokePaint);
+            canvas.drawLine(cx - r, cy + r, cx + r, cy - r, strokePaint);
+            strokePaint.setColor(oldColor);
+            strokePaint.setAlpha(oldAlpha);
+            strokePaint.setStrokeWidth(oldWidth);
         }
         drawLock(canvas);
         canvas.restore();
@@ -638,6 +790,7 @@ public class TranscribeButton {
     private static HashMap<Long, MessageObject> transcribeOperationsById;
     private static HashMap<Integer, MessageObject> transcribeOperationsByDialogPosition;
     private static ArrayList<Integer> videoTranscriptionsOpen;
+    private static final java.util.HashSet<Integer> hgramOfflineTranscribing = new java.util.HashSet<>();
 
     public static void openVideoTranscription(MessageObject messageObject) {
         if (messageObject == null || isVideoTranscriptionOpen(messageObject)) {
@@ -661,9 +814,34 @@ public class TranscribeButton {
 
     public static boolean isTranscribing(MessageObject messageObject) {
         return (
+            isHgramOfflineTranscribing(messageObject) ||
             (transcribeOperationsByDialogPosition != null && (transcribeOperationsByDialogPosition.containsValue(messageObject) || transcribeOperationsByDialogPosition.containsKey((Integer) reqInfoHash(messageObject)))) ||
             (transcribeOperationsById != null && messageObject != null && messageObject.messageOwner != null && transcribeOperationsById.containsKey(messageObject.messageOwner.voiceTranscriptionId))
         );
+    }
+
+    private static synchronized boolean isHgramOfflineTranscribing(MessageObject messageObject) {
+        return messageObject != null && hgramOfflineTranscribing.contains(reqInfoHash(messageObject));
+    }
+
+    public static synchronized void beginOfflineTranscription(MessageObject messageObject) {
+        if (messageObject != null) {
+            hgramOfflineTranscribing.add(reqInfoHash(messageObject));
+            AndroidUtilities.runOnUIThread(() -> NotificationCenter.getInstance(messageObject.currentAccount)
+                    .postNotificationName(NotificationCenter.voiceTranscriptionUpdate, messageObject));
+        }
+    }
+
+    public static synchronized void endOfflineTranscription(MessageObject messageObject) {
+        if (messageObject != null) {
+            hgramOfflineTranscribing.remove(reqInfoHash(messageObject));
+        }
+    }
+
+    public static void notifyOfflineTranscriptionFinished(MessageObject messageObject) {
+        if (messageObject != null) {
+            NotificationCenter.getInstance(messageObject.currentAccount).postNotificationName(NotificationCenter.voiceTranscriptionUpdate, messageObject);
+        }
     }
 
     private static void transcribePressed(MessageObject messageObject, boolean open, ChatMessageCell.ChatMessageCellDelegate delegate) {
@@ -855,6 +1033,9 @@ public class TranscribeButton {
 
     public static boolean showTranscribeLock(MessageObject messageObject) {
         if (messageObject == null || messageObject.messageOwner == null) {
+            return false;
+        }
+        if (HgramConfig.isOfflineTranscriptionEnabled() && HgramOfflineTranscriber.isAvailable(ApplicationLoader.applicationContext)) {
             return false;
         }
         if (isFreeTranscribeInChat(messageObject)) {

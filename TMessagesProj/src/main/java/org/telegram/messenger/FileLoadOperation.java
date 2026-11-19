@@ -856,15 +856,20 @@ public class FileLoadOperation {
                 currentDownloadChunkSize =  1024 * 32;
                 currentMaxDownloadRequests = 4;
             } else if (isStory) {
-                currentDownloadChunkSize = downloadChunkSizeBig;
-                currentMaxDownloadRequests = maxDownloadRequestsBig;
+                boolean slowNetwork = ApplicationLoader.isConnectionSlow();
+                currentDownloadChunkSize = slowNetwork ? 64 * 1024 : downloadChunkSizeBig;
+                currentMaxDownloadRequests = slowNetwork ? 2 : maxDownloadRequestsBig;
             } else if (isStream) {
-                currentDownloadChunkSize = downloadChunkSizeAnimation;
-                currentMaxDownloadRequests = maxDownloadRequestsAnimation;
+                boolean slowNetwork = ApplicationLoader.isConnectionSlow();
+                currentDownloadChunkSize = slowNetwork ? 64 * 1024 : downloadChunkSizeAnimation;
+                currentMaxDownloadRequests = slowNetwork ? 2 : maxDownloadRequestsAnimation;
             } else {
-                boolean bigChunk = totalBytesCount >= bigFileSizeFrom;
-                currentDownloadChunkSize = bigChunk ? downloadChunkSizeBig : downloadChunkSize;
-                currentMaxDownloadRequests = bigChunk ? maxDownloadRequestsBig : maxDownloadRequests;
+                boolean slowNetwork = ApplicationLoader.isConnectionSlow();
+                boolean bigChunk = !slowNetwork && totalBytesCount >= bigFileSizeFrom;
+                // One or two small ranges keep the link free for message traffic; large
+                // chunks only increase the time a single stalled request can block the queue.
+                currentDownloadChunkSize = slowNetwork ? 64 * 1024 : (bigChunk ? downloadChunkSizeBig : downloadChunkSize);
+                currentMaxDownloadRequests = slowNetwork ? 2 : (bigChunk ? maxDownloadRequestsBig : maxDownloadRequests);
                 // Keep special download paths on their existing scheduling policy.
                 // Snapshot the policy for this operation, including its connection pool.
                 useDownloadByteBudget = !MessagesController.getInstance(currentAccount).downloadImprovementKillswitch &&
@@ -872,11 +877,25 @@ public class FileLoadOperation {
                         !isPreloadVideoOperation && !supportsPreloading && preloadPrefixSize == 0;
                 if (useDownloadByteBudget) {
                     boolean premium = UserConfig.getInstance(currentAccount).isPremium();
-                    downloadConnectionsCount = premium ? ConnectionsManager.DownloadConnectionsCount : 2;
-                    int byteBudget = (premium ? 16 : 2) * 1024 * 1024;
-                    currentMaxDownloadRequests = byteBudget / currentDownloadChunkSize;
+                    if (slowNetwork) {
+                        downloadConnectionsCount = 1;
+                        // Two 64 KB chunks in flight at most: the native download budget is
+                        // already 256 KB, and a deeper queue only adds latency for text traffic.
+                        int byteBudget = 128 * 1024;
+                        currentMaxDownloadRequests = Math.max(1, byteBudget / currentDownloadChunkSize);
+                    } else {
+                        downloadConnectionsCount = premium ? ConnectionsManager.DownloadConnectionsCount : 2;
+                        int byteBudget = (premium ? 16 : 2) * 1024 * 1024;
+                        currentMaxDownloadRequests = byteBudget / currentDownloadChunkSize;
+                    }
                 }
             }
+        }
+        // Parallel MTProto ranges already support resume, CDN verification and offset writes.
+        // Keep encrypted and priority/preload paths on their sequential/special policies.
+        if (key == null && !encryptFile && stream == null && !isStory && !isPreloadVideoOperation && !isStream && !forceSmallChunk
+                && !ApplicationLoader.isConnectionSlow()) {
+            currentMaxDownloadRequests = xyz.nextalone.nagram.hgram.HgramConfig.getDownloadThreads();
         }
         final boolean alreadyStarted = state != stateIdle;
         final boolean wasPaused = paused;

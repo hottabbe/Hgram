@@ -6,6 +6,7 @@ import android.view.WindowManager;
 import java.util.HashMap;
 
 import tw.nekomimi.nekogram.NekoXConfig;
+import xyz.nextalone.nagram.hgram.HgramConfig;
 
 public class FlagSecureReason {
 
@@ -76,7 +77,12 @@ public class FlagSecureReason {
     }
 
     public static boolean isSecuredNow(Window window) {
-        return currentSecureReasons != null && currentSecureReasons.get(window) != null && !NekoXConfig.disableFlagSecure;
+        return currentSecureReasons != null && currentSecureReasons.get(window) != null
+                && !NekoXConfig.disableFlagSecure && !HgramConfig.isAllowScreenshotsEnabled();
+    }
+
+    public static void refresh(Window window) {
+        updateWindowSecure(window);
     }
 
     public interface FlagSecureCondition {

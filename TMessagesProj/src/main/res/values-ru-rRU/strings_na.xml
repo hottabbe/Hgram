@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="ShowSquareAvatar">Квадратные аватарки</string>
     <string name="N_Config">Настройки N</string>
     <string name="ForceCopy">Принудительное копирование</string>
     <string name="disableSecondAddress">Отключить второй запрос адреса</string>
@@ -14,7 +15,6 @@
     <string name="TextUndoRedo">Отменить/повторить</string>
     <string name="TextUndo">Отменить</string>
     <string name="TextRedo">Повторить</string>
-    <string name="NoiseSuppressAndVoiceEnhance">Подавление шума и улучшение голоса</string>
     <string name="RepeatAsCopy">Повторить как копию</string>
     <string name="DoubleTapAction">Действие при двойном нажатии</string>
     <string name="DoubleTapActionIncoming">Полученные сообщения</string>
@@ -22,7 +22,7 @@
     <string name="SendReactions">Отправить реакцию</string>
     <string name="ShowReactions">Показать реакции</string>
     <string name="CustomTitle">Пользовательский заголовок</string>
-    <string name="CustomTitleHint">Оставьте поле пустым, чтобы использовать «Nagram»</string>
+    <string name="CustomTitleHint">Оставьте поле пустым, чтобы использовать «Hgram»</string>
     <string name="CodeSyntaxHighlight">Подсветка синтаксиса кода</string>
     <string name="CreateMono">Создать моноширинный</string>
     <string name="CreateMonoLanguage">Язык кода</string>
@@ -83,7 +83,7 @@
     <string name="Nekogram">Nekogram</string>
     <string name="HalloWeen">Хэллоуин</string>
     <string name="ShowOnlineStatus">Показывать онлайн статус</string>
-    <string name="ShowOnlineStatusNotice">Отображать онлайн статус других людей рядом с фотографией их профиля в группах.</string>
+    <string name="ShowOnlineStatusNotice">Показывать онлайн-статус других людей рядом с их фото в группах.</string>
     <string name="ShowRecentOnlineStatus">Показывать недавний онлайн статус</string>
     <string name="DoActionsInCommonGroups">Применить в общих группах</string>
     <string name="ShowFullAbout">Показывать полную информацию</string>
@@ -115,7 +115,7 @@
     <string name="ExternalStickerCacheWaitSync">Ожидание завершения синхронизации кэша</string>
     <string name="ExternalStickerCacheSyncNotFinished">Синхронизация кэша уже запущена</string>
     <string name="ExternalStickerCacheAutoRefresh">Автоматическая синхронизация</string>
-    <string name="ExternalStickerCacheAutoRefreshHint">Автоматически синхронизируйте весь кэш после получения событий, связанных со стикерами.</string>
+    <string name="ExternalStickerCacheAutoRefreshHint">Автоматически синхронизировать все кэши после событий со стикерами.</string>
     <string name="ExternalStickerCacheRefreshAll">Синхронизировать весь кэш</string>
     <string name="ExternalStickerCacheDeleteAll">Удалить весь кэш</string>
     <string name="ExternalStickerCacheDirNameType">Присвоение имен каталогам</string>
@@ -158,8 +158,7 @@
     <string name="RegexFiltersCaseInsensitive">Не учитывать регистр</string>
     <string name="RegexFiltersAdd">Добавить фильтр</string>
     <string name="RegexFiltersEdit">Изменить фильтр</string>
-    <string name="RegexFiltersAddDescription">Вы можете использовать сайт <![CDATA[<a href="https://regex101.com">regex101.com</a>]]> для полного тестирования вашего регулярного выражения.
-    Вы также можете использовать простой текст, но не забудьте убрать скобки.</string>
+    <string name="RegexFiltersAddDescription">Проверить регулярное выражение целиком можно на <![CDATA[<a href="https://regex101.com">regex101.com</a>]]>. Можно использовать и обычный текст, но не забудьте убрать скобки.</string>
     <string name="RegexFiltersAddError">Синтаксическая ошибка регулярного выражения</string>
     <string name="ShowTimeHint">Показывать подробную информацию при нажатии на время сообщения</string>
     <string name="SearchHashtagDefaultPageChannel">Страница поиска по умолчанию при нажатии на хештеги каналов</string>
@@ -169,7 +168,7 @@
     <string name="EnablePanguOnReceiving">Включить Pangu при получении</string>
     <string name="EnablePanguOnSending">Включить Pangu при отправке</string>
     <string name="EnablePanguOnEditing">Включить Pangu при редактировании</string>
-    <string name="PanguInfo">Для удобства чтения текстового интервала, автоматически вставляйте пробелы между CJK (китайский, японский, корейский), английским языком, цифрами и символами.</string>
+    <string name="PanguInfo">Для удобства чтения автоматически вставлять пробелы между CJK-символами (китайский, японский, корейский), латиницей, цифрами и знаками.</string>
     <string name="SendWithPangu">Отправить с Pangu</string>
     <string name="SendWithoutPangu">Отправить без Pangu</string>
     <string name="DefaultHlsVideoQuality">Качество видео Hls по умолчанию</string>
@@ -223,10 +222,10 @@
     <string name="UseSystemAiServiceDesc">Поддерживать только HyperOS и ColorOS</string>
     <string name="NavigationAnimationSpring">Анимация источника навигации</string>
     <string name="ForceEdgeToEdge">Принудительно к краю</string>
-    <string name="ForceEdgeToEdgeDesc">Может привести к неправильным разметкам страниц, дублированию контента и сбою действий кликов.</string>
+    <string name="ForceEdgeToEdgeDesc">Может привести к неправильной разметке, наложению элементов и неработающим нажатиям.</string>
     <string name="UseSystemPhotoPicker">Совместимость с выбором фото системы</string>
-    <string name="UseSystemPhotoPickerDesc">На Android 13 и более поздней версии, используйте системный выбор для вложений галереи без запроса полного доступа к фото и видео.</string>
-    <string name="TabStyle">Tab Style</string>
+    <string name="UseSystemPhotoPickerDesc">На Android 13 и новее использовать системный выбор фото, чтобы не запрашивать полный доступ к галерее.</string>
+    <string name="TabStyle">Стиль вкладок</string>
     <string name="TabStylePure">Чистый</string>
     <string name="TabStylePills">Таблетки</string>
     <string name="ChatActivityBottomStyle">Стиль снизу</string>
@@ -242,9 +241,9 @@
     <string name="ProviderDeepLFreeTranslate">Бесплатный перевод Глубоко</string>
     <string name="DeepLApiKey">Ключ DeepL API</string>
     <string name="DeepLApiKeyNotice">Ключ аутентификации для официального DeepL Pro API</string>
-    <string name="DeepLFreeApiKey">DeepL Free API Key</string>
+    <string name="DeepLFreeApiKey">Бесплатный API-ключ DeepL</string>
     <string name="DeepLFreeApiKeyNotice">Ключ аутентификации для официального DeepL Free API</string>
-    <string name="SummarizeText">Summarize</string>
+    <string name="SummarizeText">Краткое содержание</string>
     <string name="SummarizeTextButton">Кнопка суммирования текста</string>
     <string name="SummarizeTextButtonDisable">Отключено</string>
     <string name="SummarizeTextButtonAlways">Всегда</string>
@@ -266,7 +265,7 @@
     <string name="LLMProviderQwen">Алибаба Квена</string>
     <string name="LLMProviderMoonshot">Moonshot / Kimi</string>
     <string name="LLMProviderSiliconFlow">SiliconFlow</string>
-    <string name="LLMApiUrl">API URL</string>
+    <string name="LLMApiUrl">URL API</string>
     <string name="LLMApiKey">Ключ API</string>
     <string name="LLMApiKeys">LLM API ключи</string>
     <string name="LLMModelName">Название модели</string>
@@ -275,20 +274,20 @@
     <string name="LLMUseContext">Использовать последние сообщения как контекст</string>
     <string name="LLMUseContextNotice">Используйте до пяти предыдущих сообщений для устранения двусмысленности.</string>
     <string name="LLMTemperature">Температура</string>
-    <string name="LLMApiKeyNotice">Введите ваш ключ API. Вы можете разделить несколько клавиш запятыми для вращения.</string>
+    <string name="LLMApiKeyNotice">Введите ключ API. Несколько ключей можно разделить запятыми для ротации.</string>
     <string name="LLMApiUrlNotice">Введите базовый URL API (например, https://api.openai.com/v1)</string>
     <string name="LLMModelNameNotice">Введите имя модели (например, gpt-4o-mini)</string>
-    <string name="LLMSystemPromptNotice">Пользовательская системная подсказка для перевода. Оставьте пустым для использования по умолчанию.</string>
+    <string name="LLMSystemPromptNotice">Системная инструкция для перевода. Оставьте пустым, чтобы использовать значение по умолчанию.</string>
     <string name="LLMTranslationPromptNotice">Используйте поля @toLang и @text; оставьте пустым, чтобы использовать значения по умолчанию.</string>
-    <string name="LLMApiFormat">API Format</string>
+    <string name="LLMApiFormat">Формат API</string>
     <string name="LLMApiFormatOpenAIChat">OpenAI (чат)</string>
     <string name="LLMApiFormatOpenAIResponse">OpenAI (Ответ)</string>
     <string name="LLMApiFormatAnthropic">Антропия</string>
     <string name="LLMApiFormatCustom">Свой</string>
     <string name="LLMApiFormatOpenAIChatDesc">POST {baseUrl}/chat/completions — стандартный формат OpenAI Chat Completions API. Совместим с большинством OpenAI-совместимых провайдеров.</string>
-    <string name="LLMApiFormatOpenAIResponseDesc">POST {baseUrl}/responses — формат OpenAI Responses API. Использует поля ввода + инструкции.</string>
-    <string name="LLMApiFormatAnthropicDesc">POST {baseUrl}/messages — Антропический формат API сообщений. Использует заголовок и системное поле x-api-key.</string>
-    <string name="LLMApiFormatCustomDesc">POST к точному URL API как настроенный — путь к конечной точке не добавлен. Тело запроса использует формат OpenAI чата.</string>
+    <string name="LLMApiFormatOpenAIResponseDesc">POST {baseUrl}/responses — формат OpenAI Responses API. Использует поля input и instructions.</string>
+    <string name="LLMApiFormatAnthropicDesc">POST {baseUrl}/messages — формат Anthropic Messages API. Использует заголовок x-api-key и поле system.</string>
+    <string name="LLMApiFormatCustomDesc">POST на указанный URL без добавления пути эндпоинта. Тело запроса — формат OpenAI Chat.</string>
     <string name="LLMFetchModels">Получить доступные модели</string>
     <string name="LLMFetchingModels">Получение моделей…</string>
     <string name="LLMSelectModel">Выберите модель</string>
@@ -335,16 +334,16 @@
     <string name="InlineBotRulesView">Просмотреть правило</string>
     <string name="InlineBotRulesUsernameHint">Имя пользователя бота (без @)</string>
     <string name="InlineBotRulesRegexHint">Одно регулярное выражение в строке</string>
-    <string name="InlineBotRulesUsernameLabel">Bot username</string>
+    <string name="InlineBotRulesUsernameLabel">Имя бота</string>
     <string name="InlineBotRulesRegexLabel">Правила Regex</string>
-    <string name="InlineBotRulesEditDescription">Каждая строка - отдельное регулярное выражение. URL, соответствующие любому из них, будут отправлены на соответствующий встроенный бот. Вы можете протестировать шаблоны на <![CDATA[<a href="https://regex101.com">regex101.com</a>]]>.</string>
+    <string name="InlineBotRulesEditDescription">Каждая строка — отдельное регулярное выражение. Ссылки, подходящие под любое из них, будут отправляться во встроенный бот. Проверить шаблоны можно на <![CDATA[<a href="https://regex101.com">regex101.com</a>]]>.</string>
     <string name="InlineBotRulesUsernameRequired">Требуется имя пользователя бота</string>
     <string name="InlineBotRulesRegexRequired">Требуется хотя бы одно регулярное выражение</string>
     <string name="InlineBotRulesSaveError">Не удалось сохранить правило. Проверьте синтаксис выражения.</string>
     <string name="InlineBotRulesDeleteTitle">Удалить правило?</string>
     <string name="InlineBotRulesDeleteMessage">Это правило будет удалено навсегда.</string>
     <string name="FixUrlAutoInlineBotSkipMediaPreview">Отправить результаты медиа напрямую</string>
-    <string name="FixUrlAutoInlineBotSkipMediaPreviewDesc">Применяется только к автоматическим URL-адресам встроенных ботов. Обычный встроенный бот-носитель по-прежнему открывает предварительный просмотр.</string>
+    <string name="FixUrlAutoInlineBotSkipMediaPreviewDesc">Касается только автоматических результатов встроенных ботов для ссылок. Обычные медиа встроенных ботов по-прежнему открывают предпросмотр.</string>
     <string name="TabletModeSmall">Маленький планшет</string>
     <string name="TabletModeBig">Большой планшет</string>
     <string name="ShowRecentForwardTab">Показывать вкладку чатов при пересылке</string>

@@ -20,6 +20,7 @@ import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.PorterDuffXfermode;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.drawable.Drawable;
 import android.text.Layout;
@@ -62,6 +63,7 @@ import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.R;
+import xyz.nextalone.nagram.hgram.HgramConfig;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
@@ -1461,6 +1463,9 @@ public class DialogStoriesCell extends FrameLayout implements NotificationCenter
         public ImageReceiver avatarImage = new ImageReceiver(this);
         public ImageReceiver crossfadeToAvatarImage = new ImageReceiver(this);
         AvatarDrawable crossfadeAvatarDrawable = new AvatarDrawable();
+        private final Paint hgramAntiPeekPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF hgramAntiPeekPlaceholderRect = new RectF();
+        private boolean hgramAntiPeekA11yMasked;
         public boolean drawAvatar = true;
         FrameLayout textViewContainer;
         SimpleTextView textView;
@@ -1655,6 +1660,23 @@ public class DialogStoriesCell extends FrameLayout implements NotificationCenter
 
         @Override
         protected void dispatchDraw(Canvas canvas) {
+            final boolean hgramMasked = HgramConfig.isAntiPeekActive();
+            final boolean hgramWasMasked = hgramAntiPeekA11yMasked;
+            if (hgramMasked != hgramAntiPeekA11yMasked) {
+                hgramAntiPeekA11yMasked = hgramMasked;
+                setImportantForAccessibility(hgramMasked ? IMPORTANT_FOR_ACCESSIBILITY_YES : IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+                if (textViewContainer != null) {
+                    textViewContainer.setImportantForAccessibility(hgramMasked ? IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS : IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+                }
+                setContentDescription(hgramMasked ? getString(R.string.HgramAntiPeekHidden) : null);
+            }
+            if (textViewContainer != null) {
+                if (hgramMasked) {
+                    textViewContainer.setAlpha(0f);
+                } else if (hgramWasMasked) {
+                    textViewContainer.setAlpha(textAlphaTransition * textAlpha);
+                }
+            }
             float size = dp(48);
             float collapsedSize = dp(COLLAPSED_SIZE);
             float overscrollSize = dp(8) *  Utilities.clamp(DialogStoriesCell.this.overscrollProgress / 0.5f, 1f, 0);
@@ -1721,7 +1743,7 @@ public class DialogStoriesCell extends FrameLayout implements NotificationCenter
                         radialProgress.setBackground(null, true, false);
                     }
                 }
-                if (drawAvatar) {
+                if (drawAvatar && !HgramConfig.isAntiPeekActive()) {
                     canvas.save();
                     canvas.scale(params.getScale(), params.getScale(), params.originalAvatarRect.centerX(), params.originalAvatarRect.centerY());
                     avatarImage.setImageCoords(params.originalAvatarRect);
@@ -1747,7 +1769,7 @@ public class DialogStoriesCell extends FrameLayout implements NotificationCenter
                 invalidate();
             } else {
                 float failT = this.failT.set(isFail);
-                if (drawAvatar) {
+                if (drawAvatar && !HgramConfig.isAntiPeekActive()) {
                     if (progressWasDrawn) {
                         params.forceAnimateProgressToSegments = true;
                         params.progressToSegments = 0f;
@@ -1807,10 +1829,15 @@ public class DialogStoriesCell extends FrameLayout implements NotificationCenter
             }
             canvas.restore();
 
-            if (crossfadeToDialog && progressToCollapsed2 > 0) {
+            if (crossfadeToDialog && progressToCollapsed2 > 0 && !HgramConfig.isAntiPeekActive()) {
                 crossfadeToAvatarImage.setImageCoords(x, y, finalSize, finalSize);
                 crossfadeToAvatarImage.setAlpha(progressToCollapsed2);
                 crossfadeToAvatarImage.draw(canvas);
+            }
+
+            if (HgramConfig.isAntiPeekActive() && drawAvatar) {
+                hgramAntiPeekPaint.setColor(getThemedColor(Theme.key_avatar_backgroundGray));
+                canvas.drawCircle(cx, cy, radius * Math.max(1f, bounceScale), hgramAntiPeekPaint);
             }
             textViewContainer.setTranslationY(y + finalSize + dp(7) * (1f - progressToCollapsed));
             textViewContainer.setTranslationX(x - fromX);
@@ -1831,6 +1858,22 @@ public class DialogStoriesCell extends FrameLayout implements NotificationCenter
                 textViewContainer.setVisibility(alpha > 0 ? View.VISIBLE : View.INVISIBLE);
             }
             super.dispatchDraw(canvas);
+
+            if (HgramConfig.isAntiPeekActive() && textViewContainer != null && textViewContainer.getVisibility() == VISIBLE
+                    && textViewContainer.getWidth() > 0) {
+                final float tx = textViewContainer.getTranslationX();
+                final float ty = textViewContainer.getTranslationY();
+                final float width = textViewContainer.getWidth();
+                final float height = textViewContainer.getHeight();
+                final float placeholderWidth = Math.min(dp(56), Math.max(0, width - dp(8)));
+                final float placeholderLeft = tx + (width - placeholderWidth) / 2f;
+                final float placeholderTop = ty + height / 2f - dp(4);
+                hgramAntiPeekPlaceholderRect.set(placeholderLeft, placeholderTop, placeholderLeft + placeholderWidth, placeholderTop + dp(8));
+                hgramAntiPeekPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhiteBlackText));
+                hgramAntiPeekPaint.setAlpha(0x40);
+                canvas.drawRoundRect(hgramAntiPeekPlaceholderRect, dp(4), dp(4), hgramAntiPeekPaint);
+                hgramAntiPeekPaint.setAlpha(255);
+            }
         }
 
         private void setClipInParent(boolean clip) {

@@ -1002,6 +1002,9 @@ public class PasscodeView extends FrameLayout implements NotificationCenter.Noti
                 }
                 return;
             }
+            if (!PasscodeHelper.wasLastPasscodeHgramDecoy()) {
+                PasscodeHelper.clearHgramDecoyMode();
+            }
         }
         dismissing = true;
         onPause();

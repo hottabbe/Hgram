@@ -95,6 +95,7 @@ import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import tw.nekomimi.nekogram.helpers.PasscodeHelper;
+import xyz.nextalone.nagram.hgram.HgramDecoySpace;
 import tw.nekomimi.nekogram.utils.VibrateUtil;
 
 public class PasscodeActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
@@ -306,6 +307,8 @@ public class PasscodeActivity extends BaseFragment implements NotificationCenter
                                     SharedConfig.passcodeHash = "";
                                     SharedConfig.appLocked = false;
                                     SharedConfig.saveConfig();
+                                    PasscodeHelper.removeHgramDecoyPasscode();
+                                    HgramDecoySpace.clear();
                                     getMediaDataController().buildShortcuts();
                                     int count = listView.getChildCount();
                                     for (int a = 0; a < count; a++) {
@@ -955,6 +958,19 @@ public class PasscodeActivity extends BaseFragment implements NotificationCenter
             return;
         }
 
+        if (type == TYPE_SETUP_CODE && account == PasscodeHelper.HGRAM_DECOY_ACCOUNT) {
+            final String entered = isPinCode() ? codeFieldContainer.getCode() : passwordEditText.getText().toString();
+            if (PasscodeHelper.isDecoyPasscodeConflict(entered)) {
+                Toast.makeText(getParentActivity(), LocaleController.getString(R.string.HgramDecoyPasscodeConflict), Toast.LENGTH_SHORT).show();
+                for (CodeNumberField f : codeFieldContainer.codeField) {
+                    f.setText("");
+                }
+                passwordEditText.setText("");
+                onPasscodeError();
+                return;
+            }
+        }
+
         if (otherItem != null) {
             otherItem.setVisibility(View.GONE);
         }
@@ -986,6 +1002,11 @@ public class PasscodeActivity extends BaseFragment implements NotificationCenter
         }
         String password = isPinCode() ? codeFieldContainer.getCode() : passwordEditText.getText().toString();
         if (type == TYPE_SETUP_CODE) {
+            if (account == PasscodeHelper.HGRAM_DECOY_ACCOUNT && PasscodeHelper.isDecoyPasscodeConflict(password)) {
+                Toast.makeText(getParentActivity(), LocaleController.getString(R.string.HgramDecoyPasscodeConflict), Toast.LENGTH_SHORT).show();
+                onPasscodeError();
+                return;
+            }
             if (!firstPassword.equals(password)) {
                 AndroidUtilities.updateViewVisibilityAnimated(passcodesDoNotMatchTextView, true);
                 for (CodeNumberField f : codeFieldContainer.codeField) {

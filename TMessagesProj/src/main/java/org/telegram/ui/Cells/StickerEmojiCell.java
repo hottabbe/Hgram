@@ -8,6 +8,10 @@
 
 package org.telegram.ui.Cells;
 
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+
+import xyz.nextalone.nagram.hgram.HgramHaptics;
+
 import static org.telegram.messenger.AndroidUtilities.dp;
 
 import android.content.Context;
@@ -17,7 +21,6 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
-import android.os.Vibrator;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -383,10 +386,7 @@ public class StickerEmojiCell extends FrameLayout implements NotificationCenter.
 
     public void showRequirePremiumAnimation() {
         if (premiumIconView != null) {
-            Vibrator v = (Vibrator) getContext().getSystemService(Context.VIBRATOR_SERVICE);
-            if (v != null) {
-                v.vibrate(200);
-            }
+            HgramHaptics.play(HgramHapticProfile.PLACE_EMOJI_STICKERS);
             AndroidUtilities.shakeView(premiumIconView);
         }
     }

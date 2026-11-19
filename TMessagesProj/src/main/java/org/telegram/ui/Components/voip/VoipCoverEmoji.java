@@ -71,7 +71,7 @@ public class VoipCoverEmoji {
                     fromRandomY = toRandomY;
                     toRandomX = Utilities.random.nextInt(dp(16)) + dp(12);
                     toRandomY = Utilities.random.nextInt(dp(16)) + dp(12);
-                    if (positionAnimator != null) {
+                    if (positionAnimator != null && active) {
                         positionAnimator.start();
                     }
                 }
@@ -152,10 +152,29 @@ public class VoipCoverEmoji {
         canvas.restore();
     }
 
+    // Nagram: the position loop runs forever; keep it paused while the window is hidden or the call is paused.
+    private boolean active = true;
+
+    public void setActive(boolean value) {
+        active = value;
+        if (positionAnimator == null) {
+            return;
+        }
+        if (value) {
+            if (positionAnimator.isPaused()) {
+                positionAnimator.resume();
+            } else if (!positionAnimator.isStarted()) {
+                positionAnimator.start();
+            }
+        } else if (positionAnimator.isRunning() && !positionAnimator.isPaused()) {
+            positionAnimator.pause();
+        }
+    }
+
     public void onAttachedToWindow() {
         if (emoji == null) return;
         emoji.attach();
-        if (positionAnimator != null) {
+        if (positionAnimator != null && active) {
             positionAnimator.start();
         }
     }

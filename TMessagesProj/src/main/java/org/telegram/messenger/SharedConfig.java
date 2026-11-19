@@ -658,7 +658,7 @@ public class SharedConfig {
             hasCameraCache = preferences.contains("cameraCache");
             roundCamera16to9 = true;
             repeatMode = preferences.getInt("repeatMode", 0);
-            fontSize = preferences.getInt("fons_size", AndroidUtilities.isTablet() && !AndroidUtilities.isFold() ? 14 : 12);
+            fontSize = preferences.getInt("fons_size", getDefaultFontSize());
             fontSizeIsDefault = !preferences.contains("fons_size");
             bubbleRadius = preferences.getInt("bubbleRadius", 3);
             ivFontSize = preferences.getInt("iv_font_size", fontSize);
@@ -787,9 +787,17 @@ public class SharedConfig {
     public static void updateTabletConfig() {
         if (fontSizeIsDefault) {
             SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
-            fontSize = preferences.getInt("fons_size", AndroidUtilities.isTablet() && !AndroidUtilities.isFold() ? 18 : 16);
+            int previousFontSize = fontSize;
+            fontSize = preferences.getInt("fons_size", getDefaultFontSize());
             ivFontSize = preferences.getInt("iv_font_size", fontSize);
+            if (previousFontSize != fontSize) {
+                org.telegram.ui.ActionBar.Theme.createCommonMessageResources();
+            }
         }
+    }
+
+    private static int getDefaultFontSize() {
+        return AndroidUtilities.isTablet() && !AndroidUtilities.isFold() ? 18 : 16;
     }
 
     public static void increaseBadPasscodeTries() {
@@ -858,6 +866,9 @@ public class SharedConfig {
     }
 
     public static boolean isAppUpdateAvailable() {
+        if (!xyz.nextalone.nagram.hgram.HgramConfig.areAppUpdatesEnabled()) {
+            return false;
+        }
         if (pendingAppUpdate == null || pendingAppUpdate.document == null || !ApplicationLoader.isStandaloneBuild()) {
             return false;
         }

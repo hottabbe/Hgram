@@ -77,6 +77,8 @@ import tw.nekomimi.nekogram.helpers.UserHelper;
 import tw.nekomimi.nekogram.utils.VibrateUtil;
 import tw.nekomimi.nekogram.ui.MessageHelper;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramAntiPeek;
+import xyz.nextalone.nagram.hgram.HgramSheetState;
 
 public abstract class BaseFragment {
 
@@ -553,6 +555,7 @@ public abstract class BaseFragment {
     @CallSuper
     public void onResume() {
         isPaused = false;
+        org.telegram.messenger.utils.PerfLogger.setScreen(getClass().getSimpleName());
         if (actionBar != null) {
             actionBar.onResume();
         }
@@ -1018,10 +1021,13 @@ public abstract class BaseFragment {
         }
         BottomSheet[] bottomSheet = new BottomSheet[1];
         INavigationLayout[] actionBarLayout = new INavigationLayout[]{INavigationLayout.newLayout(getParentActivity(), false, () -> bottomSheet[0])};
+        final INavigationLayout sheetToken = actionBarLayout[0];
         actionBarLayout[0].setIsSheet(true);
-        LaunchActivity.instance.sheetFragmentsStack.add(actionBarLayout[0]);
+        HgramSheetState.addIdentityOnce(LaunchActivity.instance.sheetFragmentsStack, sheetToken);
         fragment.onTransitionAnimationStart(true, false);
         bottomSheet[0] = new BottomSheet(getParentActivity(), true, fragment.getResourceProvider()) {
+            private boolean reopenedByShow;
+
             {
                 occupyNavigationBar = params != null && params.occupyNavigationBar;
                 drawNavigationBar = !occupyNavigationBar;
@@ -1031,6 +1037,30 @@ public abstract class BaseFragment {
                 actionBarLayout[0].getView().setPadding(backgroundPaddingLeft, 0, backgroundPaddingLeft, 0);
                 ViewGroup view = actionBarLayout[0].getView();
                 containerView = view;
+                view.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+                    @Override
+                    public void onViewAttachedToWindow(View v) {
+                        if (!isDismissed()) {
+                            HgramAntiPeek.onSheetClosed(sheetToken);
+                        }
+                    }
+
+                    @Override
+                    public void onViewDetachedFromWindow(View v) {
+                        // Reparenting during normal opening must not tear down the sheet entry.
+                        if (!isDismissed()) {
+                            return;
+                        }
+                        final LaunchActivity activity = LaunchActivity.instance;
+                        if (activity != null) {
+                            HgramSheetState.removeIdentity(activity.sheetFragmentsStack, sheetToken);
+                        }
+                        if (actionBarLayout[0] == sheetToken) {
+                            actionBarLayout[0] = null;
+                        }
+                        HgramAntiPeek.onSheetClosed(sheetToken);
+                    }
+                });
                 setApplyBottomPadding(false);
                 setOnDismissListener(dialog -> {
                     fragment.onPause();
@@ -1084,14 +1114,75 @@ public abstract class BaseFragment {
 
             @Override
             public void dismiss() {
-                if (!isDismissed()) {
-                    if (params != null && params.onPreFinished != null) {
-                        params.onPreFinished.run();
-                    }
+                final boolean alreadyDismissed = isDismissed();
+                // One delegate decision, before onPreFinished and before the reopen bit is
+                // cleared. A veto leaves every piece of live state exactly as it was.
+                if (!HgramSheetState.acceptDismiss(
+                        alreadyDismissed,
+                        this::canDismissNow,
+                        params != null ? params.onPreFinished : null,
+                        () -> reopenedByShow = false)) {
+                    return;
                 }
-                super.dismiss();
-                LaunchActivity.instance.sheetFragmentsStack.remove(actionBarLayout[0]);
-                actionBarLayout[0] = null;
+                super.dismissAccepted();
+                if (!isDismissed()) {
+                    return;
+                }
+                final LaunchActivity activity = LaunchActivity.instance;
+                // The fragment leaves sheetFragmentsStack immediately, but the window keeps
+                // animating for 200-250 ms. finalizeDismiss sets the anti-peek guard before
+                // removing the stack entry, so the resolver cannot fall through to the chat
+                // underneath during the close animation.
+                HgramSheetState.finalizeDismiss(
+                        activity != null ? activity.sheetFragmentsStack : null,
+                        actionBarLayout, sheetToken, alreadyDismissed, true);
+            }
+
+            @Override
+            public void dismissInternal() {
+                // A cancelled close animation may still post a stale dismissInternal after
+                // show() has reopened this same sheet. Do not tear down the restored state.
+                if (reopenedByShow && !isDismissed()) {
+                    HgramAntiPeek.onSheetClosed(sheetToken);
+                    return;
+                }
+                try {
+                    super.dismissInternal();
+                } finally {
+                    final LaunchActivity activity = LaunchActivity.instance;
+                    if (activity != null) {
+                        HgramSheetState.removeIdentity(activity.sheetFragmentsStack, sheetToken);
+                    }
+                    if (actionBarLayout[0] == sheetToken) {
+                        actionBarLayout[0] = null;
+                    }
+                    HgramAntiPeek.onSheetClosed(sheetToken);
+                }
+            }
+
+            @Override
+            public void show() {
+                final LaunchActivity activity = LaunchActivity.instance;
+                // Distinguish a first show from a same-sheet reopen during the close
+                // animation: a reopen has either been dismissed already or lost its stack
+                // ownership. Only that case needs stale dismissInternal suppression.
+                reopenedByShow = isDismissed()
+                        || activity == null
+                        || !activity.sheetFragmentsStack.contains(sheetToken);
+                // A same-sheet reopen during the close animation must restore foreground
+                // ownership before the guard is released, otherwise the still-visible sheet
+                // would be invisible to the resolver during the reopen.
+                HgramSheetState.restoreForShow(
+                        activity != null ? activity.sheetFragmentsStack : null,
+                        actionBarLayout, sheetToken);
+                HgramAntiPeek.onSheetClosed(sheetToken);
+                super.show();
+            }
+
+            @Override
+            protected void cancelSheetAnimation() {
+                super.cancelSheetAnimation();
+                HgramAntiPeek.onSheetClosed(sheetToken);
             }
 
             @Override

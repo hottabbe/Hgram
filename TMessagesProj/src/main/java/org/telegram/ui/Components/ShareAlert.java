@@ -104,6 +104,7 @@ import org.telegram.ui.ActionBar.SimpleTextView;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Adapters.DialogsSearchAdapter;
 import org.telegram.ui.Adapters.SearchAdapterHelper;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 import org.telegram.ui.Cells.GraySectionCell;
 import org.telegram.ui.Cells.HintDialogCell;
 import org.telegram.ui.Cells.ProfileSearchCell;
@@ -1849,6 +1850,8 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
         if (listAdapter.dialogs.isEmpty()) {
             NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.dialogsNeedReload);
         }
+        NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.updateInterfaces);
+        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.updateInterfaces);
 
         DialogsSearchAdapter.loadRecentSearch(currentAccount, 0, new DialogsSearchAdapter.OnRecentSearchLoaded() {
             @Override
@@ -1856,6 +1859,19 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
                 if (arrayList != null) {
                     for (int i = 0; i < arrayList.size(); ++i) {
                         DialogsSearchAdapter.RecentSearchObject recentSearchObject = arrayList.get(i);
+                        long hgramDialogId = 0;
+                        if (recentSearchObject.object instanceof TLRPC.User) {
+                            hgramDialogId = ((TLRPC.User) recentSearchObject.object).id;
+                        } else if (recentSearchObject.object instanceof TLRPC.Chat) {
+                            hgramDialogId = -((TLRPC.Chat) recentSearchObject.object).id;
+                        } else if (recentSearchObject.object instanceof TLRPC.EncryptedChat) {
+                            hgramDialogId = -((TLRPC.EncryptedChat) recentSearchObject.object).id;
+                        }
+                        if (hgramDialogId != 0 && !HgramSecretSpace.isVisible(currentAccount, hgramDialogId)) {
+                            arrayList.remove(i);
+                            i--;
+                            continue;
+                        }
                         if (recentSearchObject.object instanceof TLRPC.Chat && !ChatObject.canWriteToChat((TLRPC.Chat) recentSearchObject.object)) {
                             arrayList.remove(i);
                             i--;
@@ -1942,6 +1958,9 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
     private void selectDialog(View cell, TLRPC.Dialog dialog) {
         if (dialog instanceof ShareDialogsAdapter.MyStoryDialog) {
             onShareStory(cell);
+            return;
+        }
+        if (dialog == null || !HgramSecretSpace.isVisible(currentAccount, dialog.id)) {
             return;
         }
         if (dialog != null && (cell instanceof ShareDialogCell && ((ShareDialogCell) cell).isBlocked() || cell instanceof ProfileSearchCell && ((ProfileSearchCell) cell).isBlocked())) {
@@ -2401,6 +2420,20 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
     }
 
     protected void sendInternal(boolean withSound) {
+        for (int i = selectedDialogs.size() - 1; i >= 0; i--) {
+            final long dialogId = selectedDialogs.keyAt(i);
+            if (!HgramSecretSpace.isVisible(currentAccount, dialogId)) {
+                selectedDialogTopics.remove(selectedDialogs.valueAt(i));
+                selectedDialogs.removeAt(i);
+            }
+        }
+        if (selectedTopicDialog != null && !HgramSecretSpace.isVisible(currentAccount, selectedTopicDialog.id)) {
+            selectedTopicDialog = null;
+        }
+        if (selectedDialogs.isEmpty()) {
+            updateSelectedCount(0);
+            return;
+        }
         for (int a = 0; a < selectedDialogs.size(); a++) {
             long key = selectedDialogs.keyAt(a);
             if (AlertsCreator.checkSlowMode(getContext(), currentAccount, key, frameLayout2.getTag() != null && commentTextView.length() > 0)) {
@@ -2484,6 +2517,20 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
         }
 
         AlertsCreator.ensurePaidMessagesMultiConfirmation(currentAccount, paidDialogIds, messagesCount, prices -> {
+            for (int a = selectedDialogs.size() - 1; a >= 0; a--) {
+                final long dialogId = selectedDialogs.keyAt(a);
+                if (!HgramSecretSpace.isVisible(currentAccount, dialogId)) {
+                    selectedDialogTopics.remove(selectedDialogs.valueAt(a));
+                    selectedDialogs.removeAt(a);
+                }
+            }
+            if (selectedTopicDialog != null && !HgramSecretSpace.isVisible(currentAccount, selectedTopicDialog.id)) {
+                selectedTopicDialog = null;
+            }
+            if (selectedDialogs.isEmpty()) {
+                updateSelectedCount(0);
+                return;
+            }
             boolean hadPaid = false;
             if (sendingMessageObjects != null) {
                 List<Long> removeKeys = new ArrayList<>();
@@ -2660,6 +2707,32 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
 
     @Override
     public void didReceivedNotification(int id, int account, Object... args) {
+        if (id == NotificationCenter.updateInterfaces) {
+            boolean changed = false;
+            for (int i = selectedDialogs.size() - 1; i >= 0; i--) {
+                final long dialogId = selectedDialogs.keyAt(i);
+                if (!HgramSecretSpace.isVisible(currentAccount, dialogId)) {
+                    selectedDialogTopics.remove(selectedDialogs.valueAt(i));
+                    selectedDialogs.removeAt(i);
+                    changed = true;
+                }
+            }
+            if (selectedTopicDialog != null && !HgramSecretSpace.isVisible(currentAccount, selectedTopicDialog.id)) {
+                selectedTopicDialog = null;
+                changed = true;
+            }
+            if (changed) {
+                updateSelectedCount(0);
+            }
+            if (listAdapter != null) {
+                listAdapter.fetchDialogs();
+            }
+            if (searchAdapter != null) {
+                filterHgramRecentSearch();
+                searchAdapter.hgramRefresh();
+            }
+            return;
+        }
         if (id == NotificationCenter.dialogsNeedReload) {
             if (listAdapter != null) {
                 listAdapter.fetchDialogs();
@@ -2907,6 +2980,40 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
         fullyShown = false;
         super.dismiss();
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.dialogsNeedReload);
+        NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.updateInterfaces);
+        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.updateInterfaces);
+    }
+
+    private void filterHgramRecentSearch() {
+        for (int i = recentSearchObjects.size() - 1; i >= 0; i--) {
+            final DialogsSearchAdapter.RecentSearchObject item = recentSearchObjects.get(i);
+            long dialogId = 0;
+            if (item.object instanceof TLRPC.User) {
+                dialogId = ((TLRPC.User) item.object).id;
+            } else if (item.object instanceof TLRPC.Chat) {
+                dialogId = -((TLRPC.Chat) item.object).id;
+            } else if (item.object instanceof TLRPC.EncryptedChat) {
+                dialogId = -((TLRPC.EncryptedChat) item.object).id;
+            }
+            if (dialogId != 0 && !HgramSecretSpace.isVisible(currentAccount, dialogId)) {
+                recentSearchObjects.remove(i);
+            }
+        }
+        recentSearchObjectsById.clear();
+        for (int i = 0; i < recentSearchObjects.size(); i++) {
+            final DialogsSearchAdapter.RecentSearchObject item = recentSearchObjects.get(i);
+            long dialogId = 0;
+            if (item.object instanceof TLRPC.User) {
+                dialogId = ((TLRPC.User) item.object).id;
+            } else if (item.object instanceof TLRPC.Chat) {
+                dialogId = -((TLRPC.Chat) item.object).id;
+            } else if (item.object instanceof TLRPC.EncryptedChat) {
+                dialogId = -((TLRPC.EncryptedChat) item.object).id;
+            }
+            if (dialogId != 0) {
+                recentSearchObjectsById.put(dialogId, item);
+            }
+        }
     }
 
     private class ShareDialogsAdapter extends RecyclerListView.SelectionAdapter {
@@ -2936,14 +3043,19 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
             }
             if (!MessagesController.getInstance(currentAccount).dialogsForward.isEmpty()) {
                 TLRPC.Dialog dialog = MessagesController.getInstance(currentAccount).dialogsForward.get(0);
-                dialogs.add(dialog);
-                dialogsMap.put(dialog.id, dialog);
+                if (HgramSecretSpace.isVisible(currentAccount, dialog.id)) {
+                    dialogs.add(dialog);
+                    dialogsMap.put(dialog.id, dialog);
+                }
             }
             ArrayList<TLRPC.Dialog> archivedDialogs = new ArrayList<>();
             ArrayList<TLRPC.Dialog> allDialogs = MessagesController.getInstance(currentAccount).getAllDialogs();
             for (int a = 0; a < allDialogs.size(); a++) {
                 TLRPC.Dialog dialog = allDialogs.get(a);
                 if (!(dialog instanceof TLRPC.TL_dialog)) {
+                    continue;
+                }
+                if (!HgramSecretSpace.isVisible(currentAccount, dialog.id)) {
                     continue;
                 }
                 if (dialog.id == selfUserId) {
@@ -3163,6 +3275,29 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
         int lastFilledItem = -1;
 
         int itemsCount;
+        private final ArrayList<TLRPC.TL_topPeer> hgramVisibleHints = new ArrayList<>();
+
+        private void rebuildHgramVisibleHints() {
+            hgramVisibleHints.clear();
+            final ArrayList<TLRPC.TL_topPeer> hints = MediaDataController.getInstance(currentAccount).hints;
+            for (int i = 0; i < hints.size(); i++) {
+                final TLRPC.TL_topPeer peer = hints.get(i);
+                if (peer == null) {
+                    continue;
+                }
+                long dialogId = 0;
+                if (peer.peer.user_id != 0) {
+                    dialogId = peer.peer.user_id;
+                } else if (peer.peer.channel_id != 0) {
+                    dialogId = -peer.peer.channel_id;
+                } else if (peer.peer.chat_id != 0) {
+                    dialogId = -peer.peer.chat_id;
+                }
+                if (dialogId != 0 && HgramSecretSpace.isVisible(currentAccount, dialogId)) {
+                    hgramVisibleHints.add(peer);
+                }
+            }
+        }
 
         DialogsSearchAdapter.CategoryAdapterRecycler categoryAdapter;
         RecyclerView categoryListView;
@@ -3172,7 +3307,14 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
             searchAdapterHelper = new SearchAdapterHelper(false) {
                 @Override
                 protected boolean filter(TLObject obj) {
-                    return !(obj instanceof TLRPC.Chat) || ChatObject.canWriteToChat((TLRPC.Chat) obj);
+                    if (obj instanceof TLRPC.User) {
+                        return HgramSecretSpace.isVisible(currentAccount, ((TLRPC.User) obj).id);
+                    }
+                    if (obj instanceof TLRPC.Chat) {
+                        final TLRPC.Chat chat = (TLRPC.Chat) obj;
+                        return HgramSecretSpace.isVisible(currentAccount, -chat.id) && ChatObject.canWriteToChat(chat);
+                    }
+                    return true;
                 }
             };
             searchAdapterHelper.setDelegate(new SearchAdapterHelper.SearchAdapterHelperDelegate() {
@@ -3197,9 +3339,44 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
                     return searchId == lastSearchId;
                 }
             });
+            rebuildHgramVisibleHints();
         }
 
         boolean internalDialogsIsSearching = false;
+        private void hgramRefresh() {
+            rebuildHgramVisibleHints();
+            for (int i = searchResult.size() - 1; i >= 0; i--) {
+                final DialogSearchResult result = (DialogSearchResult) searchResult.get(i);
+                if (result.dialog == null || !HgramSecretSpace.isVisible(currentAccount, result.dialog.id)) {
+                    searchResult.remove(i);
+                }
+            }
+            final ArrayList<TLObject> localServerSearch = searchAdapterHelper.getLocalServerSearch();
+            for (int i = localServerSearch.size() - 1; i >= 0; i--) {
+                final TLObject object = localServerSearch.get(i);
+                long dialogId = 0;
+                if (object instanceof TLRPC.User) {
+                    dialogId = ((TLRPC.User) object).id;
+                } else if (object instanceof TLRPC.Chat) {
+                    dialogId = -((TLRPC.Chat) object).id;
+                }
+                if (dialogId != 0 && !HgramSecretSpace.isVisible(currentAccount, dialogId)) {
+                    localServerSearch.remove(i);
+                }
+            }
+            if (categoryAdapter != null) {
+                categoryAdapter.notifyDataSetChanged();
+            }
+            notifyDataSetChanged();
+            if (!TextUtils.isEmpty(lastSearchText)) {
+                final String query = lastSearchText;
+                lastSearchText = null;
+                searchDialogs(query);
+            } else {
+                ShareAlert.this.filterHgramRecentSearch();
+            }
+        }
+
         private void searchDialogsInternal(final String query, final int searchId) {
             MessagesStorage.getInstance(currentAccount).getStorageQueue().postRunnable(() -> {
                 try {
@@ -3384,6 +3561,13 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
                         return 0;
                     });
 
+                    for (int i = searchResults.size() - 1; i >= 0; i--) {
+                        final DialogSearchResult result = (DialogSearchResult) searchResults.get(i);
+                        if (result.dialog == null || !HgramSecretSpace.isVisible(currentAccount, result.dialog.id)) {
+                            searchResults.remove(i);
+                        }
+                    }
+
                     updateSearchResults(searchResults, searchId);
                 } catch (Exception e) {
                     FileLog.e(e);
@@ -3395,6 +3579,12 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
             AndroidUtilities.runOnUIThread(() -> {
                 if (searchId != lastSearchId) {
                     return;
+                }
+                for (int i = result.size() - 1; i >= 0; i--) {
+                    final DialogSearchResult item = (DialogSearchResult) result.get(i);
+                    if (item.dialog == null || !HgramSecretSpace.isVisible(currentAccount, item.dialog.id)) {
+                        result.remove(i);
+                    }
                 }
                 int oldItemCount = getItemCount();
                 internalDialogsIsSearching = false;
@@ -3612,7 +3802,7 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
                                 cell.setColors(Theme.key_voipgroup_nameText, Theme.key_voipgroup_inviteMembersBackground);
                             }
 
-                            TLRPC.TL_topPeer peer = MediaDataController.getInstance(currentAccount).hints.get(position);
+                            TLRPC.TL_topPeer peer = hgramVisibleHints.get(position);
                             TLRPC.Chat chat = null;
                             TLRPC.User user = null;
                             long did = 0;
@@ -3637,10 +3827,15 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
                             cell.setDialog(did, true, name);
                             cell.setChecked(selectedDialogs.indexOfKey(did) >= 0, animated);
                         }
+
+                        @Override
+                        public int getItemCount() {
+                            return hgramVisibleHints.size();
+                        }
                     });
                     horizontalListView.setOnItemClickListener((view1, position) -> {
                         HintDialogCell cell = (HintDialogCell) view1;
-                        TLRPC.TL_topPeer peer = MediaDataController.getInstance(currentAccount).hints.get(position);
+                        TLRPC.TL_topPeer peer = hgramVisibleHints.get(position);
                         TLRPC.Dialog dialog = new TLRPC.TL_dialog();
                         TLRPC.Chat chat = null;
                         TLRPC.User user = null;
@@ -3913,6 +4108,10 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
         if (topic == null || selectedTopicDialog == null) {
             return;
         }
+        if (!HgramSecretSpace.isVisible(currentAccount, selectedTopicDialog.id)) {
+            selectedTopicDialog = null;
+            return;
+        }
 
         long dialogId = selectedTopicDialog.id;
         final boolean mono = MessagesController.getInstance(currentAccount).isMonoForum(dialogId);
@@ -3950,6 +4149,10 @@ public class ShareAlert extends BottomSheet implements NotificationCenter.Notifi
 
     private void onTopicCreateCellClick() {
         if (selectedTopicDialog == null) {
+            return;
+        }
+        if (!HgramSecretSpace.isVisible(currentAccount, selectedTopicDialog.id)) {
+            selectedTopicDialog = null;
             return;
         }
 

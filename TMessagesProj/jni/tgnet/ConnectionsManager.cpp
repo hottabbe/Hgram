@@ -2210,7 +2210,7 @@ void ConnectionsManager::failNotRunningRequest(int32_t token) {
                 if (LOGS_ENABLED) DEBUG_D("cancelled queued rpc request %p - %s", request->rawRequest, typeid(*request->rawRequest).name());
                 requestsQueue.erase(iter);
                 removeRequestFromGuid(token);
-                return true;
+                return;
             }
         }
     });
@@ -2713,7 +2713,7 @@ void ConnectionsManager::processRequestQueue(uint32_t connectionTypes, uint32_t 
 
     // Snapshot after retries/migrations, which can remove or requeue requests.
     // No persistent reservations to leak on cancellation or DC changes.
-    DownloadRequestBudget downloadBudget(currentUserPremium);
+    DownloadRequestBudget downloadBudget(currentUserPremium, networkSlow);
     for (const auto &request : runningRequests) {
         if (!request->cancelled && (request->connectionType & 0xffff) == ConnectionTypeDownload) {
             uint32_t datacenterId = request->datacenterId == DEFAULT_DATACENTER_ID ? currentDatacenterId : request->datacenterId;

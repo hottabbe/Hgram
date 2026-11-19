@@ -6,6 +6,8 @@ import android.os.VibrationEffect;
 import androidx.annotation.RequiresApi;
 
 import tw.nekomimi.nekogram.utils.VibrateUtil;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
 
 public enum BotWebViewVibrationEffect {
     IMPACT_LIGHT(new long[] {7}, new int[] {65}, new long[] {60}),
@@ -45,9 +47,9 @@ public enum BotWebViewVibrationEffect {
 
     public void vibrate() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            VibrateUtil.vibrate(200L, getVibrationEffectForOreo());
+            HgramHaptics.playRaw(getVibrationEffectForOreo(), fallbackTimings);
         } else {
-            VibrateUtil.vibrate(fallbackTimings, -1);
+            HgramHaptics.playRaw(null, fallbackTimings);
         }
     }
 }

@@ -515,10 +515,16 @@ public class AnimatedEmojiSpan extends ReplacementSpan {
                 return;
             }
 
-            if (invalidateInParent && view.getParent() != null) {
-                ((View) view.getParent()).invalidate();
-            } else {
-                view.invalidate();
+            // Always refresh the view that owns the emoji first: in most cases the emoji is
+            // painted inside the view itself, so a cell level invalidation is enough and
+            // avoids re-recording the whole list on every animation frame.
+            view.invalidate();
+            if (invalidateInParent && view.getParent() instanceof View) {
+                View parent = (View) view.getParent();
+                int left = (int) (view.getLeft() + view.getTranslationX());
+                int top = (int) (view.getTop() + view.getTranslationY());
+                int padding = AndroidUtilities.dp(16);
+                parent.invalidate(left - padding, top - padding, left + view.getWidth() + padding, top + view.getHeight() + padding);
             }
         }
     }

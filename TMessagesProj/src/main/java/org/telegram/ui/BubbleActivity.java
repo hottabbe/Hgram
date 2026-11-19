@@ -39,6 +39,8 @@ import org.telegram.ui.Components.ThemeEditorView;
 
 import java.util.ArrayList;
 
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
+
 public class BubbleActivity extends BasePermissionsActivity implements INavigationLayout.INavigationLayoutDelegate {
 
     public static BubbleActivity instance;
@@ -166,6 +168,10 @@ public class BubbleActivity extends BasePermissionsActivity implements INavigati
             } else {
                 dialogId = -chatId;
                 args.putLong("chat_id", chatId);
+            }
+            if (!HgramSecretSpace.canOpenDialog(currentAccount, dialogId)) {
+                finish();
+                return false;
             }
             chatActivity = new ChatActivity(args);
             chatActivity.setInBubbleMode(true);

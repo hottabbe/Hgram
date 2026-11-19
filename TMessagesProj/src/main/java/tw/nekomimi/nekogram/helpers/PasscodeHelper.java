@@ -9,6 +9,7 @@ import android.util.Base64;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.NotificationsController;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
@@ -16,14 +17,46 @@ import org.telegram.ui.LaunchActivity;
 
 import java.nio.charset.StandardCharsets;
 
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
+import xyz.nextalone.nagram.hgram.HgramSecretCache;
+
 public class PasscodeHelper {
     private static final SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("nekopasscode", Context.MODE_PRIVATE);
+    public static final int HGRAM_DECOY_ACCOUNT = Integer.MAX_VALUE - 1;
+    private static volatile boolean lastPasscodeWasHgramDecoy;
 
     public static boolean checkPasscode(Activity activity, String passcode) {
+        lastPasscodeWasHgramDecoy = false;
+        if (SharedConfig.appLocked && SharedConfig.isWaitingForPasscodeEnter && hasPasscodeForAccount(HGRAM_DECOY_ACCOUNT)) {
+            String hash = preferences.getString("passcodeHash" + HGRAM_DECOY_ACCOUNT, "");
+            String salt = preferences.getString("passcodeSalt" + HGRAM_DECOY_ACCOUNT, "");
+            if (checkPasscodeHash(passcode, hash, salt)) {
+                SharedConfig.appLocked = false;
+                HgramSecretSpace.setActive(true);
+                final java.util.ArrayList<Integer> hgramAccounts =
+                        new java.util.ArrayList<>(SharedConfig.activeAccounts);
+                Utilities.globalQueue.postRunnable(() -> {
+                    for (int a : hgramAccounts) {
+                        if (UserConfig.getInstance(a).isClientActivated()) {
+                            HgramSecretCache.migrateHiddenDialogs(a);
+                        }
+                    }
+                });
+                for (int a : SharedConfig.activeAccounts) {
+                    if (UserConfig.getInstance(a).isClientActivated()) {
+                        NotificationsController.getInstance(a).removeNotificationsForHiddenDialogs();
+                    }
+                }
+                lastPasscodeWasHgramDecoy = true;
+                return true;
+            }
+        }
         if (hasPasscodeForAccount(Integer.MAX_VALUE)) {
             String passcodeHash = preferences.getString("passcodeHash" + Integer.MAX_VALUE, "");
             String passcodeSaltString = preferences.getString("passcodeSalt" + Integer.MAX_VALUE, "");
             if (checkPasscodeHash(passcode, passcodeHash, passcodeSaltString)) {
+                HgramSecretCache.wipe();
+                clearHgramDecoyMode();
                 for (int a : SharedConfig.activeAccounts) {
                     if (UserConfig.getInstance(a).isClientActivated() && isAccountAllowPanic(a)) {
                         MessagesController.getInstance(a).performLogout(1);
@@ -37,6 +70,7 @@ public class PasscodeHelper {
                 String passcodeHash = preferences.getString("passcodeHash" + a, "");
                 String passcodeSaltString = preferences.getString("passcodeSalt" + a, "");
                 if (checkPasscodeHash(passcode, passcodeHash, passcodeSaltString)) {
+                    clearHgramDecoyMode();
                     if (activity instanceof LaunchActivity) {
                         LaunchActivity launchActivity = (LaunchActivity) activity;
                         launchActivity.switchToAccount(a, true);
@@ -46,6 +80,29 @@ public class PasscodeHelper {
             }
         }
         return false;
+    }
+
+    public static boolean isHgramDecoyConfigured() {
+        return hasPasscodeForAccount(HGRAM_DECOY_ACCOUNT);
+    }
+
+    public static boolean isHgramDecoyModeActive() {
+        return HgramSecretSpace.isActive();
+    }
+
+    public static boolean wasLastPasscodeHgramDecoy() {
+        return lastPasscodeWasHgramDecoy;
+    }
+
+    public static void clearHgramDecoyMode() {
+        HgramSecretSpace.setActive(false);
+    }
+
+    public static void removeHgramDecoyPasscode() {
+        removePasscodeForAccount(HGRAM_DECOY_ACCOUNT);
+        HgramSecretCache.wipe();
+        HgramSecretSpace.clearAll();
+        clearHgramDecoyMode();
     }
 
     private static boolean checkPasscodeHash(String passcode, String passcodeHash, String passcodeSaltString) {
@@ -123,6 +180,34 @@ public class PasscodeHelper {
         return hasPasscodeForAccount(Integer.MAX_VALUE);
     }
 
+    public static boolean isDecoyPasscodeConflict(String passcode) {
+        if (SharedConfig.checkPasscode(passcode) || isPanicPasscode(passcode)) {
+            return true;
+        }
+        if (SharedConfig.activeAccounts != null) {
+            for (int a : SharedConfig.activeAccounts) {
+                if (!UserConfig.getInstance(a).isClientActivated() || !hasPasscodeForAccount(a)) {
+                    continue;
+                }
+                final String passcodeHash = preferences.getString("passcodeHash" + a, "");
+                final String passcodeSaltString = preferences.getString("passcodeSalt" + a, "");
+                if (checkPasscodeHash(passcode, passcodeHash, passcodeSaltString)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    public static boolean isPanicPasscode(String passcode) {
+        if (!hasPasscodeForAccount(Integer.MAX_VALUE)) {
+            return false;
+        }
+        final String passcodeHash = preferences.getString("passcodeHash" + Integer.MAX_VALUE, "");
+        final String passcodeSaltString = preferences.getString("passcodeSalt" + Integer.MAX_VALUE, "");
+        return checkPasscodeHash(passcode, passcodeHash, passcodeSaltString);
+    }
+
     public static String getSettingsKey() {
         var settingsHash = preferences.getString("settingsHash", "");
         if (!TextUtils.isEmpty(settingsHash)) {
@@ -150,6 +235,7 @@ public class PasscodeHelper {
     }
 
     public static void clearAll() {
+        HgramSecretCache.wipe();
         preferences.edit().clear().apply();
     }
 }

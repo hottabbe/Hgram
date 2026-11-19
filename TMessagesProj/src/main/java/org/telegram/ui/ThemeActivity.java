@@ -501,17 +501,15 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
     }
 
     private boolean setFontSize(int size) {
-        if (size != SharedConfig.fontSize) {
-            SharedConfig.fontSize = size;
-            SharedConfig.fontSizeIsDefault = false;
-            SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
-            if (preferences == null) {
-                return false;
-            }
-            SharedPreferences.Editor editor = preferences.edit();
-            editor.putInt("fons_size", SharedConfig.fontSize);
-            editor.commit();
-
+        boolean changed = size != SharedConfig.fontSize;
+        SharedConfig.fontSize = size;
+        SharedConfig.fontSizeIsDefault = false;
+        SharedPreferences preferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Activity.MODE_PRIVATE);
+        if (preferences == null) {
+            return false;
+        }
+        preferences.edit().putInt("fons_size", SharedConfig.fontSize).commit();
+        if (changed) {
             Theme.createCommonMessageResources();
 
             RecyclerView.ViewHolder holder = listView.findViewHolderForAdapterPosition(textSizeRow);
@@ -523,10 +521,9 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
                     cells[a].requestLayout();
                 }
             }
-            updateMenuItem();
-            return true;
         }
-        return false;
+        updateMenuItem();
+        return changed;
     }
 
     private void updateRows(boolean notify) {

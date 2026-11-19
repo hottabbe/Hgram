@@ -49,9 +49,9 @@ jobs:
       - name: Install NDK
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          echo "y" | sdkmanager --install "ndk;27.2.12479018" --sdk_root=${ANDROID_SDK_ROOT} &> /dev/null
+          echo "y" | sdkmanager --install "ndk;29.0.14206865" --sdk_root=${ANDROID_SDK_ROOT} &> /dev/null
           echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          echo "ndk.dir=${ANDROID_HOME}/ndk/27.2.12479018" >> local.properties
+          echo "ndk.dir=${ANDROID_HOME}/ndk/29.0.14206865" >> local.properties
       - name: Native Build
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -95,9 +95,9 @@ jobs:
           packages: 'platform-tools'
       - name: Install NDK
         run: |
-          echo "y" | sdkmanager --install "ndk;27.2.12479018" --sdk_root=${ANDROID_SDK_ROOT} &> /dev/null
+          echo "y" | sdkmanager --install "ndk;29.0.14206865" --sdk_root=${ANDROID_SDK_ROOT} &> /dev/null
           echo "sdk.dir=${ANDROID_HOME}" > local.properties
-          echo "ndk.dir=${ANDROID_HOME}/ndk/27.2.12479018" >> local.properties
+          echo "ndk.dir=${ANDROID_HOME}/ndk/29.0.14206865" >> local.properties
       - name: Configure Gradle
         run: |
           sed -i "s/2000000000000/$(date +%s%N | cut -c1-13)/g" gradle.properties

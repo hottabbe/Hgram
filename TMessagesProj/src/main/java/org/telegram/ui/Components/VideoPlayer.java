@@ -110,6 +110,8 @@ import java.util.Map;
 import java.util.Objects;
 
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramLoudnessAudioProcessor;
 
 @SuppressLint("NewApi")
 @OptIn(markerClass = UnstableApi.class)
@@ -262,12 +264,7 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
             .build();
 
         if (player == null) {
-            DefaultRenderersFactory factory;
-            if (audioVisualizerDelegate != null) {
-                factory = new AudioVisualizerRenderersFactory(ApplicationLoader.applicationContext);
-            } else {
-                factory = new DefaultRenderersFactory(ApplicationLoader.applicationContext);
-            }
+            DefaultRenderersFactory factory = new HgramRenderersFactory(ApplicationLoader.applicationContext, audioVisualizerDelegate != null);
             factory.setExtensionRendererMode(getPlayerExtensionRendererMode());
             // factory.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
             ExoPlayer.Builder builder = new ExoPlayer.Builder(ApplicationLoader.applicationContext).setRenderersFactory(factory)
@@ -294,7 +291,7 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
         if (mixedAudio) {
             if (audioPlayer == null) {
                 audioPlayer = new ExoPlayer.Builder(ApplicationLoader.applicationContext)
-                        .setRenderersFactory(new DefaultRenderersFactory(ApplicationLoader.applicationContext).setExtensionRendererMode(getPlayerExtensionRendererMode()))
+                        .setRenderersFactory(new HgramRenderersFactory(ApplicationLoader.applicationContext, false).setExtensionRendererMode(getPlayerExtensionRendererMode()))
                         .setTrackSelector(trackSelector)
                         .setLoadControl(loadControl).build();
                 audioPlayer.addListener(new Player.Listener() {
@@ -1843,10 +1840,13 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
         return repeatCount;
     }
 
-    private class AudioVisualizerRenderersFactory extends DefaultRenderersFactory {
+    private class HgramRenderersFactory extends DefaultRenderersFactory {
 
-        public AudioVisualizerRenderersFactory(Context context) {
+        private final boolean includeVisualizer;
+
+        public HgramRenderersFactory(Context context, boolean includeVisualizer) {
             super(context);
+            this.includeVisualizer = includeVisualizer;
         }
 
         @Nullable
@@ -1855,12 +1855,21 @@ public class VideoPlayer implements Player.Listener, VideoListener, AnalyticsLis
                 @NonNull Context context,
                 boolean enableFloatOutput,
                 boolean enableAudioTrackPlaybackParams) {
+            boolean loudness = HgramConfig.isAutoLoudnessEnabled();
+            if (!loudness && !includeVisualizer) {
+                return super.buildAudioSink(context, enableFloatOutput, enableAudioTrackPlaybackParams);
+            }
+            ArrayList<AudioProcessor> processors = new ArrayList<>();
+            if (loudness) {
+                processors.add(new HgramLoudnessAudioProcessor());
+            }
+            if (includeVisualizer) {
+                processors.add(new TeeAudioProcessor(new VisualizerBufferSink()));
+            }
             return new DefaultAudioSink.Builder(context)
                     .setEnableFloatOutput(enableFloatOutput)
                     .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-                    .setAudioProcessors(new AudioProcessor[]{
-                            new TeeAudioProcessor(new VisualizerBufferSink())
-                    })
+                    .setAudioProcessors(processors.toArray(new AudioProcessor[0]))
                     .build();
         }
     }

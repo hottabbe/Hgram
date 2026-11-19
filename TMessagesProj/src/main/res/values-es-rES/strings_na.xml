@@ -14,7 +14,6 @@
     <string name="TextUndoRedo">Deshacer/Rehacer</string>
     <string name="TextUndo">Deshacer</string>
     <string name="TextRedo">Rehacer</string>
-    <string name="NoiseSuppressAndVoiceEnhance">Supresión de ruido y mejora de voz</string>
     <string name="RepeatAsCopy">Repetir como copia</string>
     <string name="DoubleTapAction">Acción de doble toque</string>
     <string name="DoubleTapActionIncoming">Mensajes recibidos</string>

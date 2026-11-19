@@ -1,0 +1,5 @@
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item><shape><solid android:color="#FFFFFF"/><corners android:radius="24dp"/><size android:width="108dp" android:height="108dp"/></shape></item>
+    <item android:left="8dp" android:top="8dp" android:right="8dp" android:bottom="8dp"><shape android:shape="oval"><solid android:color="@color/hgram_icon_dark"/></shape></item>
+    <item android:drawable="@drawable/hgram_mark_white"/>
+</layer-list>

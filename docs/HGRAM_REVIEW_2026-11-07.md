@@ -1,0 +1,27 @@
+# Проверка Hgram — 7 ноября 2026
+
+Проверены фильтры уведомлений и текста, части голосового тракта, загрузки моделей и подключения к дата-центрам. Это выборочная проверка, не аудит всех функций Telegram и не подтверждение работоспособности каждой возможности на устройстве.
+
+## Исправлено
+
+- Дебаунсер уведомлений при достижении предела удаляет самую старую запись; при сбросе монотонных часов устаревшие записи не подавляют новые уведомления.
+- Семантический анализ корректно распознаёт начало новой строки и повторно использует нормализованный текст.
+- Ошибка создания RNNoise больше не прерывает голосовую запись: обработка отключается и сохраняется исходный звук. Чтение буфера включено в обработчик ошибок.
+- При нехватке данных PCM-очередь плавно затухает до нуля вместо неограниченного повторения последнего отсчёта. Для изменённых фильтров и очереди добавлены проверки регрессий.
+
+- В нативном обработчике отмены `failNotRunningRequest` устранён путь без возвращаемого значения в лямбде: задача не использует результат, поэтому теперь возвращает `void`.
+- `HgramDcAddressCache` больше не хранит адреса DC общими для всех аккаунтов: кэш разделён по аккаунтам (`hgram_dc_addresses_<account>`), как и собственный конфиг нативного слоя (`account<N>/tgnet.dat`).
+- Кэш больше не подменяет список адресов нативного слоя адресом без секрета и без флагов. Проверка файла `tgnet.dat` на эмуляторе показала, что нативный слой сам сохраняет полученные от сервера адреса вместе с флагами (`TcpAddressFlagIpv6`, `TcpAddressFlagStatic`, `TcpAddressFlagDownload`) и секретами, и восстанавливает их при старте. Нативный `applyDatacenterAddress` заменяет весь список IPv4 одним адресом с нулевыми флагами, из-за чего терялись остальные адреса, IPv6-вариант и секрет протокола.
+- В кэш попадает только адрес нужного семейства: при наличии IPv4 сохраняется IPv4-вариант, в IPv6-only сети — IPv6-вариант. Добавлены регрессионные тесты `HgramDcAddressCacheTest`.
+- Голосовой DSP больше не допускает заражения состояния значениями `NaN`/`Infinity`: неfinite PCM очищается до арифметики в high-pass, leveler, noise gate, mastering, RNNoise и loudness-процессоре. DSP с некорректной частотой дискретизации отклоняет такой вход. Добавлены регрессионные тесты `HgramVoicePipelineTest`.
+- Native-слой Hgram существует: JNI-мост RNNoise и независимого декодера Opus находится в `TMessagesProj/jni/audio.c:14`, `TMessagesProj/jni/audio.c:18`, `TMessagesProj/jni/audio.c:26`, `TMessagesProj/jni/audio.c:30`, `TMessagesProj/jni/audio.c:45` и `TMessagesProj/jni/audio.c:54`; `audio.c` включён в target `tmessages.49` в `TMessagesProj/jni/CMakeLists.txt:240` и `TMessagesProj/jni/CMakeLists.txt:242`. Остальная обработка голоса реализована на Java/Kotlin.
+
+## Результат проверки
+
+Полный `testDebugUnitTest`: 67 тестов, 5 ошибок нативного окружения JVM. `OpenCCTest` и `DnsFactoryTest` не находят `libtmessages.49.so`; три теста `InputTextAnimationTest` не находят JNI-функцию `native_isTestBackend`. Отдельный прогон Hgram: 49 тестов, все прошли (в этом проходе добавлены 3 теста на очистку неfinite PCM, PCM-float loudness и некорректную частоту дискретизации). Debug APK для arm64 собран и прошёл проверку подписи в предыдущем проходе. На эмуляторе API 37 с ARM-трансляцией приложение установилось и открыло стартовый экран; в просмотренном журнале нет fatal/native crash. В текущем проходе APK и эмулятор не обновлялись: по ограничению задачи полная native/APK-пересборка не запускалась. Авторизация и функции чатов не проверялись.
+
+## Оставшиеся риски
+
+- Вендоренный WebRTC компилируется с `-ffast-math` в `TMessagesProj/jni/voip/CMakeLists.txt:107`, `TMessagesProj/jni/voip/CMakeLists.txt:1499` и `TMessagesProj/jni/voip/CMakeLists.txt:1688`. Из-за этого NDK 29 в прошлой полной native-сборке выдал 3330 сообщений `-Wnan-infinity-disabled` по 20 уникальным местам в `TMessagesProj/jni/voip/webrtc/`: `api/transport/network_types.h:256`, `api/transport/network_types.h:276`, `api/transport/network_types.h:277`, `api/transport/network_types.h:280`, `media/base/video_adapter.cc:419`, `modules/congestion_controller/goog_cc/trendline_estimator.cc:183`, `rtc_base/experiments/field_trial_units.cc:34`, `rtc_base/experiments/field_trial_units.cc:36`, `rtc_base/numerics/event_based_exponential_moving_average.cc:42`, `rtc_base/numerics/event_based_exponential_moving_average.cc:65`, `rtc_base/numerics/event_based_exponential_moving_average.h:63`, `rtc_base/numerics/event_rate_counter.cc:39`, `rtc_base/numerics/math_utils.h:43`, `rtc_base/numerics/math_utils.h:61`, `rtc_base/numerics/sample_stats.cc:16`, `rtc_base/numerics/sample_stats.cc:38`, `rtc_base/units/unit_base.h:108`, `rtc_base/units/unit_base.h:110`, `rtc_base/units/unit_base.h:144` и `rtc_base/units/unit_base.h:145`. Сообщений `float overflow`, `division by zero` и `__builtin_*_overflow` в сохранённом выводе этой сборки нет. Все найденные сообщения относятся к вендоренному WebRTC, а не к Hgram; изменение `-ffast-math` или кода WebRTC не выполнялось. Влияние на звонки по-прежнему требует проверки на устройстве.
+- Запись, распознавание и очистка голоса с реальными микрофоном, нативными моделями и сетевой загрузкой моделей требуют отдельной проверки на Android-устройстве; JVM-тесты этого не доказывают.
+- Статический скрипт `node Tools/hgram-audit.mjs` проверил 3658 исходных файлов, не нашёл дублирующихся проверяемых ресурсов и не заменяет Android Lint или тестирование интерфейса.

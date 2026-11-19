@@ -119,6 +119,10 @@ import tw.nekomimi.nekogram.DialogConfig;
 import tw.nekomimi.nekogram.NekoConfig;
 import tw.nekomimi.nekogram.ui.PinnedStickerHelper;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
+import xyz.nextalone.nagram.hgram.HgramShortcutReconciler;
+import xyz.nextalone.nagram.hgram.HgramShortcutState;
+import xyz.nextalone.nagram.hgram.HgramSystemShortcutBackend;
 import xyz.nextalone.nagram.helper.ExternalStickerCacheHelper;
 
 @SuppressWarnings("unchecked")
@@ -5041,13 +5045,23 @@ public class MediaDataController extends BaseController {
         ArrayList<TLRPC.TL_topPeer> hintsFinal = new ArrayList<>();
         if (SharedConfig.passcodeHash.length() <= 0) {
             for (int a = 0; a < hints.size(); a++) {
-                hintsFinal.add(hints.get(a));
+                final TLRPC.TL_topPeer hint = hints.get(a);
+                if (hint == null || !HgramSecretSpace.isVisible(currentAccount, MessageObject.getPeerId(hint.peer))) {
+                    continue;
+                }
+                hintsFinal.add(hint);
                 if (hintsFinal.size() == maxShortcuts - 2) {
                     break;
                 }
             }
         }
         DialogConfig.modifyShareTarget(hintsFinal);
+        for (int a = hintsFinal.size() - 1; a >= 0; a--) {
+            final TLRPC.TL_topPeer hint = hintsFinal.get(a);
+            if (hint == null || !HgramSecretSpace.isVisible(currentAccount, MessageObject.getPeerId(hint.peer))) {
+                hintsFinal.remove(a);
+            }
+        }
         boolean recreateShortcuts = Build.VERSION.SDK_INT >= 30;
         Utilities.globalQueue.postRunnable(() -> {
             try {
@@ -5120,6 +5134,9 @@ public class MediaDataController extends BaseController {
                     TLRPC.User user = null;
                     TLRPC.Chat chat = null;
                     long peerId = MessageObject.getPeerId(hint.peer);
+                    if (!HgramSecretSpace.isVisible(currentAccount, peerId)) {
+                        continue;
+                    }
                     if (DialogObject.isUserDialog(peerId)) {
                         shortcutIntent.putExtra("userId", peerId);
                         user = getMessagesController().getUser(peerId);
@@ -5910,17 +5927,176 @@ public class MediaDataController extends BaseController {
         }
     }
 
+    private static boolean hgramShortcutOwnerLogged;
+
+    public void uninstallShortcutsForHiddenDialogs() {
+        reconcileHgramShortcuts();
+    }
+
+    public void restoreShortcut(long dialogId) {
+        reconcileHgramShortcuts();
+    }
+
+    public void restoreShortcutsForHiddenDialogs() {
+        reconcileHgramShortcuts();
+    }
+
+    /**
+     * Reconciles every shortcut we own with the space of the account stored in its intent.
+     * The account is the single source of truth: a shortcut created from account B must stay
+     * visible when the same peer is hidden only in account A.
+     */
+    public void reconcileHgramShortcuts() {
+        if (Build.VERSION.SDK_INT < 26) {
+            return;
+        }
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            return;
+        }
+        try {
+            final SharedPreferences preferences = context.getSharedPreferences("hgram_shortcuts", Context.MODE_PRIVATE);
+            final Set<String> neutralized = new HashSet<>(preferences.getStringSet("hgram_neutralized_shortcuts", Collections.emptySet()));
+            final HgramShortcutReconciler.Result result = HgramShortcutReconciler.reconcile(
+                    new HgramSystemShortcutBackend(context),
+                    this::resolveHgramShortcutEntity,
+                    HgramSecretSpace::isHidden,
+                    neutralized,
+                    LocaleController.getString(R.string.HgramAntiPeekHidden),
+                    R.drawable.shortcut_compose);
+            if (result.trackingChanged) {
+                preferences.edit().putStringSet("hgram_neutralized_shortcuts", neutralized).apply();
+            }
+            if (result.dynamicNeedsRebuild) {
+                buildShortcuts();
+            }
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+    }
+
+    private HgramShortcutReconciler.Entity resolveHgramShortcutEntity(int account, long dialogId, int type) {
+        final TLRPC.User user = account == currentAccount
+                ? getMessagesController().getUser(dialogId)
+                : MessagesController.getInstance(account).getUser(dialogId);
+        final TLRPC.Chat chat = account == currentAccount
+                ? getMessagesController().getChat(-dialogId)
+                : MessagesController.getInstance(account).getChat(-dialogId);
+        final String name;
+        final int iconRes;
+        if (type == SHORTCUT_TYPE_ATTACHED_BOT) {
+            if (user == null || !user.bot) {
+                return null;
+            }
+            name = UserObject.getUserName(user);
+            iconRes = R.drawable.book_bot;
+        } else if (user != null) {
+            name = ContactsController.formatName(user.first_name, user.last_name);
+            iconRes = user.bot ? R.drawable.book_bot : R.drawable.book_user;
+        } else if (chat != null) {
+            name = chat.title;
+            iconRes = ChatObject.isChannel(chat) && !chat.megagroup ? R.drawable.book_channel : R.drawable.book_group;
+        } else {
+            return null;
+        }
+        if (TextUtils.isEmpty(name)) {
+            return null;
+        }
+        return new HgramShortcutReconciler.Entity(name, iconRes);
+    }
+
+    private void neutralizePinnedShortcuts(ArrayList<String> ids) {
+        if (Build.VERSION.SDK_INT < 26) {
+            return;
+        }
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            return;
+        }
+        final List<ShortcutInfoCompat> pinned = ShortcutManagerCompat.getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_PINNED);
+        final HashMap<String, ShortcutInfoCompat> pinnedById = new HashMap<>();
+        if (pinned != null) {
+            for (int i = 0; i < pinned.size(); i++) {
+                final ShortcutInfoCompat info = pinned.get(i);
+                if (info.getId() != null) {
+                    pinnedById.put(info.getId(), info);
+                }
+            }
+        }
+        neutralizePinnedShortcuts(context, pinnedById, ids);
+    }
+
+    private boolean neutralizePinnedShortcuts(Context context, HashMap<String, ShortcutInfoCompat> pinnedById, ArrayList<String> ids) {
+        if (Build.VERSION.SDK_INT < 26 || context == null || pinnedById == null || ids == null || ids.isEmpty()) {
+            return false;
+        }
+        try {
+            final CharSequence hidden = LocaleController.getString(R.string.HgramAntiPeekHidden);
+            final ArrayList<String> disabled = new ArrayList<>();
+            final ArrayList<ShortcutInfoCompat> updated = new ArrayList<>();
+            for (int a = 0; a < ids.size(); a++) {
+                final String id = ids.get(a);
+                final int type = HgramShortcutState.typeForId(id);
+                if (type == HgramShortcutState.TYPE_UNKNOWN) {
+                    continue;
+                }
+                final ShortcutInfoCompat info = pinnedById.get(id);
+                if (info == null) {
+                    continue;
+                }
+                final Intent intent = info.getIntent();
+                if (intent == null) {
+                    continue;
+                }
+                updated.add(new ShortcutInfoCompat.Builder(context, id)
+                        .setShortLabel(hidden)
+                        .setLongLabel(hidden)
+                        .setIcon(IconCompat.createWithResource(context, R.drawable.shortcut_compose))
+                        .setIntent(intent)
+                        .build());
+                disabled.add(id);
+            }
+            if (updated.isEmpty()) {
+                return false;
+            }
+            boolean updatedOk;
+            try {
+                updatedOk = ShortcutManagerCompat.updateShortcuts(context, updated);
+            } catch (Throwable e) {
+                FileLog.e(e);
+                return false;
+            }
+            if (!updatedOk) {
+                return false;
+            }
+            final ShortcutManager shortcutManager = context.getSystemService(ShortcutManager.class);
+            if (shortcutManager != null) {
+                try {
+                    shortcutManager.disableShortcuts(disabled, hidden);
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
+            }
+            return true;
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+        return false;
+    }
+
     public void uninstallShortcut(long dialogId, int type) {
         try {
             if (Build.VERSION.SDK_INT >= 26) {
                 ArrayList<String> arrayList = new ArrayList<>();
                 if (type == SHORTCUT_TYPE_USER_OR_CHAT) {
+                    arrayList.add("did3_" + dialogId);
                     arrayList.add("sdid_" + dialogId);
                     arrayList.add("ndid_" + dialogId);
                 }
                 if (type == SHORTCUT_TYPE_ATTACHED_BOT) {
                     arrayList.add("bdid_" + dialogId);
                 }
+                neutralizePinnedShortcuts(arrayList);
                 ShortcutManagerCompat.removeDynamicShortcuts(ApplicationLoader.applicationContext, arrayList);
                 if (Build.VERSION.SDK_INT >= 30) {
                     ShortcutManager shortcutManager = ApplicationLoader.applicationContext.getSystemService(ShortcutManager.class);
