@@ -1,6 +1,5 @@
 package tw.nekomimi.nekogram.transtale.source
 
-import android.util.Log
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -386,6 +385,16 @@ object LLMTranslator : Translator {
         }
     }
 
+    /** Summarizer status check: never surfaces provider error text. */
+    private fun checkSummarizeResponseStatus(status: HttpStatusCode) {
+        if (status.value == 429) {
+            throw RateLimitException("HTTP 429")
+        }
+        if (status.value !in 200..299) {
+            throw Exception("HTTP ${status.value}")
+        }
+    }
+
     internal fun buildSystemPrompt(
         customSystemPrompt: String?,
         from: String,
@@ -558,9 +567,10 @@ object LLMTranslator : Translator {
                 header("Content-Type", "application/json")
                 header("HTTP-Referer", "https://t.me/hgram_updates")
                 header("X-Title", "Hgram")
+                header("X-Hgram-Redact-Body", "1")
                 setBody(body.toString())
             }.execute()
-            checkResponseStatus(HttpStatusCode(response.statusCode, ""), response.body)
+            checkSummarizeResponseStatus(HttpStatusCode(response.statusCode, ""))
             val choices = Json.parseToJsonElement(response.body).jsonObject["choices"]?.jsonArray
             if (choices.isNullOrEmpty()) throw Exception("OpenRouter returned no choices")
             choices[0].jsonObject["message"]?.jsonObject?.get("content")?.jsonPrimitive?.content?.trim()
@@ -569,7 +579,7 @@ object LLMTranslator : Translator {
     }
 
     /** All text models advertised by OpenRouter `/models`, with prices per 1M tokens. */
-    fun fetchOpenRouterModelsBlocking(apiKey: String): List<HgramSummarizerModel>? {
+    fun fetchOpenRouterModelsBlocking(): List<HgramSummarizerModel>? {
         return runBlocking {
             try {
                 val response = NetworkRequestBuilder.get("https://openrouter.ai/api/v1/models") {
@@ -603,7 +613,6 @@ object LLMTranslator : Translator {
                     val free = HgramSummarizerModel.isFreeModel(id, promptPrice, completionPrice)
                     HgramSummarizerModel(id, name, promptPrice, completionPrice, free, true)
                 }
-                Log.d("HGRAM_SUM", "models raw=" + data.size + " textOnly=" + result.size + " free=" + result.count { it.isFree } + " paid=" + result.count { !it.isFree } + " freeIds=" + result.filter { it.isFree }.joinToString(",") { it.id })
                 result
             } catch (_: Exception) {
                 null
@@ -612,8 +621,8 @@ object LLMTranslator : Translator {
     }
 
     /** Free models only, as advertised by OpenRouter `/models`. */
-    fun fetchOpenRouterFreeModelsBlocking(apiKey: String): List<String> {
-        return fetchOpenRouterModelsBlocking(apiKey)?.filter { it.isFree }?.map { it.id }?.sorted()
+    fun fetchOpenRouterFreeModelsBlocking(): List<String> {
+        return fetchOpenRouterModelsBlocking()?.filter { it.isFree }?.map { it.id }?.sorted()
             ?: emptyList()
     }
 

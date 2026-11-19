@@ -463,7 +463,11 @@ public final class HgramConfig {
     }
 
     public static void setSummarizerSystemPrompt(String prompt) {
-        preferences().edit().putString(SUMMARIZER_PROMPT, prompt == null ? "" : prompt).apply();
+        String value = prompt == null ? "" : prompt;
+        if (value.length() > HgramSummarizer.MAX_SYSTEM_PROMPT_CHARS) {
+            value = value.substring(0, HgramSummarizer.MAX_SYSTEM_PROMPT_CHARS);
+        }
+        preferences().edit().putString(SUMMARIZER_PROMPT, value).apply();
     }
 
     public static boolean isSummarizerShowPaid() {

@@ -73,7 +73,6 @@ import android.text.style.DynamicDrawableSpan;
 import android.text.style.LeadingMarginSpan;
 import android.text.style.StrikethroughSpan;
 import android.text.style.URLSpan;
-import android.util.Log;
 import android.util.Pair;
 import android.util.Property;
 import android.util.SparseArray;
@@ -1569,20 +1568,29 @@ private RectF hgramDuplicateBounds;
     private int hgramStableNamesOffset;
     private float hgramShortDownX, hgramShortDownY;
 
-    public void setHgramShortChain(xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain chain, boolean collapsed, Runnable toggle) {
+    public void setHgramShortChain(xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain chain, boolean collapsed, Runnable toggle, MessageObject boundMessage) {
+        final xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain oldChain = hgramShortChain;
         final boolean newCollapsed = chain != null && collapsed;
-        final boolean stateChanged = hgramShortChain == null ? chain != null
+        final boolean stateChanged = oldChain == null ? chain != null
                 : chain == null || hgramShortCollapsed != newCollapsed
-                || hgramShortChain.anchorId != chain.anchorId
-                || hgramShortChain.ids.size() != chain.ids.size()
-                || !hgramShortChain.text.equals(chain.text)
-                || hgramShortChain.readState() != chain.readState();
+                || oldChain.anchorId != chain.anchorId
+                || oldChain.ids.size() != chain.ids.size()
+                || !oldChain.text.equals(chain.text)
+                || oldChain.readState() != chain.readState();
         if (stateChanged) {
             hgramShortChainPendingMeasure = hgramShortChain != null || chain != null;
         }
         hgramShortChain = chain;
         hgramShortCollapsed = newCollapsed;
         hgramShortToggle = chain != null ? toggle : null;
+        if (boundMessage != null && chain != null) {
+            // Rebinds/selection changes must not dissolve the chain or drop its summary.
+            xyz.nextalone.nagram.hgram.HgramSummarizer.rememberChain(boundMessage, chain);
+            // A chain whose source changed must not reuse the previous cached summary.
+            if (xyz.nextalone.nagram.hgram.HgramSummarizer.invalidateStaleSummary(boundMessage, chain)) {
+                boundMessage.updateTranslation(true);
+            }
+        }
         hgramShortCollapseText = chain != null && !collapsed
                 ? LocaleController.getString(R.string.HgramShortChainCollapse) : null;
         if (!stateChanged) {
@@ -1618,6 +1626,14 @@ private RectF hgramDuplicateBounds;
         }
         if (hgramShortChain.readState() == chain.readState()) return;
         hgramShortChain = chain;
+        invalidate();
+    }
+
+    public void setHgramSummaryAllowed(boolean allowed) {
+        if (hgramSummaryAllowed == allowed) {
+            return;
+        }
+        hgramSummaryAllowed = allowed;
         invalidate();
     }
 
@@ -1904,6 +1920,8 @@ private RectF hgramDuplicateBounds;
     public byte[] doNotDrawPollId;
     public byte[] drawOnlyPollId;
     public boolean isChat;
+    /** Local (Hgram) summary is allowed in this bind context: private dialog, no hashtag search. */
+    public boolean hgramSummaryAllowed;
     public boolean isBotForum;
     public boolean isSavedChat;
     public boolean isSavedPreviewChat;
@@ -2064,8 +2082,10 @@ private RectF hgramDuplicateBounds;
     private float summarizeButtonX, summarizeButtonY;
     private int hgramSummarizeTier;
     private final android.graphics.RectF hgramSummarizeButtonBounds = new android.graphics.RectF();
-    private static final java.util.Set<Integer> hgramSumContentLogged = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
-    private static final java.util.Set<Integer> hgramSumButtonLogged = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final RectF hgramSideTouchRect = new RectF();
+    private final RectF hgramSummarizeHitRect = new RectF();
+    private final RectF hgramSummarizeBubbleRect = new RectF();
+    private final RectF hgramSummarizeReactionsRect = new RectF();
 
     private StaticLayout nameLayout;
     private int nameLayoutWidth;
@@ -5222,7 +5242,12 @@ private RectF hgramDuplicateBounds;
     }
 
     private boolean checkSummaryTouchEvent(MotionEvent event) {
-        if (!drawSummaryReply || summaryTitle == null || summaryBounce == null || delegate == null) return false;
+        final MessageObject message = currentMessageObject;
+        if (message == null || message.messageOwner == null || delegate == null) return false;
+        final boolean localSummary = hgramSummaryAllowed
+                && xyz.nextalone.nagram.hgram.HgramSummarizer.isLocalSummaryOpen(message);
+        if (!localSummary && !TranslateController.isSummarizable(message)) return false;
+        if ((!drawSummaryReply && !localSummary) || summaryTitle == null || summaryBounce == null) return false;
         float x = getEventX(event);
         float y = getEventY(event);
         if (event.getAction() == MotionEvent.ACTION_DOWN) {
@@ -5242,7 +5267,7 @@ private RectF hgramDuplicateBounds;
             }
         } else if (event.getAction() == MotionEvent.ACTION_UP) {
             if (summaryBounce.isPressed()) {
-                delegate.didPressSummarize(this, true);
+                delegate.didPressSummarize(this, !localSummary);
             }
             summaryBounce.setPressed(false);
             if (summaryReplySelector != null) {
@@ -5387,7 +5412,6 @@ private RectF hgramDuplicateBounds;
             if (hgramShortCollapsed && action == MotionEvent.ACTION_DOWN) {
                 updateHgramSummarizeButtonBounds();
                 final boolean hit = drawSummarizeButton && isInHgramSummarizeButton(event.getX(), event.getY());
-                logHgramSummarizeTap(event.getX(), event.getY(), hit, action);
                 if (hit) {
                     summarizeButtonPressed = true;
                     invalidate();
@@ -5400,7 +5424,6 @@ private RectF hgramDuplicateBounds;
                 invalidate();
                 if (action == MotionEvent.ACTION_UP) {
                     final boolean hit = isInHgramSummarizeButton(event.getX(), event.getY());
-                    logHgramSummarizeTap(event.getX(), event.getY(), hit, action);
                     if (hit && delegate != null) {
                         playSoundEffect(SoundEffectConstants.CLICK);
                         delegate.didPressSummarize(this, false);
@@ -5509,17 +5532,17 @@ private RectF hgramDuplicateBounds;
             final float hgramSumTapY = getEventY(event);
             if (hgramSumAction == MotionEvent.ACTION_DOWN) {
                 updateHgramSummarizeButtonBounds();
-                final boolean hit = isInHgramSummarizeButton(hgramSumTapX, hgramSumTapY);
-                logHgramSummarizeTap(hgramSumTapX, hgramSumTapY, hit, hgramSumAction);
+                final boolean sideHit = isInHgramSideButton(hgramSumTapX, hgramSumTapY);
+                final boolean hit = !sideHit && isInHgramSummarizeButton(hgramSumTapX, hgramSumTapY);
                 if (hit) {
                     summarizeButtonPressed = true;
                     invalidate();
                     return true;
                 }
             } else if (summarizeButtonPressed) {
-                final boolean hit = isInHgramSummarizeButton(hgramSumTapX, hgramSumTapY);
+                final boolean hit = !isInHgramSideButton(hgramSumTapX, hgramSumTapY)
+                        && isInHgramSummarizeButton(hgramSumTapX, hgramSumTapY);
                 if (hgramSumAction == MotionEvent.ACTION_UP) {
-                    logHgramSummarizeTap(hgramSumTapX, hgramSumTapY, hit, hgramSumAction);
                     summarizeButtonPressed = false;
                     if (hit) {
                         playSoundEffect(SoundEffectConstants.CLICK);
@@ -5753,6 +5776,7 @@ private RectF hgramDuplicateBounds;
         if (!result) {
             final float x = getEventX(event);
             final float y = getEventY(event);
+            updateHgramSideTouchRect();
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 if (delegate == null || delegate.canPerformActions()) {
                     if (isAvatarVisible && avatarImage.isInsideImage(x, y + getTop())) {
@@ -5785,8 +5809,7 @@ private RectF hgramDuplicateBounds;
                     } else if (
                         sideButtonVisible &&
                         drawSideButton != 0 &&
-                        x >= sideStartX - dp(24) && x <= sideStartX + dp(40) &&
-                        y >= sideStartY - dp(drawSummarizeButton ? 6 : 24) && y <= sideStartY + dp(38 + (drawSideButton == 3 && commentLayout != null ? 18 : 0) + (drawSideButton2 == SIDE_BUTTON_SPONSORED_MORE ? 38 : 0))
+                        hgramSideTouchRect.contains(x, y)
                     ) {
                         if (currentMessageObject.isSent()) {
                             if (currentMessageObject.isSponsored()) {
@@ -5946,8 +5969,7 @@ private RectF hgramDuplicateBounds;
                     } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
                         if (!(
                             sideButtonVisible &&
-                            x >= sideStartX - dp(24) && x <= sideStartX + dp(40) &&
-                            y >= sideStartY - dp(drawSummarizeButton ? 6 : 24) && y <= sideStartY + dp(38 + (drawSideButton == 3 && commentLayout != null ? 18 : 0) + (drawSideButton2 == SIDE_BUTTON_SPONSORED_MORE ? 38 : 0))
+                            hgramSideTouchRect.contains(x, y)
                         )) {
                             sideButtonPressed = false;
 
@@ -7622,8 +7644,7 @@ private RectF hgramDuplicateBounds;
                     drawSideButton = 2;
                 }
             }
-            drawSummarizeButton = TranslateController.isSummarizable(messageObject)
-                    || xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(messageObject, hgramShortChain);
+            drawSummarizeButton = computeDrawSummarizeButton();
             hasReplyQuote = false;
             isReplyQuote = false;
             isReplyTaskOrPollOption = false;
@@ -22755,9 +22776,7 @@ private RectF hgramDuplicateBounds;
 
         }
 
-        drawSummarizeButton = TranslateController.isSummarizable(currentMessageObject)
-                || xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(currentMessageObject, hgramShortChain);
-        logHgramSummarizeDrawContent();
+        drawSummarizeButton = computeDrawSummarizeButton();
         drawSideButton(canvas);
         drawSummarizeButton(canvas);
     }
@@ -23131,76 +23150,30 @@ private RectF hgramDuplicateBounds;
         }
     }
 
-    private void logHgramSummarizeDrawContent() {
-        final MessageObject msg = currentMessageObject;
-        if (msg == null) return;
-        final int msgId = msg.getId();
-        if (!hgramSumContentLogged.add(msgId)) return;
-        final String text = msg.messageOwner == null ? null
-                : (!TextUtils.isEmpty(msg.messageOwner.message)
-                ? msg.messageOwner.message
-                : (msg.caption != null ? msg.caption.toString() : null));
-        Log.d("HGRAM_SUM", "drawContent msgId=" + msgId
-                + " calledFromDraw=true"
-                + " chain=" + (hgramShortChain != null)
-                + " isOut=" + (msg.messageOwner != null && msg.isOutOwner())
-                + " textLen=" + (text == null ? -1 : text.length())
-                + " words=" + xyz.nextalone.nagram.hgram.HgramSummarizer.wordCount(text)
-                + " minWords=" + xyz.nextalone.nagram.hgram.HgramConfig.getSummarizerMinWords()
-                + " enabled=" + xyz.nextalone.nagram.hgram.HgramConfig.isSummarizerEnabled()
-                + " antiPeekCfg=" + xyz.nextalone.nagram.hgram.HgramConfig.isAntiPeekActive()
-                + " antiPeekActive=" + xyz.nextalone.nagram.hgram.HgramAntiPeek.isActive()
-                + " secretSpace=" + xyz.nextalone.nagram.hgram.HgramSecretSpace.isActive()
-                + " result=" + drawSummarizeButton);
+    private boolean computeDrawSummarizeButton() {
+        MessageObject m = currentMessageObject;
+        if (m == null || m.messageOwner == null) return false;
+        if (xyz.nextalone.nagram.hgram.HgramSummarizer.isSecretChatMessage(m)) return false;
+        // A locally shown summary keeps its close button even when the eligibility threshold
+        // no longer passes (e.g. the word limit was raised after it was generated).
+        if (hgramSummaryAllowed && m.messageOwner.summarizedOpen && m.messageOwner.summaryText != null) {
+            return true;
+        }
+        final boolean hgramPrivate = hgramSummaryAllowed && DialogObject.isUserDialog(m.getDialogId());
+        if (hgramShortCollapsed) {
+            return hgramPrivate && hgramShortChain != null
+                    && xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(m, hgramShortChain, true);
+        }
+        if (hgramPrivate && xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(m, hgramShortChain, true)) {
+            return true;
+        }
+        return TranslateController.isSummarizable(m);
     }
 
-    private void logHgramSummarizeTap(float x, float y, boolean hit, int action) {
-        Log.d("HGRAM_SUM", "TAP action=" + action
-                + " x=" + x
-                + " y=" + y
-                + " hit=" + hit
-                + " draw=" + drawSummarizeButton
-                + " bounds=[" + hgramSummarizeButtonBounds.left + "," + hgramSummarizeButtonBounds.top + ","
-                + hgramSummarizeButtonBounds.right + "," + hgramSummarizeButtonBounds.bottom + "]"
-                + " sideVisible=" + sideButtonVisible
-                + " side=" + drawSideButton
-                + " collapsed=" + hgramShortCollapsed);
-    }
-
-    private void logHgramSummarizeButton() {
-        final MessageObject msg = currentMessageObject;
-        if (msg == null) return;
-        final int msgId = msg.getId();
-        final boolean empty = hgramSummarizeButtonBounds.isEmpty();
-        final boolean out = msg.messageOwner != null && msg.isOutOwner();
-        final float bubbleWidth = hgramShortCollapsed ? hgramShortBubbleWidth : backgroundWidth;
-        final float bubbleL = xyz.nextalone.nagram.hgram.HgramSummarizer.bubbleLeft(
-                out, getMeasuredWidth(), bubbleWidth, !hgramShortCollapsed && isAvatarVisible);
-        final float bubbleR = bubbleL + bubbleWidth;
-        final float buttonSize = hgramSummarizeButtonBounds.width();
-        final float signedGap = out
-                ? bubbleL - hgramSummarizeButtonBounds.right
-                : hgramSummarizeButtonBounds.left - bubbleR;
-        final float gap = hgramSummarizeTier == 4 ? 0 : Math.max(0, signedGap);
-        final float overlap = hgramSummarizeTier == 4 ? 0 : Math.max(0, -signedGap);
-        final int key = msgId * 2 + (empty ? 0 : 1);
-        if (!hgramSumButtonLogged.add(key)) return;
-        Log.d("HGRAM_SUM", "drawButton msgId=" + msgId
-                + " calledFromDraw=true"
-                + " drawSummarizeButton=" + drawSummarizeButton
-                + " boundsEmpty=" + empty
-                + " bounds=[" + hgramSummarizeButtonBounds.left + "," + hgramSummarizeButtonBounds.top + ","
-                + hgramSummarizeButtonBounds.right + "," + hgramSummarizeButtonBounds.bottom + "]"
-                + " size=" + buttonSize + " gap=" + gap + " overlap=" + overlap + " tier=" + hgramSummarizeTier
-                + " bubbleL=" + bubbleL
-                + " bubbleR=" + bubbleR
-                + " bubbleW=" + bubbleWidth
-                + " earlyReturn=" + (!drawSummarizeButton || empty)
-                + " isOut=" + (msg.messageOwner != null && msg.isOutOwner())
-                + " layoutWidth=" + layoutWidth
-                + " layoutHeight=" + layoutHeight
-                + " cellW=" + getMeasuredWidth()
-                + " cellH=" + getHeight());
+    private boolean isInHgramSideButton(float x, float y) {
+        if (!sideButtonVisible || drawSideButton == 0) return false;
+        updateHgramSideTouchRect();
+        return hgramSideTouchRect.contains(x, y);
     }
 
     private SummaryIcon summarizeIcon;
@@ -23210,7 +23183,6 @@ private RectF hgramDuplicateBounds;
     }
 
     private void drawHgramSummarizeButton(Canvas canvas) {
-        logHgramSummarizeButton();
         if (!drawSummarizeButton || hgramSummarizeButtonBounds.isEmpty()) return;
         rect.set(hgramSummarizeButtonBounds);
         summarizeButtonX = rect.left;
@@ -23218,7 +23190,7 @@ private RectF hgramDuplicateBounds;
         final float radius = Math.min(dp(16), rect.width() / 2f);
 
         applyServiceShaderMatrix();
-        canvas.drawRoundRect(rect, radius, radius, getThemedPaint(sideButtonPressed ? Theme.key_paint_chatActionBackgroundSelected : Theme.key_paint_chatActionBackground));
+        canvas.drawRoundRect(rect, radius, radius, getThemedPaint((summarizeButtonPressed || sideButtonPressed) ? Theme.key_paint_chatActionBackgroundSelected : Theme.key_paint_chatActionBackground));
         if (hasGradientService()) {
             canvas.drawRoundRect(rect, radius, radius, Theme.chat_actionBackgroundGradientDarkenPaint);
         }
@@ -23244,17 +23216,21 @@ private RectF hgramDuplicateBounds;
 
     private void updateHgramSummarizeButtonBounds() {
         hgramSummarizeButtonBounds.setEmpty();
+        hgramSummarizeHitRect.setEmpty();
         hgramSummarizeTier = 0;
         if (currentMessageObject == null) return;
         if (hgramShortCollapsed) {
-            drawSummarizeButton = hgramShortChain != null
-                    && xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(
-                    currentMessageObject, hgramShortChain);
+            drawSummarizeButton = computeDrawSummarizeButton();
             if (!drawSummarizeButton) return;
-            hgramSummarizeTier = xyz.nextalone.nagram.hgram.HgramSummarizer.summarizeBounds(
-                    hgramSummarizeButtonBounds, currentMessageObject.isOutOwner(),
-                    getMeasuredWidth(), hgramShortBubbleWidth, false,
-                    layoutHeight, 0, 0, getHeight(), dp(32), dp(8), dp(2));
+            final float chainLeft = getHgramShortLeft();
+            final float chainRight = chainLeft + hgramShortBubbleWidth;
+            final float chainTop = dp(3);
+            final float chainBottom = getHeight() - dp(7);
+            hgramSummarizeTier = xyz.nextalone.nagram.hgram.HgramSummarizer.summarizeBoundsInBubble(
+                    hgramSummarizeButtonBounds, getMeasuredWidth(), chainLeft, chainRight,
+                    chainTop, chainBottom, 0, getHeight(), dp(32), dp(8), dp(2),
+                    currentMessageObject.isOutOwner(), 0f);
+            finalizeHgramSummarizeButtonBounds(chainLeft, chainTop, chainRight, chainBottom, 0f);
             return;
         }
         if (!drawSummarizeButton) return;
@@ -23268,17 +23244,126 @@ private RectF hgramDuplicateBounds;
             bubbleTop = 0;
             bubbleBottom = layoutHeight + transitionParams.deltaBottom;
         }
-        hgramSummarizeTier = xyz.nextalone.nagram.hgram.HgramSummarizer.summarizeBoundsAdaptive(
-                hgramSummarizeButtonBounds,
-                currentMessageObject.isOutOwner(), getMeasuredWidth(), backgroundWidth,
-                isAvatarVisible, bubbleTop, bubbleBottom, reactions,
-                getHeight(), dp(32), dp(8), dp(2));
+        // backgroundDrawableRight is a WIDTH: resolve the real absolute right edge once and reuse
+        // the same px bounds for placement, the side-button escape and the final validation.
+        final float bubbleLeft = backgroundDrawableLeft;
+        final float bubbleRight = bubbleLeft + backgroundDrawableRight;
+        hgramSummarizeTier = xyz.nextalone.nagram.hgram.HgramSummarizer.summarizeBoundsInBubble(
+                hgramSummarizeButtonBounds, getMeasuredWidth(), bubbleLeft, bubbleRight,
+                bubbleTop, bubbleBottom, reactions, getHeight(), dp(32), dp(8), dp(2),
+                currentMessageObject.isOutOwner(), 0f);
+        avoidHgramSummarizeSideButton(bubbleLeft, bubbleRight, bubbleTop, bubbleBottom, reactions);
+        finalizeHgramSummarizeButtonBounds(bubbleLeft, bubbleTop, bubbleRight, bubbleBottom, reactions);
+    }
+
+    /** Exact touch rectangle of the Share/side button, shared by placement and dispatch. */
+    private void updateHgramSideTouchRect() {
+        hgramSideTouchRect.set(
+                sideStartX - dp(24),
+                sideStartY - dp(drawSummarizeButton ? 6 : 24),
+                sideStartX + dp(40),
+                sideStartY + dp(38
+                        + (drawSideButton == 3 && commentLayout != null ? 18 : 0)
+                        + (drawSideButton2 == SIDE_BUTTON_SPONSORED_MORE ? 38 : 0)));
+    }
+
+    /**
+     * Last line of defence: never leave the summarize button over the bubble text/link, reactions
+     * or the side-button touch area. The actual button rect must not intersect them; the 4dp touch
+     * slop is clipped at their border instead, so a valid 2dp gap does not hide the ✨.
+     * On an actual conflict the button is hidden (tier 4).
+     */
+    private void finalizeHgramSummarizeButtonBounds(float bubbleLeft, float bubbleTop,
+                                                    float bubbleRight, float bubbleBottom,
+                                                    float reactionsHeight) {
+        // Never keep a hit rect from the previous layout/rebind when the button is gone.
+        hgramSummarizeHitRect.setEmpty();
+        if (!drawSummarizeButton || hgramSummarizeButtonBounds.isEmpty()) return;
+        updateHgramSideTouchRect();
+        hgramSummarizeHitRect.set(hgramSummarizeButtonBounds);
+        hgramSummarizeHitRect.inset(-dp(4), -dp(4));
+        if (sideButtonVisible && drawSideButton != 0) {
+            if (RectF.intersects(hgramSummarizeButtonBounds, hgramSideTouchRect)) {
+                hideHgramSummarizeButton();
+                return;
+            }
+            clipHgramSummarizeTouchRect(hgramSummarizeHitRect, hgramSideTouchRect);
+        }
+        if (bubbleRight > bubbleLeft && bubbleBottom > bubbleTop) {
+            final float pad = dp(1);
+            hgramSummarizeBubbleRect.set(bubbleLeft - pad, bubbleTop - pad,
+                    bubbleRight + pad, bubbleBottom + pad);
+            if (RectF.intersects(hgramSummarizeButtonBounds, hgramSummarizeBubbleRect)) {
+                hideHgramSummarizeButton();
+                return;
+            }
+            clipHgramSummarizeTouchRect(hgramSummarizeHitRect, hgramSummarizeBubbleRect);
+            if (reactionsHeight > 0) {
+                hgramSummarizeReactionsRect.set(bubbleLeft - pad, bubbleBottom - pad,
+                        bubbleRight + pad, bubbleBottom + reactionsHeight + pad);
+                if (RectF.intersects(hgramSummarizeButtonBounds, hgramSummarizeReactionsRect)) {
+                    hideHgramSummarizeButton();
+                    return;
+                }
+                clipHgramSummarizeTouchRect(hgramSummarizeHitRect, hgramSummarizeReactionsRect);
+            }
+        }
+        if (hgramSummarizeHitRect.isEmpty()) {
+            hideHgramSummarizeButton();
+        }
+    }
+
+    /**
+     * Cuts the part of the touch rect that leaks into an adjacent blocker, keeping the strip on
+     * the button's side. Clears the rect when nothing usable remains.
+     */
+    private static void clipHgramSummarizeTouchRect(RectF hit, RectF blocker) {
+        xyz.nextalone.nagram.hgram.HgramSummarizer.clipTouchRect(hit, blocker);
+    }
+
+    private void hideHgramSummarizeButton() {
+        drawSummarizeButton = false;
+        hgramSummarizeButtonBounds.setEmpty();
+        hgramSummarizeHitRect.setEmpty();
+        hgramSummarizeTier = 4;
+    }
+
+    private void avoidHgramSummarizeSideButton(float bubbleLeft, float bubbleRight,
+                                               float bubbleTop, float bubbleBottom, float reactions) {
+        if (!sideButtonVisible || drawSideButton == 0 || hgramSummarizeButtonBounds.isEmpty()) return;
+        if (!hgramSummarizeButtonOverlapsSide()) return;
+        final float left = hgramSummarizeButtonBounds.left;
+        final float size = hgramSummarizeButtonBounds.width();
+        // Same absolute bubble bounds; preferLeft only switches the candidate side.
+        final int mirroredTier = xyz.nextalone.nagram.hgram.HgramSummarizer.summarizeBoundsInBubble(
+                hgramSummarizeButtonBounds, getMeasuredWidth(), bubbleLeft, bubbleRight,
+                bubbleTop, bubbleBottom, reactions, getHeight(), dp(32), dp(8), dp(2),
+                !currentMessageObject.isOutOwner(), 0f);
+        if (mirroredTier != 0 && !hgramSummarizeButtonOverlapsSide()) {
+            hgramSummarizeTier = mirroredTier;
+            return;
+        }
+        // No free side: move the button out of the Share touch rectangle and clamp to the cell.
+        final float gap = dp(2);
+        float top = hgramSideTouchRect.top - size - gap;
+        if (top < dp(2)) {
+            top = hgramSideTouchRect.bottom + gap;
+        }
+        final float clampedLeft = Math.max(dp(2), Math.min(left, getMeasuredWidth() - size - dp(2)));
+        top = Math.max(dp(2), Math.min(top, getHeight() - size - dp(2)));
+        hgramSummarizeButtonBounds.set(clampedLeft, top, clampedLeft + size, top + size);
+        hgramSummarizeTier = 4;
+    }
+
+    private boolean hgramSummarizeButtonOverlapsSide() {
+        if (!sideButtonVisible || drawSideButton == 0 || hgramSummarizeButtonBounds.isEmpty()) return false;
+        updateHgramSideTouchRect();
+        return RectF.intersects(hgramSummarizeButtonBounds, hgramSideTouchRect);
     }
 
     private boolean isInHgramSummarizeButton(float x, float y) {
-        return drawSummarizeButton && hgramSummarizeButtonBounds != null
-                && xyz.nextalone.nagram.hgram.HgramSummarizer.isInsideButton(
-                hgramSummarizeButtonBounds, x, y, dp(4));
+        return drawSummarizeButton && !hgramSummarizeHitRect.isEmpty()
+                && hgramSummarizeHitRect.contains(x, y);
     }
 
     public float getSideButtonStartX() {
@@ -28189,8 +28274,10 @@ private RectF hgramDuplicateBounds;
                 }
             }
         } else if (action == R.id.acc_action_summarize) {
-            if (delegate != null) {
-                delegate.didPressSummarize(this, drawSummaryReply);
+            if (delegate != null && delegate.canPerformActions()) {
+                final boolean localSummaryOpen = hgramSummaryAllowed
+                        && xyz.nextalone.nagram.hgram.HgramSummarizer.isLocalSummaryOpen(currentMessageObject);
+                delegate.didPressSummarize(this, !localSummaryOpen && drawSummaryReply && TranslateController.isSummarizable(currentMessageObject));
             }
         } else if (action == R.id.acc_action_copy_code) {
             if (delegate != null && currentMessageObject.textLayoutBlocks != null) {
@@ -28985,7 +29072,12 @@ private RectF hgramDuplicateBounds;
                 if (smallIcon == MediaActionDrawable.ICON_DOWNLOAD) {
                     info.addAction(new AccessibilityNodeInfo.AccessibilityAction(R.id.acc_action_small_button, getString("AccActionDownload", R.string.AccActionDownload)));
                 }
-                if (drawSummarizeButton || drawSummaryReply) {
+                if ((drawSummarizeButton || drawSummaryReply
+                        || (hgramSummaryAllowed && currentMessageObject != null
+                        && currentMessageObject.messageOwner != null
+                        && currentMessageObject.messageOwner.summarizedOpen
+                        && currentMessageObject.messageOwner.summaryText != null))
+                        && (delegate == null || delegate.canPerformActions())) {
                     info.addAction(new AccessibilityNodeInfo.AccessibilityAction(R.id.acc_action_summarize, getString("SummaryTitle", R.string.SummaryTitle)));
                 }
                 if (currentMessageObject.textLayoutBlocks != null) {

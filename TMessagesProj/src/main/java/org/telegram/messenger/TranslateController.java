@@ -55,6 +55,7 @@ import java.util.Set;
 import tw.nekomimi.nekogram.transtale.popupwrapper.LanguageDetector;
 import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.SummarizeTextButtonStatus;
+import xyz.nextalone.nagram.hgram.HgramSummarizer;
 
 public class TranslateController extends BaseController {
 
@@ -675,7 +676,7 @@ public class TranslateController extends BaseController {
                         }
                     });
                 }
-            } else if (finalMessageObject.messageOwner.summarizedOpen) {
+            } else if (finalMessageObject.messageOwner.summarizedOpen && !HgramSummarizer.isLocalSummaryMessage(finalMessageObject.messageOwner)) {
                 if (finalMessageObject.messageOwner.translatedSummaryText == null || !language.equals(finalMessageObject.messageOwner.translatedSummaryLanguage)) {
                     pushToSummarize(finalMessageObject, language, text -> {
                         finalMessageObject.messageOwner.translatedSummaryLanguage = text != null ? language : null;

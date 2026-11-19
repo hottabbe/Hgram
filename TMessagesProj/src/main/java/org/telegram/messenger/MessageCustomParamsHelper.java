@@ -7,6 +7,8 @@ import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_iv;
 
+import xyz.nextalone.nagram.hgram.HgramSummarizer;
+
 public class MessageCustomParamsHelper {
 
     private static boolean isCommentEncryptionPreparing(TLRPC.Message message) {
@@ -15,15 +17,17 @@ public class MessageCustomParamsHelper {
     }
 
     public static boolean isEmpty(TLRPC.Message message) {
+        // Summary fields of a locally produced summary must not count as persisted content.
+        final boolean local = HgramSummarizer.isLocalSummaryMessage(message);
         return (
             !isCommentEncryptionPreparing(message) &&
             message.voiceTranscription == null &&
             message.translatedVoiceTranscription == null &&
             !message.voiceTranscriptionOpen &&
-            !message.summarizedOpen &&
-            message.summaryText == null &&
-            message.translatedSummaryLanguage == null &&
-            message.translatedSummaryText == null &&
+            (local || !message.summarizedOpen) &&
+            (local || message.summaryText == null) &&
+            (local || message.translatedSummaryLanguage == null) &&
+            (local || message.translatedSummaryText == null) &&
             !message.voiceTranscriptionFinal &&
             !message.voiceTranscriptionRated &&
             !message.voiceTranscriptionForce &&
@@ -55,10 +59,12 @@ public class MessageCustomParamsHelper {
         toMessage.errorAllowedPriceStars = fromMessage.errorAllowedPriceStars;
         toMessage.errorNewPriceStars = fromMessage.errorNewPriceStars;
         toMessage.translatedVoiceTranscription = fromMessage.translatedVoiceTranscription;
-        toMessage.summarizedOpen = fromMessage.summarizedOpen;
-        toMessage.summaryText = fromMessage.summaryText;
-        toMessage.translatedSummaryText = fromMessage.translatedSummaryText;
-        toMessage.translatedSummaryLanguage = fromMessage.translatedSummaryLanguage;
+        if (!HgramSummarizer.isLocalSummaryMessage(fromMessage)) {
+            toMessage.summarizedOpen = fromMessage.summarizedOpen;
+            toMessage.summaryText = fromMessage.summaryText;
+            toMessage.translatedSummaryText = fromMessage.translatedSummaryText;
+            toMessage.translatedSummaryLanguage = fromMessage.translatedSummaryLanguage;
+        }
     }
 
 
@@ -96,6 +102,9 @@ public class MessageCustomParamsHelper {
     private static class Params_v1 extends TLObject {
 
         private final static int VERSION = 1;
+        // Legacy intermediate builds persisted the summary fingerprint in TL params (bit 15).
+        // Keep the slot for reads only so old blobs still parse; never write it again.
+        private static final int FLAG_15 = 1 << 15;
         final TLRPC.Message message;
         int flags = 0;
 
@@ -115,9 +124,11 @@ public class MessageCustomParamsHelper {
 
             flags |= message.translatedVoiceTranscription != null ? 256 : 0;
 
-            flags = setFlag(flags, FLAG_10, message.summaryText != null);
-            flags = setFlag(flags, FLAG_11, message.translatedSummaryText != null);
-            flags = setFlag(flags, FLAG_12, message.translatedSummaryLanguage != null);
+            // Locally produced summaries live only in this process and must never be persisted.
+            final boolean local = HgramSummarizer.isLocalSummaryMessage(message);
+            flags = setFlag(flags, FLAG_10, !local && message.summaryText != null);
+            flags = setFlag(flags, FLAG_11, !local && message.translatedSummaryText != null);
+            flags = setFlag(flags, FLAG_12, !local && message.translatedSummaryLanguage != null);
 
             flags = setFlag(flags, FLAG_13, message.translatedRichMessage != null);
             flags = setFlag(flags, FLAG_14, isCommentEncryptionPreparing(message));
@@ -127,7 +138,7 @@ public class MessageCustomParamsHelper {
         public void serializeToStream(OutputSerializedData stream) {
             stream.writeInt32(VERSION);
             flags = message.voiceTranscriptionForce ? (flags | 2) : (flags &~ 2);
-            flags = message.summarizedOpen ? (flags | 512) : (flags &~ 512);
+            flags = message.summarizedOpen && !HgramSummarizer.isLocalSummaryMessage(message) ? (flags | 512) : (flags &~ 512);
             stream.writeInt32(flags);
             if ((flags & 1) != 0) {
                 stream.writeString(message.voiceTranscription);
@@ -218,6 +229,10 @@ public class MessageCustomParamsHelper {
             }
             if (hasFlag(flags, FLAG_10)) {
                 message.summaryText = TLRPC.TL_textWithEntities.TLdeserialize(stream, stream.readInt32(exception), exception);
+            }
+            if (hasFlag(flags, FLAG_15)) {
+                // legacy intermediate blobs: consume, never write
+                stream.readString(exception);
             }
             if (hasFlag(flags, FLAG_11)) {
                 message.translatedSummaryText = TLRPC.TL_textWithEntities.TLdeserialize(stream, stream.readInt32(exception), exception);

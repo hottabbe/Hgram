@@ -69,8 +69,9 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     private boolean antiPeekSkipNextDismiss;
     private Runnable antiPeekReopenRunnable;
     private AlertDialog antiPeekDialog;
-    private List<HgramSummarizerModel> summarizerModelsCache;
+    private int summarizerModelsRequestId;
     private boolean summarizerModelsLoading;
+    private android.app.ProgressDialog summarizerModelsProgress;
 
     static final int ROW_HEADER_FEED = 0;
     private static final int ROW_SIMILAR_POST_DEDUPLICATION = 1;
@@ -604,7 +605,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_SUMMARIZER_KEY: {
                 String key = HgramConfig.getSummarizerKey();
                 if (key.isEmpty()) return LocaleController.getString(R.string.HgramSummarizerNotSet);
-                return key.length() <= 10 ? "sk-or-…" : key.substring(0, 6) + "…" + key.substring(key.length() - 4);
+                return maskedSummarizerKey(key);
             }
             case ROW_SUMMARIZER_MODEL: {
                 String model = HgramConfig.getSummarizerModel();
@@ -703,24 +704,62 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         input.setPadding(pad, pad, pad, pad);
     }
 
+    private static final String SUMMARIZER_KEY_HINT = "sk-or-...";
+
+    private static String maskedSummarizerKey(String key) {
+        if (key == null || key.isEmpty() || key.length() <= 10) return "sk-or-…";
+        return key.substring(0, 6) + "…" + key.substring(key.length() - 4);
+    }
+
     private void showSummarizerKeyDialog() {
         if (getParentActivity() == null) return;
+        final String stored = HgramConfig.getSummarizerKey();
+        final String storedHint = stored.isEmpty() ? SUMMARIZER_KEY_HINT : maskedSummarizerKey(stored);
+
         final EditText input = new EditText(getParentActivity());
-        input.setHint("sk-or-...");
+        input.setHint(storedHint);
         input.setSingleLine(true);
-        input.setText(HgramConfig.getSummarizerKey());
         styleDialogInput(input);
+
+        final TextView toggle = new TextView(getParentActivity());
+        toggle.setText(LocaleController.getString(R.string.Show));
+        toggle.setTextColor(Theme.getColor(Theme.key_dialogTextBlue, resourcesProvider));
+        final int togglePad = AndroidUtilities.dp(8);
+        toggle.setPadding(togglePad, togglePad, togglePad, togglePad);
+        toggle.setOnClickListener(v -> {
+            if (toggle.getText().toString().equals(LocaleController.getString(R.string.Hide))) {
+                input.setText("");
+                input.setHint(storedHint);
+                toggle.setText(LocaleController.getString(R.string.Show));
+            } else {
+                input.setText(stored);
+                input.setSelection(input.getText().length());
+                toggle.setText(LocaleController.getString(R.string.Hide));
+            }
+        });
+
+        final LinearLayout container = new LinearLayout(getParentActivity());
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        container.addView(toggle, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
         AlertDialog dialog = new AlertDialog.Builder(getParentActivity())
                 .setTitle(LocaleController.getString(R.string.HgramSummarizerKey))
-                .setView(input)
+                .setView(container)
                 .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
                 .setNeutralButton(LocaleController.getString(R.string.HgramSummarizerDeleteKey), (d, w) -> {
                     HgramConfig.setSummarizerKey("");
+                    invalidateSummarizerModelsRequest();
                     notifyRow(ROW_SUMMARIZER_KEY);
                 })
                 .setPositiveButton(LocaleController.getString(R.string.Save), (d, w) -> {
-                    HgramConfig.setSummarizerKey(input.getText().toString());
-                    notifyRow(ROW_SUMMARIZER_KEY);
+                    final String value = input.getText().toString().trim();
+                    if (!value.isEmpty()) {
+                        HgramConfig.setSummarizerKey(value);
+                        notifyRow(ROW_SUMMARIZER_KEY);
+                    }
                 }).create();
         dialog.show();
     }
@@ -731,6 +770,9 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         input.setMinLines(6);
         input.setMaxLines(14);
         input.setGravity(android.view.Gravity.TOP | android.view.Gravity.START);
+        input.setFilters(new android.text.InputFilter[]{
+                new android.text.InputFilter.LengthFilter(
+                        xyz.nextalone.nagram.hgram.HgramSummarizer.MAX_SYSTEM_PROMPT_CHARS)});
         input.setText(HgramConfig.getSummarizerSystemPrompt());
         styleDialogInput(input);
         new AlertDialog.Builder(getParentActivity())
@@ -747,45 +789,56 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 }).show();
     }
 
+    private boolean isHgramActivityAlive() {
+        final android.app.Activity parent = getParentActivity();
+        return parent != null && !parent.isFinishing() && !parent.isDestroyed();
+    }
+
+    private void invalidateSummarizerModelsRequest() {
+        summarizerModelsRequestId++;
+        summarizerModelsLoading = false;
+        if (summarizerModelsProgress != null) {
+            summarizerModelsProgress.dismiss();
+            summarizerModelsProgress = null;
+        }
+    }
+
     private void showSummarizerModelDialog() {
         if (getParentActivity() == null) return;
-        final String key = HgramConfig.getSummarizerKey();
-        if (key.isEmpty()) {
-            Toast.makeText(getParentActivity(), R.string.HgramSummarizerNeedKey, Toast.LENGTH_SHORT).show();
-            return;
-        }
         if (summarizerModelsLoading) return;
         summarizerModelsLoading = true;
+        final int requestId = ++summarizerModelsRequestId;
         final android.app.ProgressDialog progress = new android.app.ProgressDialog(getParentActivity());
+        summarizerModelsProgress = progress;
         progress.setMessage(LocaleController.getString(R.string.HgramSummarizerLoadingModels));
+        progress.setOnCancelListener(d -> invalidateSummarizerModelsRequest());
         progress.show();
         new Thread(() -> {
             final List<HgramSummarizerModel> models = tw.nekomimi.nekogram.transtale.source.LLMTranslator.INSTANCE
-                    .fetchOpenRouterModelsBlocking(key);
+                    .fetchOpenRouterModelsBlocking();
             AndroidUtilities.runOnUIThread(() -> {
-                summarizerModelsLoading = false;
-                progress.dismiss();
-                if (getParentActivity() == null) return;
-                if (models == null) {
-                    Toast.makeText(getParentActivity(), R.string.HgramSummarizerModelsError, Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                if (models.isEmpty()) {
-                    Toast.makeText(getParentActivity(), R.string.HgramSummarizerModelsEmpty, Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                summarizerModelsCache = models;
-                int free = 0;
-                for (HgramSummarizerModel m : models) {
-                    if (xyz.nextalone.nagram.hgram.HgramSummarizerModel.isFreeModel(
-                            m.id, m.promptPricePer1M, m.completionPricePer1M)) {
-                        free++;
+                if (requestId == summarizerModelsRequestId && isHgramActivityAlive()) {
+                    if (progress == summarizerModelsProgress) {
+                        summarizerModelsProgress = null;
                     }
+                    summarizerModelsLoading = false;
+                    progress.dismiss();
+                    if (models == null) {
+                        Toast.makeText(getParentActivity(), R.string.HgramSummarizerModelsError, Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    if (models.isEmpty()) {
+                        Toast.makeText(getParentActivity(), R.string.HgramSummarizerModelsEmpty, Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    showSummarizerModelPicker(models);
+                    return;
                 }
-                android.util.Log.d("HGRAM_SUM", "picker total=" + models.size()
-                        + " free=" + free + " paid=" + (models.size() - free)
-                        + " showPaid=" + HgramConfig.isSummarizerShowPaid());
-                showSummarizerModelPicker(models);
+                progress.dismiss();
+                if (progress == summarizerModelsProgress) {
+                    summarizerModelsProgress = null;
+                    summarizerModelsLoading = false;
+                }
             });
         }, "HgramSummarizerModels").start();
     }
@@ -809,7 +862,6 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                     @Override
                     public void onShowPaidChanged(boolean showPaid) {
                         HgramConfig.setSummarizerShowPaid(showPaid);
-                        android.util.Log.d("HGRAM_SUM", "showPaid=" + showPaid);
                     }
                 });
     }
@@ -1186,6 +1238,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         if (antiPeekDialog != null && antiPeekDialog.isShowing()) {
             antiPeekDialog.dismiss();
         }
+        invalidateSummarizerModelsRequest();
         AndroidUtilities.cancelRunOnUIThread(refreshModelProgress);
         super.onPause();
     }
@@ -1196,6 +1249,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         HgramAntiPeek.cancelTemporaryReveal(true);
         antiPeekSkipNextDismiss = false;
         antiPeekDialog = null;
+        invalidateSummarizerModelsRequest();
         super.onFragmentDestroy();
     }
 
@@ -1570,6 +1624,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     }
 
     private void resetHgramSettingsAndRebuild() {
+        invalidateSummarizerModelsRequest();
         HgramSettingsReset.run(new HgramSettingsReset.Host() {
             @Override
             public void resetConfig() {

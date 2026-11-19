@@ -21,7 +21,8 @@ object NetworkLoggingInterceptor {
         "authorization",
         "x-api-key",
         "x-goog-api-key",
-        "x-authorization"
+        "x-authorization",
+        "x-hgram-redact-body"
     )
 
     val client: HttpClient by lazy {
@@ -61,6 +62,7 @@ object NetworkLoggingInterceptor {
         }
 
         val timestamp = System.currentTimeMillis()
+        val redactBody = headers.keys.any { it.equals("X-Hgram-Redact-Body", true) }
         var statusCode = 0
         var responseTime = 0L
         var responseHeaders = ""
@@ -77,19 +79,23 @@ object NetworkLoggingInterceptor {
 
             responseHeaders = response.headers.entries().joinToString("\n") { "${it.key}: ${it.value.joinToString(", ")}" }
 
-            try {
-                responseBody = response.bodyAsText()
-                if (responseBody.length > 5000) {
-                    responseBody = responseBody.substring(0, 5000) + "\n... (truncated)"
+            if (redactBody) {
+                responseBody = "[REDACTED]"
+            } else {
+                try {
+                    responseBody = response.bodyAsText()
+                    if (responseBody.length > 5000) {
+                        responseBody = responseBody.substring(0, 5000) + "\n... (truncated)"
+                    }
+                } catch (e: Exception) {
+                    responseBody = "Unable to read response body: ${e.message}"
                 }
-            } catch (e: Exception) {
-                responseBody = "Unable to read response body: ${e.message}"
             }
 
             return response
 
         } catch (e: Exception) {
-            errorMessage = e.message ?: "Unknown error"
+            errorMessage = if (redactBody) "[REDACTED]" else e.message ?: "Unknown error"
             responseTime = System.currentTimeMillis() - startTime
             throw e
 
@@ -106,7 +112,7 @@ object NetworkLoggingInterceptor {
                 statusCode,
                 responseTime,
                 headersString,
-                requestBody ?: "",
+                if (redactBody) "[REDACTED]" else requestBody ?: "",
                 paramsString,
                 responseHeaders,
                 responseBody,

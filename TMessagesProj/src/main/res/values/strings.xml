@@ -11774,6 +11774,7 @@
     <string name="HgramSummarizerNoModel">Choose a model</string>
     <string name="HgramSummarizerLimit">Rate limit, try later</string>
     <string name="HgramSummarizerNetwork">Network error</string>
+    <string name="HgramSummarizerSecretChat">Not available in secret chats</string>
     <string name="HgramGigaAmInfo">GigaAM runs fully offline. Download the model first; recognition stays on this device.</string>
     <string name="HgramSummarizerPromptDefault">Default</string>
     <string name="HgramSummarizerPromptChanged">Custom</string>

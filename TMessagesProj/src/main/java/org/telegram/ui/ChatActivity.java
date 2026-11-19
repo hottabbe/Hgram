@@ -38793,7 +38793,7 @@ public class ChatActivity extends BaseFragment implements
                 ChatMessageCell cell = (ChatMessageCell) child;
                 MessageObject object = cell.getMessageObject();
                 if (object != null && chain.ids.contains(object.getId())) {
-                    cell.setHgramShortChain(chain, !expanded, () -> toggleHgramShortChain(chain));
+                    cell.setHgramShortChain(chain, !expanded, () -> toggleHgramShortChain(chain), object);
                     cell.requestLayout();
                     cell.invalidate();
                 }
@@ -38801,7 +38801,44 @@ public class ChatActivity extends BaseFragment implements
             chatListView.invalidate();
         }
 
+        private MessageObject findMessageForHgramAnchor(int anchorId) {
+            if (anchorId == 0) {
+                return null;
+            }
+            if (messages != null) {
+                for (int i = 0, size = messages.size(); i < size; i++) {
+                    final MessageObject candidate = messages.get(i);
+                    if (candidate != null && candidate.getId() == anchorId) {
+                        return candidate;
+                    }
+                }
+            }
+            if (frozenMessages != null) {
+                for (int i = 0, size = frozenMessages.size(); i < size; i++) {
+                    final MessageObject candidate = frozenMessages.get(i);
+                    if (candidate != null && candidate.getId() == anchorId) {
+                        return candidate;
+                    }
+                }
+            }
+            if (filteredMessages != null) {
+                for (int i = 0, size = filteredMessages.size(); i < size; i++) {
+                    final MessageObject candidate = filteredMessages.get(i);
+                    if (candidate != null && candidate.getId() == anchorId) {
+                        return candidate;
+                    }
+                }
+            }
+            return null;
+        }
+
         private void clearHgramShortChains() {
+            final java.util.HashSet<Integer> dissolved = new java.util.HashSet<>();
+            for (HgramShortMessageMerger.Chain chain : hgramShortChains.values()) {
+                if (!dissolved.add(chain.anchorId)) continue;
+                xyz.nextalone.nagram.hgram.HgramSummarizer.onChainDissolved(currentAccount, dialog_id,
+                        chain.anchorId, findMessageForHgramAnchor(chain.anchorId));
+            }
             hgramShortChains.clear();
             hgramExpandedChains.clear(hgramShortConversationKey());
             hgramShortSignature = 0;
@@ -38817,6 +38854,7 @@ public class ChatActivity extends BaseFragment implements
                 return;
             }
             ArrayList<HgramShortMessageMerger.Entry> entries = new ArrayList<>(source.size());
+            final java.util.Map<Integer, HgramShortMessageMerger.Chain> oldChains = hgramShortChains;
             boolean filterEnabled = NaConfig.INSTANCE.getRegexFiltersEnabled().Bool()
                     && (NaConfig.INSTANCE.getRegexFiltersEnableInChats().Bool() || ChatObject.isChannel(currentChat));
             boolean ignoreBlocked = NekoConfig.ignoreBlocked.Bool();
@@ -38845,6 +38883,22 @@ public class ChatActivity extends BaseFragment implements
             hgramShortChains = HgramShortMessageMerger.build(entries,
                     HgramConfig.getShortMergeMaxChars(), HgramConfig.getShortMergeMaxWords(),
                     HgramConfig.getShortMergeMaxWindowSeconds(), HgramConfig.getShortMergeMaxChainSize());
+            if (!source.isEmpty()) {
+                // Only a real rebuild can drop a chain; the empty prefill returned above keeps the
+                // restored summaries and expansion state untouched.
+                final java.util.HashSet<Integer> dissolved = new java.util.HashSet<>();
+                for (java.util.Map.Entry<Integer, HgramShortMessageMerger.Chain> entry : oldChains.entrySet()) {
+                    final HgramShortMessageMerger.Chain before = entry.getValue();
+                    if (!dissolved.add(before.anchorId)) continue;
+                    final HgramShortMessageMerger.Chain after = hgramShortChains.get(before.key);
+                    if (after != null && after.anchorId == before.anchorId
+                            && after.ids.equals(before.ids) && after.text.equals(before.text)) {
+                        continue;
+                    }
+                    xyz.nextalone.nagram.hgram.HgramSummarizer.onChainDissolved(currentAccount, dialog_id,
+                            before.anchorId, findMessageForHgramAnchor(before.anchorId));
+                }
+            }
             java.util.Set<Integer> liveKeys = new java.util.HashSet<>();
             for (HgramShortMessageMerger.Chain chain : hgramShortChains.values()) liveKeys.add(chain.key);
             hgramExpandedChains.retainAllIfKnown(hgramShortConversationKey(), liveKeys,
@@ -39573,9 +39627,10 @@ public class ChatActivity extends BaseFragment implements
                     boolean canMerge = !actionBar.isActionModeShowed() && HgramConfig.isShortMessageMergeEnabled();
                     messageCell.setHgramShortChain(canMerge ? shortChain : null,
                             canMerge && shortChain != null && !hgramExpandedChains.contains(hgramShortConversationKey(), shortChain.key),
-                            () -> toggleHgramShortChain(shortChain));
+                            () -> toggleHgramShortChain(shortChain), message);
                     MessageObject.GroupedMessages groupedMessages = getValidGroupedMessage(message);
                     messageCell.isChat = currentChat != null || UserObject.isUserSelf(currentUser) || UserObject.isReplyUser(currentUser) || (chatMode == MODE_SEARCH);
+                    messageCell.setHgramSummaryAllowed(TextUtils.isEmpty(searchingHashtag) && DialogObject.isUserDialog(message.getDialogId()));
                     messageCell.setSponsoredMessageVisible(true, false);
                     messageCell.isBotForum = UserObject.isBotForum(currentUser);
                     messageCell.isReportChat = isReport();
@@ -40176,7 +40231,7 @@ public class ChatActivity extends BaseFragment implements
                 messageCell.setHgramShortChain(attachedCanMerge ? attachedChain : null,
                         attachedCanMerge && attachedChain != null
                                 && !hgramExpandedChains.contains(hgramShortConversationKey(), attachedChain.key),
-                        () -> toggleHgramShortChain(attachedChain));
+                        () -> toggleHgramShortChain(attachedChain), message);
                 messageCell.isAllChats = isAllChats();
                 messageCell.isSideMenued = isSideMenued();
                 messageCell.isSideMenuEnabled = isSideMenuEnabled();
@@ -41779,35 +41834,91 @@ public class ChatActivity extends BaseFragment implements
             hideAds();
         }
 
+        private MessageObject findHgramChainTarget(MessageObject tapped, HgramShortMessageMerger.Chain chain) {
+            if (tapped == null || chain == null || chain.anchorId == 0 || chain.anchorId == tapped.getId()) {
+                return tapped;
+            }
+            for (int i = 0, size = messages.size(); i < size; i++) {
+                final MessageObject candidate = messages.get(i);
+                if (candidate != null && candidate.getId() == chain.anchorId
+                        && candidate.getDialogId() == tapped.getDialogId()) {
+                    return candidate;
+                }
+            }
+            return tapped;
+        }
+
         @Override
         public void didPressSummarize(ChatMessageCell cell, boolean byReply) {
             final MessageObject msg = cell.getMessageObject();
+            if (msg == null) {
+                return;
+            }
+            if (isSecretChat() || xyz.nextalone.nagram.hgram.HgramSummarizer.isSecretChatMessage(msg)) {
+                Toast.makeText(getContext(), LocaleController.getString(R.string.HgramSummarizerSecretChat), Toast.LENGTH_SHORT).show();
+                return;
+            }
             final xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain chain = cell.getHgramShortChain();
-            if ((currentChat == null || UserObject.isUserSelf(currentUser))
-                    && xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(msg, chain)) {
-                final Runnable updated = () -> {
-                    getMessagesStorage().updateMessageCustomParams(msg.getDialogId(), msg.messageOwner);
-                    forceUpdate(cell, true, true);
+            // Hgram summary lives in private dialogs only; byReply is the upstream summary row.
+            final boolean hgramPrivate = !byReply && TextUtils.isEmpty(searchingHashtag)
+                    && DialogObject.isUserDialog(msg.getDialogId());
+            if (hgramPrivate) {
+                final MessageObject target = findHgramChainTarget(msg, chain);
+                final int targetId = target.getId();
+                final int tappedId = msg.getId();
+                final Runnable refresh = () -> {
+                    final View targetView = findCell(targetId, false);
+                    if (targetView instanceof ChatMessageCell) {
+                        forceUpdate((ChatMessageCell) targetView, true, true);
+                    }
+                    if (tappedId != targetId) {
+                        final View tappedView = findCell(tappedId, false);
+                        if (tappedView instanceof ChatMessageCell) {
+                            forceUpdate((ChatMessageCell) tappedView, true, true);
+                        }
+                    }
                 };
-                if (chain != null && cell.isHgramShortCollapsed()) {
-                    if (msg.messageOwner.summarizedOpen && msg.messageOwner.summaryText != null) {
-                        cell.performHgramShortToggle();
+                // An open summary is closed by origin: a process-local result needs no
+                // threshold, credentials, network or custom params write, while a real
+                // upstream summary in a DM is closed through the normal persisted path.
+                if (target.messageOwner.summarizedOpen && target.messageOwner.summaryText != null) {
+                    if (xyz.nextalone.nagram.hgram.HgramSummarizer.closeLocal(target, chain)) {   // only local marker
+                        target.updateTranslation(true);
+                        refresh.run();
                         return;
                     }
-                    final boolean hasSummary = msg.messageOwner.summaryText != null;
-                    final boolean hasCredentials = !TextUtils.isEmpty(HgramConfig.getSummarizerKey())
-                            && !TextUtils.isEmpty(HgramConfig.getSummarizerModel());
-                    if (hasSummary || hasCredentials) {
-                        cell.performHgramShortToggle();
-                    }
-                    xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(msg, chain, updated);
+                    // real upstream summary in DM: close and persist
+                    target.messageOwner.summarizedOpen = false;
+                    target.updateTranslation(true);
+                    getMessagesStorage().updateMessageCustomParams(target.getDialogId(), target.messageOwner);
+                    refresh.run();
                     return;
                 }
-                xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(msg, chain, updated);
+                if (xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(target, chain, hgramPrivate)) {
+                    xyz.nextalone.nagram.hgram.HgramSummarizer.invalidateStaleSummary(target, chain);
+                    target.updateTranslation(true);
+                    if (chain != null && cell.isHgramShortCollapsed()) {
+                        if (target.messageOwner.summarizedOpen && target.messageOwner.summaryText != null) {
+                            cell.performHgramShortToggle();
+                            return;
+                        }
+                        final boolean hasSummary = target.messageOwner.summaryText != null;
+                        final boolean hasCredentials = !TextUtils.isEmpty(HgramConfig.getSummarizerKey())
+                                && !TextUtils.isEmpty(HgramConfig.getSummarizerModel());
+                        if (hasSummary || hasCredentials) {
+                            cell.performHgramShortToggle();
+                        }
+                        xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(target, chain, refresh);
+                        return;
+                    }
+                    xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(target, chain, refresh);
+                    return;
+                }
+            }
+            if (!TranslateController.isSummarizable(msg)) {
                 return;
             }
             msg.messageOwner.summarizedOpen = !msg.messageOwner.summarizedOpen;
-            final boolean opened = msg.messageOwner.summarizedOpen;
             msg.updateTranslation(true);
             getMessagesStorage().updateMessageCustomParams(msg.getDialogId(), msg.messageOwner);
             getMessagesController().getTranslateController().checkTranslation(msg, true);

@@ -501,6 +501,7 @@
     <string name="HgramSummarizerNoModel">Выберите модель</string>
     <string name="HgramSummarizerLimit">Лимит запросов, попробуйте позже</string>
     <string name="HgramSummarizerNetwork">Ошибка сети</string>
+    <string name="HgramSummarizerSecretChat">Недоступно в секретных чатах</string>
     <string name="HgramGigaAmInfo">GigaAM работает полностью офлайн. Сначала скачайте модель — распознавание остаётся на устройстве.</string>
     <string name="HgramSummarizerPromptDefault">Стандартный</string>
     <string name="HgramSummarizerPromptChanged">Изменён</string>

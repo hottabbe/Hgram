@@ -177,8 +177,6 @@ public final class HgramModelPickerDialog {
                 visibleModels.add(model);
             }
         }
-        android.util.Log.d("HGRAM_SUM", "picker visible=" + visibleModels.size()
-                + " total=" + allModels.size() + " showPaid=" + showPaid);
         final boolean empty = visibleModels.isEmpty();
         listView.setVisibility(empty ? View.GONE : View.VISIBLE);
         emptyView.setVisibility(empty ? View.VISIBLE : View.GONE);
