@@ -47,6 +47,34 @@ public class HgramSettingsRowsTest {
     }
 
     @Test
+    public void gigaAmInfoDisappearsWhenTranscriptionTurnsOff() {
+        int[] on = HgramSettingsActivity.buildBaseVisibleRows("gigaam", true);
+        assertEquals(51, on.length);
+        assertTrue(contains(on, HgramSettingsActivity.ROW_GIGAAM_INFO));
+        assertTrue(contains(on, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+
+        int[] off = HgramSettingsActivity.buildBaseVisibleRows("gigaam", false);
+        assertEquals(50, off.length);
+        assertFalse(contains(off, HgramSettingsActivity.ROW_GIGAAM_INFO));
+        assertTrue(contains(off, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+
+        int[] vosk = HgramSettingsActivity.buildBaseVisibleRows("vosk", false);
+        assertEquals(50, vosk.length);
+        assertFalse(contains(vosk, HgramSettingsActivity.ROW_GIGAAM_INFO));
+        assertFalse(contains(vosk, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+    }
+
+    @Test
+    public void gigaAmInfoHiddenFromSearchWhenOff() {
+        int[] rows = HgramSettingsActivity.buildSearchVisibleRows(searchKeep("gigaam", false, "giga"));
+        assertFalse(contains(rows, HgramSettingsActivity.ROW_GIGAAM_INFO));
+        assertTrue(contains(rows, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+
+        int[] enabled = HgramSettingsActivity.buildSearchVisibleRows(searchKeep("gigaam", true, "giga"));
+        assertTrue(contains(enabled, HgramSettingsActivity.ROW_GIGAAM_INFO));
+    }
+
+    @Test
     public void emptySearchProducesInfoRowAndSafeViews() {
         int[] empty = HgramSettingsActivity.buildSearchVisibleRows(new boolean[HgramSettingsActivity.ROWS.length]);
         assertArrayEquals(new int[]{HgramSettingsActivity.ROW_SEARCH_EMPTY}, empty);
@@ -77,6 +105,24 @@ public class HgramSettingsRowsTest {
     private static boolean contains(int[] rows, int id) {
         for (int row : rows) if (row == id) return true;
         return false;
+    }
+
+    private static boolean[] searchKeep(String engine, boolean offlineEnabled, String query) {
+        int[] rows = HgramSettingsActivity.ROWS;
+        boolean[] keep = new boolean[rows.length];
+        for (int i = 0; i < rows.length; i++) {
+            int row = rows[i];
+            if (HgramSettingsActivity.isHeaderRow(row)
+                    || row == HgramSettingsActivity.ROW_RESET_HGRAM_SETTINGS) {
+                continue;
+            }
+            // searchTextForRow() is private/LocaleController-bound; pass the info row's displayed text.
+            String text = row == HgramSettingsActivity.ROW_GIGAAM_INFO
+                    ? "GigaAM runs fully offline" : "";
+            keep[i] = HgramSettingsSearch.isRowVisible(row, engine, offlineEnabled)
+                    && HgramSettingsSearch.matches(row, query, text);
+        }
+        return keep;
     }
 
     private static int indexOf(int[] rows, int id) {

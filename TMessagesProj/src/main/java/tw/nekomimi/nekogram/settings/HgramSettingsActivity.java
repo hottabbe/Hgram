@@ -17,6 +17,7 @@ import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import org.telegram.messenger.FlagSecureReason;
@@ -225,7 +226,8 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         if (searching) {
             rebuildVisibleRows(true);
         } else {
-            visibleRows = buildBaseVisibleRows(HgramConfig.getSttEngine());
+            visibleRows = buildBaseVisibleRows(HgramConfig.getSttEngine(),
+                    HgramConfig.isOfflineTranscriptionEnabled());
             rowCount = visibleRows.length;
         }
     }
@@ -269,6 +271,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             boolean enabled = !HgramConfig.isOfflineTranscriptionEnabled();
             HgramConfig.setOfflineTranscriptionEnabled(enabled);
             ((TextCheckCell) view).setChecked(enabled);
+            rebuildVisibleRowsAfterToggle();
             if (enabled && !hasAnyModelInstalled()) {
                 Toast.makeText(getParentActivity(), LocaleController.getString(R.string.HgramOfflineTranscriptionUnavailable), Toast.LENGTH_SHORT).show();
             }
@@ -417,23 +420,8 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 ? layoutManager.findFirstVisibleItemPosition() : -1;
         final String query = searchQuery == null ? "" : searchQuery.trim();
         final String engine = HgramConfig.getSttEngine();
-        if (query.isEmpty()) {
-            visibleRows = buildBaseVisibleRows(engine);
-            rowCount = visibleRows.length;
-        } else {
-            final boolean[] keep = new boolean[ROWS.length];
-            for (int i = 0; i < ROWS.length; i++) {
-                final int row = ROWS[i];
-                if (isHeaderRow(row)
-                        || row == ROW_RESET_HGRAM_SETTINGS
-                        || !HgramSettingsSearch.isRowVisible(row, engine)) {
-                    continue;
-                }
-                keep[i] = HgramSettingsSearch.matches(row, query, searchTextForRow(row));
-            }
-            visibleRows = buildSearchVisibleRows(keep);
-            rowCount = visibleRows.length;
-        }
+        visibleRows = computeVisibleRows(engine, query);
+        rowCount = visibleRows.length;
         if (listAdapter != null) {
             notifyAllRows();
         }
@@ -444,6 +432,83 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 listView.scrollToPosition(0);
             }
         }
+    }
+
+    private int[] computeVisibleRows(String engine, String query) {
+        if (query == null || query.trim().isEmpty()) {
+            return buildBaseVisibleRows(engine, HgramConfig.isOfflineTranscriptionEnabled());
+        }
+        final boolean offlineEnabled = HgramConfig.isOfflineTranscriptionEnabled();
+        final boolean[] keep = new boolean[ROWS.length];
+        for (int i = 0; i < ROWS.length; i++) {
+            final int row = ROWS[i];
+            if (isHeaderRow(row)
+                    || row == ROW_RESET_HGRAM_SETTINGS
+                    || !HgramSettingsSearch.isRowVisible(row, engine, offlineEnabled)) {
+                continue;
+            }
+            keep[i] = HgramSettingsSearch.matches(row, query, searchTextForRow(row));
+        }
+        return buildSearchVisibleRows(keep);
+    }
+
+    /**
+     * Recomputes the visible rows after the offline transcription toggle without touching the
+     * adapter from inside the click callback. Runs on the next list message so the RecyclerView
+     * is not computing layout, and keeps the first visible item in place.
+     */
+    private void rebuildVisibleRowsAfterToggle() {
+        if (listView == null) return;
+        listView.post(() -> {
+            if (listAdapter == null || isFinished) return;
+            if (listView.isComputingLayout()) {
+                rebuildVisibleRowsAfterToggle();
+                return;
+            }
+            final int firstVisible = layoutManager != null
+                    ? layoutManager.findFirstVisibleItemPosition() : -1;
+            final String query = searchQuery == null ? "" : searchQuery.trim();
+            final String engine = HgramConfig.getSttEngine();
+            final int[] oldRows = visibleRows;
+            final int[] newRows = computeVisibleRows(engine, query);
+            final int singleDiff = singleInsertOrRemoveIndex(oldRows, newRows);
+            int restorePosition = firstVisible;
+            if (singleDiff >= 0) {
+                final boolean inserted = newRows.length > oldRows.length;
+                visibleRows = newRows;
+                rowCount = newRows.length;
+                if (inserted) {
+                    listAdapter.notifyItemInserted(singleDiff);
+                    if (singleDiff <= firstVisible) restorePosition++;
+                } else {
+                    listAdapter.notifyItemRemoved(singleDiff);
+                    if (singleDiff < firstVisible) restorePosition--;
+                }
+            } else if (!Arrays.equals(oldRows, newRows)) {
+                visibleRows = newRows;
+                rowCount = newRows.length;
+                listAdapter.notifyDataSetChanged();
+            }
+            if (restorePosition >= 0 && restorePosition < rowCount) {
+                listView.scrollToPosition(restorePosition);
+            }
+        });
+    }
+
+    private static int singleInsertOrRemoveIndex(int[] oldRows, int[] newRows) {
+        final int delta = newRows.length - oldRows.length;
+        if (delta != 1 && delta != -1) return -1;
+        final int minLength = Math.min(oldRows.length, newRows.length);
+        int prefix = 0;
+        while (prefix < minLength && oldRows[prefix] == newRows[prefix]) {
+            prefix++;
+        }
+        int suffix = 0;
+        while (suffix < minLength - prefix
+                && oldRows[oldRows.length - 1 - suffix] == newRows[newRows.length - 1 - suffix]) {
+            suffix++;
+        }
+        return prefix + suffix == minLength ? prefix : -1;
     }
 
     static int[] buildSearchVisibleRows(boolean[] keep) {
@@ -489,9 +554,13 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     }
 
     static int[] buildBaseVisibleRows(String engine) {
+        return buildBaseVisibleRows(engine, true);
+    }
+
+    static int[] buildBaseVisibleRows(String engine, boolean offlineEnabled) {
         final ArrayList<Integer> selected = new ArrayList<>();
         for (int row : ROWS) {
-            if (HgramSettingsSearch.isRowVisible(row, engine)) {
+            if (HgramSettingsSearch.isRowVisible(row, engine, offlineEnabled)) {
                 selected.add(row);
             }
         }
@@ -1122,19 +1191,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
 
         @Override
         public int getItemViewType(int position) {
-            position = rowAt(position);
-            if (position == ROW_SEARCH_EMPTY || position == ROW_GIGAAM_INFO) return TYPE_INFO_PRIVACY;
-            if (position == ROW_HEADER_CHAT || position == ROW_HEADER_NETWORK || position == ROW_HEADER_RECOGNITION) return TYPE_HEADER;
-            if (position == ROW_DOWNLOAD_THREADS) return TYPE_DOWNLOAD_THREADS;
-            if (position == ROW_UPLOAD_THREADS) return TYPE_UPLOAD_THREADS;
-            if (position == ROW_HEADER_FEED || position == ROW_HEADER_AUDIO || position == ROW_HEADER_PRIVACY || position == ROW_HEADER_OTHER || position == ROW_HEADER_HAPTICS) {
-                return TYPE_HEADER;
-            } else if (position == ROW_DECOY_PASSCODE || position == ROW_ANTI_PEEK || position == ROW_STT_ENGINE || position == ROW_VOSK_MODELS || position == ROW_SHERPA_MODEL || position == ROW_GIGAAM_MODEL || position == ROW_SHERPA_DEVICE || position == ROW_WEAK_NETWORK || position == ROW_NOTIF_MEDIA_STYLE || position == ROW_FEED_KEYWORDS || position == ROW_RESET_HGRAM_SETTINGS || (position >= ROW_HAPTIC_BASE && position < ROW_HAPTIC_BASE + 15)) {
-                return TYPE_SETTINGS;
-            } else if (isToggle(position)) {
-                return TYPE_CHECK;
-            }
-            return TYPE_SETTINGS;
+            return rowViewType(rowAt(position));
         }
     }
 

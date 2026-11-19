@@ -86,6 +86,22 @@ public class HgramSettingsSearchTest {
     }
 
     @Test
+    public void gigaAmInfoVisibilityNeedsEnabledTranscription() {
+        assertTrue(HgramSettingsSearch.isRowVisible(
+                HgramSettingsActivity.ROW_GIGAAM_INFO, "gigaam", true));
+        assertFalse(HgramSettingsSearch.isRowVisible(
+                HgramSettingsActivity.ROW_GIGAAM_INFO, "gigaam", false));
+        assertTrue(HgramSettingsSearch.isRowVisible(
+                HgramSettingsSearch.ROW_GIGAAM_MODEL, "gigaam", false));
+        assertFalse(HgramSettingsSearch.isRowVisible(
+                HgramSettingsActivity.ROW_GIGAAM_INFO, "sherpa", true));
+        assertTrue(HgramSettingsSearch.matches(
+                HgramSettingsActivity.ROW_GIGAAM_INFO, "GIGA", "GigaAM runs fully offline"));
+        assertTrue(HgramSettingsSearch.matches(
+                HgramSettingsActivity.ROW_GIGAAM_INFO, "giga", "GigaAM runs fully offline"));
+    }
+
+    @Test
     public void hapticQueriesFindMasterAndAllProfiles() {
         for (String query : new String[]{"вибро", "вибра", "haptic", "сила", "длительность"}) {
             assertTrue(query, HgramSettingsSearch.matches(

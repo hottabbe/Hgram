@@ -1,5 +1,7 @@
 package tw.nekomimi.nekogram.settings;
 
+import xyz.nextalone.nagram.hgram.HgramConfig;
+
 /** One-shot reset pipeline: config reset, search cleanup, row rebuild, single adapter notify. */
 final class HgramSettingsReset {
 
@@ -29,7 +31,8 @@ final class HgramSettingsReset {
         } finally {
             host.setSearchCallbackSuppressed(false);
         }
-        host.applyVisibleRows(HgramSettingsActivity.buildBaseVisibleRows(host.currentEngine()));
+        host.applyVisibleRows(HgramSettingsActivity.buildBaseVisibleRows(host.currentEngine(),
+                HgramConfig.isOfflineTranscriptionEnabled()));
         host.notifyAdapterOnce();
     }
 }

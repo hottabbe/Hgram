@@ -65,6 +65,10 @@ final class HgramSettingsSearch {
     }
 
     static boolean isRowVisible(int row, String engine) {
+        return isRowVisible(row, engine, true);
+    }
+
+    static boolean isRowVisible(int row, String engine, boolean offlineEnabled) {
         final String normalized = normalizeEngine(engine);
         if (row == HgramSettingsActivity.ROW_VOSK_MODELS) {
             return HgramConfig.STT_ENGINE_VOSK.equals(normalized);
@@ -73,9 +77,11 @@ final class HgramSettingsSearch {
                 || row == HgramSettingsActivity.ROW_SHERPA_DEVICE) {
             return HgramConfig.STT_ENGINE_SHERPA.equals(normalized);
         }
-        if (row == HgramSettingsActivity.ROW_GIGAAM_MODEL
-                || row == HgramSettingsActivity.ROW_GIGAAM_INFO) {
+        if (row == HgramSettingsActivity.ROW_GIGAAM_MODEL) {
             return HgramConfig.STT_ENGINE_GIGAAM.equals(normalized);
+        }
+        if (row == HgramSettingsActivity.ROW_GIGAAM_INFO) {
+            return HgramConfig.STT_ENGINE_GIGAAM.equals(normalized) && offlineEnabled;
         }
         return true;
     }
