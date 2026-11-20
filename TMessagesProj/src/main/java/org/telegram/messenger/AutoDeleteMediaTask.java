@@ -151,6 +151,14 @@ public class AutoDeleteMediaTask {
                 for (int a = 0; a < paths.size(); a++) {
                     totalSize += Utilities.getDirSize(paths.valueAt(a).getAbsolutePath(), 0, true);
                 }
+                // Prepared EXIF copies are excluded from the walk below, so they must not inflate
+                // the limit either: otherwise the evictor would delete ordinary cache files to
+                // compensate for bytes it is not allowed to reclaim.
+                File managedExif = new File(cacheDir, "hgram_exif");
+                if (managedExif.isDirectory()) {
+                    totalSize = Math.max(0, totalSize
+                            - Utilities.getDirSize(managedExif.getAbsolutePath(), 0, true));
+                }
                 if (totalSize > maxCacheSize) {
                     ArrayList<FileInfoInternal> allFiles = new ArrayList<>();
                     for (int a = 0; a < paths.size(); a++) {
@@ -215,6 +223,15 @@ public class AutoDeleteMediaTask {
     }
 
     private static void fillFilesRecursive(final File fromFolder, ArrayList<FileInfoInternal> fileInfoList) {
+        final ArrayList<File> files = new ArrayList<>();
+        collectFilesRecursive(fromFolder, files);
+        for (int i = 0; i < files.size(); i++) {
+            fileInfoList.add(new FileInfoInternal(files.get(i)));
+        }
+    }
+
+    /** Pure walk shared with the test: never enters/deletes the managed EXIF cache. */
+    static void collectFilesRecursive(final File fromFolder, ArrayList<File> fileList) {
         if (fromFolder == null) {
             return;
         }
@@ -223,8 +240,13 @@ public class AutoDeleteMediaTask {
             return;
         }
         for (final File fileEntry : files) {
+            if (isManagedExifDir(fileEntry)) {
+                // Prepared EXIF copies are owned/swept by HgramExifCleaner only; the automatic
+                // cache evictor must never walk into or delete them.
+                continue;
+            }
             if (fileEntry.isDirectory()) {
-                fillFilesRecursive(fileEntry, fileInfoList);
+                collectFilesRecursive(fileEntry, fileList);
             } else {
                 if (fileEntry.getName().equals(".nomedia")) {
                     continue;
@@ -232,9 +254,25 @@ public class AutoDeleteMediaTask {
                 if (usingFilePaths.contains(fileEntry.getAbsolutePath())) {
                     continue;
                 }
-                fileInfoList.add(new FileInfoInternal(fileEntry));
+                fileList.add(fileEntry);
             }
         }
+    }
+
+    /**
+     * True for the managed EXIF cache root {@code <MEDIA_DIR_CACHE>/hgram_exif} and anything under
+     * it. The name is enough because {@link #fillFilesRecursive} only walks media directories.
+     */
+    static boolean isManagedExifDir(File file) {
+        if (file == null) {
+            return false;
+        }
+        for (File current = file; current != null; current = current.getParentFile()) {
+            if ("hgram_exif".equals(current.getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static class FileInfoInternal extends CacheByChatsController.KeepMediaFile {

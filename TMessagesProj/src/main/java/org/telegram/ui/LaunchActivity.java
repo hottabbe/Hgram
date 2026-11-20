@@ -8864,7 +8864,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             if (invoked) SecretMediaViewer.getInstance().closePhoto(true, false);
             return false;
         } else if (PhotoViewer.hasInstance() && PhotoViewer.getInstance().isVisible()) {
-            if (invoked) PhotoViewer.getInstance().closePhoto(true, false);
+            if (invoked && !PhotoViewer.getInstance().dismissOcrOverlay()) {
+                PhotoViewer.getInstance().closePhoto(true, false);
+            }
             return false;
         } else if (ArticleViewer.hasInstance() && ArticleViewer.getInstance().isVisible()) {
             if (invoked) ArticleViewer.getInstance().close(true, false);

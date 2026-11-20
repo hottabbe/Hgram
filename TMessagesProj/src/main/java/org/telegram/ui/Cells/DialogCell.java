@@ -155,6 +155,8 @@ import tw.nekomimi.nekogram.ui.MessageHelper;
 import tw.nekomimi.nekogram.NekoConfig;
 import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
 
 public class DialogCell extends BaseCell implements StoriesListPlaceProvider.AvatarOverlaysView, Theme.Colorable {
 
@@ -4035,7 +4037,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             drawRevealBackground = Math.abs(translationX) >= getMeasuredWidth() * 0.45f;
             if (prevValue != drawRevealBackground && archiveHidden == SharedConfig.archiveHidden && !NekoConfig.disableVibration.Bool()) {
                 try {
-                    performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                    HgramHaptics.play(this, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                 } catch (Exception ignore) {}
             }
         }

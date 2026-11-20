@@ -77,6 +77,8 @@ import tw.nekomimi.nekogram.NekoXConfig;
 import tw.nekomimi.nekogram.NekoConfig;
 import tw.nekomimi.nekogram.folder.FolderIconHelper;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
 
 @SuppressLint("ViewConstructor")
 public class FilterTabsView extends FrameLayout {
@@ -2177,7 +2179,7 @@ public class FilterTabsView extends FrameLayout {
                     tabView.shakeLockIcon(1, 0);
                     if (!NekoConfig.disableVibration.Bool()) {
                         try {
-                            tabView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                            HgramHaptics.play(tabView, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, 0);
                         } catch (Exception ignore) {}
                     }
                     break;

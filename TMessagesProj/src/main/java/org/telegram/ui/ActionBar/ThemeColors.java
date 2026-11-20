@@ -15,6 +15,14 @@ public class ThemeColors {
     public static final int TELEGRAM_COLOR_TEXT = 0xFF298ACF;   // -14054705
     public static final int DEFAULT_BLACK_TEXT = 0xFF1A1D21;   // -15065823
 
+    static boolean isLightColor(int color) {
+        return ColorUtils.calculateLuminance(color) > 0.5f;
+    }
+
+    static int resolveActionBarDefaultIconColor(int actionBarDefaultColor) {
+        return isLightColor(actionBarDefaultColor) ? DEFAULT_BLACK_TEXT : 0xFFFFFFFF;
+    }
+
     private static SparseArray<String> colorKeysMap;
     private static HashMap<String, Integer> colorKeysStringMap;
     public static int[] createDefaultColors() {

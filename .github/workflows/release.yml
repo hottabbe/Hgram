@@ -111,6 +111,10 @@ jobs:
           echo "sdk.dir=${ANDROID_HOME}" >> local.properties
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
+      - name: Restore google-services.json
+        if: ${{ secrets.GOOGLE_SERVICES_JSON != '' }}
+        run: |
+          echo "${{ secrets.GOOGLE_SERVICES_JSON }}" > TMessagesProj/google-services.json
       - name: Release Build
         run: |
           export LOCAL_PROPERTIES="${{ secrets.LOCAL_PROPERTIES }}"

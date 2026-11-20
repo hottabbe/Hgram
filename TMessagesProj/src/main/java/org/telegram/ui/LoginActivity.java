@@ -235,6 +235,8 @@ import tw.nekomimi.nekogram.ui.BottomBuilder;
 import tw.nekomimi.nekogram.ui.EditTextAutoFill;
 import tw.nekomimi.nekogram.utils.AlertUtil;
 import tw.nekomimi.nekogram.utils.ProxyUtil;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
 
 @SuppressLint("HardwareIds")
 public class LoginActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
@@ -4996,7 +4998,7 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                             animateSuccess(()-> {
                                 try {
                                     if (!NekoConfig.disableVibration.Bool())
-                                        fragmentView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                                        HgramHaptics.play(fragmentView, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                                 } catch (Exception ignored) {}
                                 new AlertDialog.Builder(getContext())
                                         .setTitle(getString(R.string.YourPasswordSuccess))

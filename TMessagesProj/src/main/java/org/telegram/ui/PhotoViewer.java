@@ -31,6 +31,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -66,6 +67,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.text.Layout;
+import android.text.Selection;
 import android.text.Spannable;
 import android.text.SpannableString;
 import android.text.SpannableStringBuilder;
@@ -90,10 +92,13 @@ import android.util.Property;
 import android.util.Range;
 import android.util.SparseArray;
 import android.util.TypedValue;
+import android.view.ActionMode;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.OrientationEventListener;
 import android.view.Surface;
@@ -117,6 +122,8 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.OverScroller;
+import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.Scroller;
 import android.widget.Space;
 import android.widget.TextView;
@@ -360,6 +367,9 @@ import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.hgram.HgramAntiPeek;
 import xyz.nextalone.nagram.helper.MessageHelper;
 import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramOcrEngine;
+import xyz.nextalone.nagram.hgram.HgramOcrModels;
+import xyz.nextalone.nagram.hgram.HgramOcrPhoto;
 
 import me.vkryl.android.animator.BoolAnimator;
 import me.vkryl.android.animator.FactorAnimator;
@@ -2062,6 +2072,21 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private String[] currentFileNames = new String[3];
     private PlaceProviderObject currentPlaceObject;
     private String currentPathObject;
+    private View ocrOverlay;
+    private TextView ocrOverlayText;
+    private View ocrProgressView;
+    private ActionMode ocrActionMode;
+    private boolean ocrRunning;
+    private int ocrRequestSeq;
+    private boolean ocrDestroyed;
+    private AlertDialog ocrModelsDialog;
+    private Context ocrModelsDialogContext;
+    private TextView ocrModelsDialogText;
+    private ProgressBar ocrModelsDialogProgress;
+    private boolean ocrModelsDownloadActive;
+    private int ocrModelsPhotoIndex = -1;
+    private MessageObject ocrModelsPhotoObject;
+    private int ocrModelsPollMisses;
     private long currentPathVideoOffset;
     private String currentImagePath;
     private boolean currentVideoFinishedLoading;
@@ -14210,6 +14235,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     private void onPhotoShow(final MessageObject messageObject, final TLRPC.FileLocation fileLocation, ImageLocation imageLocation, ImageLocation videoLocation, final ArrayList<MessageObject> messages, final ArrayList<SecureDocument> documents, final List<Object> photos, int index, final PlaceProviderObject object) {
+        dismissOcrOverlay();
+        ocrDestroyed = false;
         classGuid = ConnectionsManager.generateClassGuid();
         customTitle = null;
         disableSelection = false;
@@ -16011,6 +16038,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (!force && currentIndex == index || placeProvider == null) {
             return;
         }
+        dismissOcrOverlay();
         if (!init) {
             if (currentThumb != null) {
                 currentThumb.release();
@@ -17871,7 +17899,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                             if (parentActivity instanceof LaunchActivity) {
                                 ((LaunchActivity) parentActivity).onBackPressed();
                             } else {
-                                if (isVisible()) {
+                                if (isVisible() && !dismissOcrOverlay()) {
                                     closePhoto(true, false);
                                 }
                             }
@@ -18471,6 +18499,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     public void closePhoto(boolean animated, boolean fromEditMode) {
+        dismissOcrOverlay();
         if (stickerMakerView != null) {
             stickerMakerView.isThanosInProgress = false;
             if (cutOutBtn.isCancelState()) {
@@ -19020,6 +19049,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     public void destroyPhotoViewer() {
+        ocrDestroyed = true;
+        dismissOcrOverlay();
+        cancelOcrModelsPoll();
+        dismissOcrModelsDialog();
         // Destruction is a terminal path: release this viewer's block even if the window was
         // already detached. Owner checking keeps another still-open viewer's block intact.
         HgramAntiPeek.setOverlayBlocking(this, false);
@@ -21172,6 +21205,16 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     public void onLongPress() {
+        if (HgramConfig.isOcrLongPressEnabled() && isOcrPhotoAvailable()) {
+            discardTap = true;
+            final Context context = currentOcrContext();
+            if (context == null || !HgramOcrModels.isReady(context)) {
+                showOcrModelsDownloadDialog();
+            } else if (!ocrRunning && ocrOverlay == null) {
+                runOcrForCurrentPhoto();
+            }
+            return;
+        }
         if (videoPlayer != null && scale <= 1.35f) {
             long current = videoPlayer.getCurrentPosition();
             long total = videoPlayer.getDuration();
@@ -21195,6 +21238,487 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 videoPlayerRewinder.startRewind(videoPlayer, forward, longPressX, currentVideoSpeed, seekSpeedDrawable);
             }
         }
+    }
+
+    private boolean isOcrPhotoAvailable() {
+        if (isEmbedVideo || centerImageIsVideo) {
+            return false;
+        }
+        if (currentMessageObject != null) {
+            return HgramOcrPhoto.canRecognize(
+                    currentMessageObject.isPhoto(),
+                    currentMessageObject.isVideo(),
+                    currentMessageObject.isGif(),
+                    currentMessageObject.isRoundVideo());
+        }
+        if (currentFileLocationVideo != null) {
+            return false;
+        }
+        if (currentPathObject != null) {
+            final String path = currentPathObject.toLowerCase(Locale.US);
+            return !path.endsWith(".gif") && !path.endsWith(".mp4") && !path.endsWith(".webm");
+        }
+        return true;
+    }
+
+    private File resolveOcrFile() {
+        File messageFile = null;
+        if (currentMessageObject != null && currentMessageObject.messageOwner != null) {
+            try {
+                messageFile = FileLoader.getInstance(currentAccount).getPathToMessage(currentMessageObject.messageOwner);
+            } catch (Throwable ignored) {
+            }
+        }
+        final File file = HgramOcrPhoto.pickFile(messageFile, currentFileNames[0]);
+        if (file != null) {
+            return file;
+        }
+        if (currentPathObject != null) {
+            final File path = new File(currentPathObject);
+            if (path.isAbsolute() && path.isFile()) {
+                return path;
+            }
+        }
+        return null;
+    }
+
+    private void runOcrForCurrentPhoto() {
+        if (containerView == null || ocrDestroyed) {
+            return;
+        }
+        final File file = resolveOcrFile();
+        if (file == null) {
+            showOcrToast(R.string.HgramOcrFailed);
+            return;
+        }
+        final Context context = activityContext != null ? activityContext : parentActivity;
+        if (context == null) {
+            showOcrToast(R.string.HgramOcrFailed);
+            return;
+        }
+        final int requestId = ++ocrRequestSeq;
+        ocrRunning = true;
+        showOcrProgress(true);
+        final Context appContext = context.getApplicationContext();
+        try {
+            HgramOcrEngine.get(appContext).beginRequest(requestId);
+        } catch (Throwable ignored) {
+        }
+        Utilities.globalQueue.postRunnable(() -> {
+            HgramOcrEngine.Result result;
+            try {
+                result = HgramOcrEngine.get(appContext).recognize(appContext, file, requestId);
+            } catch (Throwable ignored) {
+                result = null;
+            }
+            final HgramOcrEngine.Result finalResult = result;
+            AndroidUtilities.runOnUIThread(() -> handleOcrResult(requestId, finalResult));
+        });
+    }
+
+    private void handleOcrResult(int requestId, HgramOcrEngine.Result result) {
+        if (requestId != ocrRequestSeq || ocrDestroyed || containerView == null) {
+            return;
+        }
+        ocrRunning = false;
+        showOcrProgress(false);
+        if (result != null && result.status == HgramOcrEngine.Status.NEED_MODELS) {
+            showOcrModelsDownloadDialog();
+            return;
+        }
+        if (result == null || result.status == HgramOcrEngine.Status.FAILED) {
+            showOcrToast(R.string.HgramOcrFailed);
+            return;
+        }
+        if (result.status == HgramOcrEngine.Status.EMPTY || result.text == null || result.text.isEmpty()) {
+            showOcrToast(R.string.HgramOcrEmpty);
+            return;
+        }
+        showOcrOverlay(result.text);
+    }
+
+    private void showOcrToast(int resId) {
+        final Context context = activityContext != null ? activityContext : parentActivity;
+        if (context != null) {
+            Toast.makeText(context, context.getString(resId), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showOcrProgress(boolean show) {
+        if (!show) {
+            if (ocrProgressView != null) {
+                if (containerView != null) {
+                    containerView.removeView(ocrProgressView);
+                }
+                ocrProgressView = null;
+            }
+            return;
+        }
+        if (containerView == null || activityContext == null) {
+            return;
+        }
+        if (ocrProgressView == null) {
+            final ProgressBar progressBar = new ProgressBar(activityContext);
+            progressBar.setIndeterminate(true);
+            ocrProgressView = progressBar;
+            containerView.addView(progressBar, LayoutHelper.createFrame(40, 40, Gravity.CENTER));
+        }
+        ocrProgressView.setVisibility(View.VISIBLE);
+        ocrProgressView.bringToFront();
+    }
+
+    private Context currentOcrContext() {
+        if (parentActivity != null && !parentActivity.isFinishing() && !parentActivity.isDestroyed()) {
+            return parentActivity;
+        }
+        if (activityContext instanceof Activity) {
+            final Activity activity = (Activity) activityContext;
+            return activity.isFinishing() || activity.isDestroyed() ? null : activity;
+        }
+        return activityContext;
+    }
+
+    private static int ocrModelsSizeMb() {
+        return (int) Math.ceil(HgramOcrModels.TOTAL_SIZE_BYTES / (1024.0 * 1024.0));
+    }
+
+    private static String ocrModelsSizeLabel() {
+        return LocaleController.formatString(R.string.HgramGigaAmModelSize, ocrModelsSizeMb());
+    }
+
+    private void showOcrModelsDownloadDialog() {
+        if (ocrDestroyed) {
+            return;
+        }
+        final Context context = currentOcrContext();
+        if (context == null) {
+            return;
+        }
+        if (HgramOcrModels.progress() >= 0) {
+            startOcrModelsDownload();
+            return;
+        }
+        if (HgramOcrModels.isReady(context)) {
+            if (!ocrRunning && ocrOverlay == null) {
+                runOcrForCurrentPhoto();
+            }
+            return;
+        }
+        new AlertDialog.Builder(context)
+                .setTitle(LocaleController.getString(R.string.HgramOcrNeedModelsTitle))
+                .setMessage(LocaleController.formatString(R.string.HgramOcrNeedModelsText, ocrModelsSizeLabel()))
+                .setPositiveButton(LocaleController.getString(R.string.HgramOcrModelsDownload), (dialog, which) -> startOcrModelsDownload())
+                .setNegativeButton(LocaleController.getString(R.string.HgramOcrCancel), null)
+                .show();
+    }
+
+    private void startOcrModelsDownload() {
+        if (ocrDestroyed) {
+            return;
+        }
+        final Context context = currentOcrContext();
+        if (context == null) {
+            return;
+        }
+        if (ocrModelsDownloadActive) {
+            ensureOcrModelsDialog(context);
+            updateOcrModelsDialogProgress();
+            return;
+        }
+        ocrModelsDownloadActive = true;
+        ocrModelsPollMisses = 0;
+        ocrModelsPhotoIndex = currentIndex;
+        ocrModelsPhotoObject = currentMessageObject;
+        ensureOcrModelsDialog(context);
+        updateOcrModelsDialogProgress();
+        AndroidUtilities.cancelRunOnUIThread(ocrModelsProgressPoll);
+        AndroidUtilities.runOnUIThread(ocrModelsProgressPoll, 300);
+        if (HgramOcrModels.progress() < 0 && !HgramOcrModels.isReady(context)) {
+            HgramOcrModels.download(context, progress -> {
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (ocrModelsDownloadActive) {
+                        updateOcrModelsDialogProgress();
+                    }
+                });
+                return kotlin.Unit.INSTANCE;
+            }, success -> {
+                AndroidUtilities.runOnUIThread(() -> finishOcrModelsDownload(success, true));
+                return kotlin.Unit.INSTANCE;
+            });
+        }
+    }
+
+    private void ensureOcrModelsDialog(Context context) {
+        if (ocrModelsDialog != null) {
+            final boolean activityDead = context instanceof Activity
+                    && (((Activity) context).isFinishing() || ((Activity) context).isDestroyed());
+            if (ocrModelsDialogContext == context && !activityDead && ocrModelsDialog.isShowing()) {
+                return;
+            }
+            dismissOcrModelsDialog();
+        }
+        final LinearLayout layout = new LinearLayout(context);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(24), dp(8), dp(24), 0);
+
+        final TextView status = new TextView(context);
+        status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        status.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider));
+        status.setGravity(Gravity.START);
+        layout.addView(status, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.START));
+
+        final ProgressBar progressBar = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
+        progressBar.setMax(100);
+        progressBar.setProgressTintList(ColorStateList.valueOf(Theme.getColor(Theme.key_progressCircle, resourcesProvider)));
+        layout.addView(progressBar, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.START, 0, dp(12), 0, 0));
+
+        final AlertDialog dialog = new AlertDialog.Builder(context)
+                .setTitle(LocaleController.getString(R.string.HgramOcrNeedModelsTitle))
+                .setView(layout)
+                .setNegativeButton(LocaleController.getString(R.string.HgramOcrCancel), (d, which) -> {
+                    HgramOcrModels.cancel();
+                    finishOcrModelsDownload(HgramOcrModels.isReady(context), false);
+                })
+                .create();
+        dialog.setCancelable(false);
+        dialog.setCanceledOnTouchOutside(false);
+        ocrModelsDialog = dialog;
+        ocrModelsDialogContext = context;
+        ocrModelsDialogText = status;
+        ocrModelsDialogProgress = progressBar;
+        try {
+            dialog.show();
+        } catch (Throwable ignored) {
+            dismissOcrModelsDialog();
+        }
+    }
+
+    private void updateOcrModelsDialogProgress() {
+        final TextView status = ocrModelsDialogText;
+        final ProgressBar progressBar = ocrModelsDialogProgress;
+        if (status == null || progressBar == null) {
+            return;
+        }
+        final int progress = Math.max(0, Math.min(100, HgramOcrModels.progress()));
+        status.setText(LocaleController.formatString(R.string.HgramOcrModelsDownloading, progress));
+        progressBar.setProgress(progress);
+    }
+
+    private void finishOcrModelsDownload(boolean success, boolean maybeRunOcr) {
+        if (!ocrModelsDownloadActive) {
+            return;
+        }
+        ocrModelsDownloadActive = false;
+        AndroidUtilities.cancelRunOnUIThread(ocrModelsProgressPoll);
+        dismissOcrModelsDialog();
+        final Context context = currentOcrContext();
+        if (context != null && !ocrDestroyed) {
+            Toast.makeText(context, LocaleController.getString(success
+                    ? R.string.HgramOcrModelsReady : R.string.HgramOcrDownloadFailed), Toast.LENGTH_SHORT).show();
+        }
+        if (success && maybeRunOcr && !ocrDestroyed && !ocrRunning && ocrOverlay == null
+                && isVisible() && currentIndex == ocrModelsPhotoIndex
+                && currentMessageObject == ocrModelsPhotoObject) {
+            runOcrForCurrentPhoto();
+        }
+    }
+
+    private void cancelOcrModelsPoll() {
+        ocrModelsDownloadActive = false;
+        AndroidUtilities.cancelRunOnUIThread(ocrModelsProgressPoll);
+    }
+
+    private void dismissOcrModelsDialog() {
+        final AlertDialog dialog = ocrModelsDialog;
+        ocrModelsDialog = null;
+        ocrModelsDialogContext = null;
+        ocrModelsDialogText = null;
+        ocrModelsDialogProgress = null;
+        if (dialog != null) {
+            try {
+                dialog.dismiss();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private final Runnable ocrModelsProgressPoll = new Runnable() {
+        @Override
+        public void run() {
+            if (!ocrModelsDownloadActive || ocrDestroyed) {
+                return;
+            }
+            final Context context = currentOcrContext();
+            if (context == null) {
+                AndroidUtilities.runOnUIThread(this, 500);
+                return;
+            }
+            ensureOcrModelsDialog(context);
+            updateOcrModelsDialogProgress();
+            final int progress = HgramOcrModels.progress();
+            if (progress >= 0) {
+                ocrModelsPollMisses = 0;
+                AndroidUtilities.runOnUIThread(this, 400);
+            } else if (++ocrModelsPollMisses < 3) {
+                AndroidUtilities.runOnUIThread(this, 400);
+            } else {
+                finishOcrModelsDownload(HgramOcrModels.isReady(context), true);
+            }
+        }
+    };
+
+    private void showOcrOverlay(String text) {
+        dismissOcrOverlay();
+        if (containerView == null || activityContext == null) {
+            return;
+        }
+        final FrameLayout overlay = new FrameLayout(activityContext);
+        overlay.setOnClickListener(v -> dismissOcrOverlay());
+
+        final boolean noforwards = currentMessageObject != null
+                && (MessagesController.getInstance(currentAccount).isPeerNoForwards(currentMessageObject.getDialogId())
+                || (currentMessageObject.messageOwner != null && currentMessageObject.messageOwner.noforwards)
+                || currentMessageObject.hasRevealedExtendedMedia());
+        final boolean noforwardsOverride = noforwards && !NekoXConfig.disableFlagSecure
+                && !NaConfig.INSTANCE.getForceCopy().Bool();
+        final boolean copyBlocked = isEmbedVideo || noforwardsOverride
+                || (currentMessageObject != null && currentMessageObject.messageOwner != null
+                && currentMessageObject.messageOwner.ttl != 0 && currentMessageObject.messageOwner.ttl < 60 * 60)
+                || !secureDocuments.isEmpty();
+
+        final FrameLayout panel = new FrameLayout(activityContext);
+        final int panelColor = Theme.getColor(Theme.key_dialogBackground, resourcesProvider);
+        panel.setBackground(Theme.createRoundRectDrawable(dp(12), (panelColor & 0x00FFFFFF) | 0xE0000000));
+        panel.setClickable(true);
+        panel.setOnClickListener(v -> dismissOcrOverlay());
+
+        final int containerHeight = getContainerViewHeight(true, EDIT_MODE_NONE);
+        final int maxScrollHeight = Math.max(dp(120), (containerHeight > 0 ? containerHeight : AndroidUtilities.displaySize.y) - dp(40));
+        final ScrollView scrollView = new ScrollView(activityContext) {
+            @Override
+            protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+                if (getMeasuredHeight() > maxScrollHeight) {
+                    super.onMeasure(widthMeasureSpec, View.MeasureSpec.makeMeasureSpec(maxScrollHeight, View.MeasureSpec.EXACTLY));
+                }
+            }
+        };
+        scrollView.setVerticalScrollBarEnabled(false);
+
+        final TextView textView = new TextView(activityContext);
+        textView.setText(text, TextView.BufferType.SPANNABLE);
+        textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        textView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider));
+        textView.setPadding(dp(16), dp(12), dp(16), dp(12));
+        textView.setLineSpacing(dp(2), 1.0f);
+        textView.setTextIsSelectable(!copyBlocked);
+        textView.setLongClickable(!copyBlocked);
+        scrollView.addView(textView, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT));
+
+        panel.addView(scrollView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+        overlay.addView(panel, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER, 20, 20, 20, 20));
+        containerView.addView(overlay, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+
+        ocrOverlay = overlay;
+        ocrOverlayText = textView;
+        textView.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                finishOcrActionMode();
+            }
+            return false;
+        });
+        textView.post(() -> {
+            if (ocrOverlayText != textView || copyBlocked) {
+                return;
+            }
+            textView.requestFocus();
+            Selection.setSelection((Spannable) textView.getText(), 0, textView.length());
+            startOcrCopyActionMode(textView);
+        });
+    }
+
+    private void startOcrCopyActionMode(final TextView textView) {
+        try {
+            ocrActionMode = textView.startActionMode(new ActionMode.Callback() {
+                @Override
+                public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                    menu.add(Menu.NONE, android.R.id.copy, 0, android.R.string.copy)
+                            .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+                    return true;
+                }
+
+                @Override
+                public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                    return false;
+                }
+
+                @Override
+                public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                    if (item.getItemId() == android.R.id.copy) {
+                        try {
+                            textView.onTextContextMenuItem(android.R.id.copy);
+                        } catch (Throwable ignored) {
+                        }
+                        mode.finish();
+                        return true;
+                    }
+                    return false;
+                }
+
+                @Override
+                public void onDestroyActionMode(ActionMode mode) {
+                    if (ocrActionMode == mode) {
+                        ocrActionMode = null;
+                    }
+                }
+            }, ActionMode.TYPE_FLOATING);
+        } catch (Throwable ignored) {
+            ocrActionMode = null;
+        }
+    }
+
+    private void finishOcrActionMode() {
+        final ActionMode mode = ocrActionMode;
+        ocrActionMode = null;
+        if (mode != null) {
+            try {
+                mode.finish();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** Dismisses the OCR overlay and cancels pending recognition. Returns true if an overlay was shown. */
+    public boolean dismissOcrOverlay() {
+        final boolean hadOverlay = ocrOverlay != null;
+        final int oldRequestId = ocrRequestSeq;
+        ocrRequestSeq++;
+        if (ocrRunning) {
+            ocrRunning = false;
+            if (activityContext != null) {
+                try {
+                    HgramOcrEngine.get(activityContext).cancel(oldRequestId);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        showOcrProgress(false);
+        finishOcrActionMode();
+        if (ocrOverlayText != null) {
+            try {
+                ocrOverlayText.setTextIsSelectable(false);
+                ocrOverlayText.clearFocus();
+            } catch (Throwable ignored) {
+            }
+            ocrOverlayText = null;
+        }
+        if (ocrOverlay != null) {
+            if (containerView != null) {
+                containerView.removeView(ocrOverlay);
+            }
+            ocrOverlay = null;
+        }
+        return hadOverlay;
     }
 
     public VideoPlayerRewinder getVideoPlayerRewinder() {

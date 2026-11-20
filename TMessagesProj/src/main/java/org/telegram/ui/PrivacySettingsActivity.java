@@ -78,6 +78,8 @@ import org.telegram.ui.bots.BotBiometrySettings;
 import java.util.ArrayList;
 
 import tw.nekomimi.nekogram.NekoConfig;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
 
 public class PrivacySettingsActivity extends BaseFragment implements NotificationCenter.NotificationCenterDelegate {
 
@@ -463,7 +465,7 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
 
                             try {
                                 if (!NekoConfig.disableVibration.Bool())
-                                fragmentView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                                HgramHaptics.play(fragmentView, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                             } catch (Exception ignored) {}
 
                             loadPasswordSettings();

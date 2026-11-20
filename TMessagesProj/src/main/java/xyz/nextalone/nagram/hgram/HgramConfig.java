@@ -20,7 +20,8 @@ public final class HgramConfig {
     private static final String PIN_TO_SCREEN = "pin_to_screen";
     private static final String ANTI_PEEK_GESTURE = "anti_peek_gesture";
     private static final String OFFLINE_TRANSCRIPTION = "offline_transcription";
-    private static final String EXIF_CLEANUP = "exif_cleanup";
+    private static final String EXIF_CLEANUP = "exif_clean";
+    private static final String OCR_LONG_PRESS = "ocr_long_press";
     private static final String HAPTIC_ENABLED = "haptic_enabled";
     private static final String SUMMARIZER_ENABLED = "summarizer_enabled";
     private static final String SUMMARIZER_MIN_WORDS = "summarizer_min_words";
@@ -489,11 +490,27 @@ public final class HgramConfig {
     }
 
     public static boolean isExifCleanupEnabled() {
-        return preferences().getBoolean(EXIF_CLEANUP, true);
+        return preferences().getBoolean(EXIF_CLEANUP, false);
     }
 
     public static void setExifCleanupEnabled(boolean enabled) {
         preferences().edit().putBoolean(EXIF_CLEANUP, enabled).apply();
+    }
+
+    public static void resetExifCleanup() {
+        preferences().edit().remove(EXIF_CLEANUP).apply();
+    }
+
+    public static boolean isOcrLongPressEnabled() {
+        return preferences().getBoolean(OCR_LONG_PRESS, false);
+    }
+
+    public static void setOcrLongPressEnabled(boolean enabled) {
+        preferences().edit().putBoolean(OCR_LONG_PRESS, enabled).apply();
+    }
+
+    public static void resetOcrLongPress() {
+        preferences().edit().remove(OCR_LONG_PRESS).apply();
     }
 
     public static boolean isOfflineTranscriptionEnabled() {
@@ -728,6 +745,8 @@ public final class HgramConfig {
         antiPeekHoldMax = -1;
         HgramHapticProfile.resetAll();
         resetSummarizer();
+        resetExifCleanup();
+        resetOcrLongPress();
         HgramAntiPeek.stop();
         HgramAntiPeek.setActive(false);
         offlineTranscriptionEnabled = false;

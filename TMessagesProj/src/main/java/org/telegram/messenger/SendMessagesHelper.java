@@ -131,6 +131,8 @@ import java.util.zip.ZipInputStream;
 
 import top.qwq2333.nullgram.utils.StringUtils;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramExifCleaner;
 
 public class SendMessagesHelper extends BaseController implements NotificationCenter.NotificationCenterDelegate {
 
@@ -1587,6 +1589,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             }
             dialogId = object.getDialogId();
             messageIds.add(object.getId());
+            if (object.messageOwner != null) {
+                // Cancel deletes the message below; the queued send can never retry, so drop its copy.
+                HgramExifCleaner.discardPrepared(object.messageOwner.attachPath);
+            }
             if (object.isQuickReply()) {
                 topicId = object.getQuickReplyId();
             }
@@ -1708,6 +1714,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     public boolean retrySendMessage(MessageObject messageObject, boolean unsent, long payStars) {
+        if (messageObject != null && messageObject.messageOwner != null
+                && messageObject.messageOwner.attachPath != null && !messageObject.messageOwner.attachPath.isEmpty()) {
+            HgramExifCleaner.pinAttachPath(messageObject.messageOwner.attachPath);
+            String hgramSlot = messageObject.messageOwner.params != null
+                    ? messageObject.messageOwner.params.get("hgramExifSlot") : null;
+            HgramExifCleaner.registerOwner(messageObject.messageOwner.attachPath, currentAccount,
+                    messageObject.getDialogId(), messageObject.getId(),
+                    hgramSlot != null ? hgramSlot : "document");
+        }
         if (messageObject.getId() >= 0) {
             if (messageObject.isEditing()) {
                 editMessage(messageObject, null, null, null, null, null, null, true, messageObject.hasMediaSpoilers(), messageObject);
@@ -1724,6 +1739,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             int enc_id = DialogObject.getEncryptedChatId(messageObject.getDialogId());
             TLRPC.EncryptedChat encryptedChat = getMessagesController().getEncryptedChat(enc_id);
             if (encryptedChat == null) {
+                // The secret chat is gone, so this action can never be retried: rejected hand-off.
+                HgramExifCleaner.releaseOwner(messageObject.messageOwner.attachPath, true);
                 getMessagesStorage().markMessageAsSendError(messageObject.messageOwner, messageObject.scheduled ? 1 : 0);
                 messageObject.messageOwner.send_state = MessageObject.MESSAGE_SEND_STATE_SEND_ERROR;
                 getNotificationCenter().postNotificationName(NotificationCenter.messageSendError, messageObject.getId());
@@ -3055,6 +3072,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
     public void editMessage(MessageObject messageObject, TLRPC.TL_inputPollAnswer pollToAddOptionMessageObject, TLRPC.TL_photo photo, VideoEditedInfo videoEditedInfo, TLRPC.TL_document document, String path, TLRPC.PhotoSize cover, HashMap<String, String> params, boolean retry, boolean hasMediaSpoilers, Object parentObject) {
         if (messageObject == null) {
+            releaseProvisional(params);
             return;
         }
         if (params == null) {
@@ -4571,6 +4589,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     getNotificationCenter().postNotificationName(NotificationCenter.messageSendError, retryMessageObject.getId());
                     processSentMessage(retryMessageObject.getId());
                 }
+                releaseProvisional(params);
+                if (retryMessageObject != null) {
+                    HgramExifCleaner.releaseOwnersForMessages(currentAccount, peer,
+                            Collections.singletonList(retryMessageObject.getId()), true);
+                }
                 return;
             }
         } else if (sendToPeer instanceof TLRPC.TL_inputPeerChannel) {
@@ -4997,6 +5020,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     newMsg.attachPath = "";
                 }
                 newMsg.local_id = newMsg.id = getUserConfig().getNewMessageId();
+                if (params != null && "1".equals(params.get("hgramExifPrepared"))
+                        && newMsg.attachPath != null && !newMsg.attachPath.isEmpty()) {
+                    // The prepared copy now belongs to this message: replace the provisional owner
+                    // (messageId 0) with the real local id so deletion can release it by message.
+                    String hgramSlot = params.get("hgramExifSlot");
+                    HgramExifCleaner.registerOwner(newMsg.attachPath, currentAccount, peer, newMsg.id,
+                            hgramSlot != null ? hgramSlot : "document");
+                }
                 newMsg.out = true;
                 TLRPC.Chat chat = sendToPeer != null ? getMessagesController().getChat(sendToPeer.channel_id) : null;
                 if (isChannel && sendToPeer != null && (chat == null || !chat.signatures)) {
@@ -5158,6 +5189,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     TLRPC.User sendToUser = getMessagesController().getUser(peer);
                     if (sendToUser == null) {
                         processSentMessage(newMsg.id);
+                        releaseProvisional(params);
+                        // The local id already upgraded the provisional owner, so release that
+                        // message's owner as well; nothing can retry this terminal reject.
+                        HgramExifCleaner.releaseOwnersForMessages(currentAccount, peer,
+                                Collections.singletonList(newMsg.id), true);
                         return;
                     }
                     if (sendToUser.bot) {
@@ -7817,6 +7853,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         if (!hasEmptyFile) {
                             for (int i = 0; i < msgObjs.size(); i++) {
                                 TLRPC.Message newMsgObj = msgObjs.get(i).messageOwner;
+                                // Send error is retryable: keep the prepared lease so sweep cannot
+                                // delete attachPath before retrySendMessage re-pins/reuses it.
                                 getMessagesStorage().markMessageAsSendError(newMsgObj, scheduled ? 1 : 0);
                                 newMsgObj.send_state = MessageObject.MESSAGE_SEND_STATE_SEND_ERROR;
                                 newMsgObj.errorAllowedPriceStars = 0;
@@ -7947,9 +7985,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                     msgObj.messageOwner.flags |= 33554432;
                                 }
                                 if (request instanceof TLRPC.TL_messages_sendMedia) { // paid media
-                                    updateMediaPaths(msgObjs.get(0), message, message.id, originalPaths, false, -1, message.params);
+                                    updateMediaPaths(msgObjs.get(0), message, message.id, originalPaths, false, -1, msgObjs.get(0).messageOwner.params);
                                 } else {
-                                    updateMediaPaths(msgObj, message, message.id, originalPath, false, message.params);
+                                    updateMediaPaths(msgObj, message, message.id, originalPath, false, newMsgObj.params);
                                 }
                                 existFlags = msgObj.getMediaExistanceFlags();
                                 newMsgObj.id = message.id;
@@ -8029,6 +8067,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     for (int i = 0; i < msgObjs.size(); i++) {
                         MessageObject msgObj = msgObjs.get(i);
                         TLRPC.Message newMsgObj = msgObj.messageOwner;
+                        // Retryable via retrySendMessage(): the lease must survive the error.
                         getMessagesStorage().markMessageAsSendError(newMsgObj, scheduled ? 1 : 0);
                         newMsgObj.send_state = MessageObject.MESSAGE_SEND_STATE_SEND_ERROR;
                         if (!scheduled && error != null && error.text != null && error.text.startsWith("ALLOW_PAYMENT_REQUIRED_")) {
@@ -8568,6 +8607,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         isSentError = true;
                     }
                     if (isSentError) {
+                        // Retryable via retrySendMessage(): never release the prepared lease here.
                         getMessagesStorage().markMessageAsSendError(newMsgObj, scheduled ? 1 : 0);
                         newMsgObj.send_state = MessageObject.MESSAGE_SEND_STATE_SEND_ERROR;
                         if (error != null && error.text != null && error.text.startsWith("ALLOW_PAYMENT_REQUIRED_")) {
@@ -8672,6 +8712,21 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         return false;
     }
 
+    /**
+     * Releases the prepare-time provisional copy after a terminal reject that happens before the
+     * message is queued (missing peer/user, secret chat without a key, edit without a target).
+     * Retryable failures keep the owner: they may hand the same prepared path off again.
+     */
+    public static void releaseProvisional(HashMap<String, String> params) {
+        if (params == null || !"1".equals(params.get("hgramExifPrepared"))) {
+            return;
+        }
+        String path = params.get("hgramExifPath");
+        if (path != null && !path.isEmpty()) {
+            HgramExifCleaner.releaseProvisional(path);
+        }
+    }
+
     private void updateMediaPaths(MessageObject newMsgObj, TLRPC.Message sentMessage, int newMsgId, String originalPath, boolean post, HashMap<String, String> params) {
         updateMediaPaths(newMsgObj, sentMessage, newMsgId, Collections.singletonList(originalPath), post, -1, params);
     }
@@ -8743,7 +8798,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 }
                 if (index == -1) {
                     for (int i = 0; i < paidMedia.extended_media.size(); ++i) {
-                        updateMediaPaths(newMsgObj, sentMessage, newMsgId, originalPaths, post, i, sentMessage.params);
+                        updateMediaPaths(newMsgObj, sentMessage, newMsgId, originalPaths, post, i, newMsgObj.messageOwner.params);
                     }
                     return;
                 }
@@ -8937,17 +8992,43 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         } else if (sentMedia instanceof TLRPC.TL_messageMediaDocument && sentMedia.document != null && newMedia instanceof TLRPC.TL_messageMediaDocument && newMedia.document != null) {
             if (sentMedia.ttl_seconds == 0 && (newMsgObj.videoEditedInfo == null || newMsgObj.videoEditedInfo.mediaEntities == null && TextUtils.isEmpty(newMsgObj.videoEditedInfo.paintPath) && newMsgObj.videoEditedInfo.cropState == null)) {
                 boolean isVideo = MessageObject.isVideoMessage(sentMessage);
+                // Local identity wins: the queued message keeps the exact slot chosen at prepare.
+                // The passed params are a legacy-only fallback and can never turn a prepared
+                // hand-off into a guessed slot.
+                final HashMap<String, String> hgramLocalParams = newMsgObj.messageOwner != null
+                        ? newMsgObj.messageOwner.params : null;
+                final boolean hgramLocalIdentity = hgramLocalParams != null
+                        && (hgramLocalParams.containsKey("hgramExifPrepared")
+                        || hgramLocalParams.containsKey("hgramExifSlot"));
+                final boolean hgramPrepared = hgramLocalIdentity
+                        ? "1".equals(hgramLocalParams.get("hgramExifPrepared"))
+                        : params != null && "1".equals(params.get("hgramExifPrepared"));
+                int hgramSentFileType = -1;
+                if (hgramPrepared) {
+                    final String slot = hgramLocalIdentity
+                            ? hgramLocalParams.get("hgramExifSlot") : null;
+                    if (slot != null) {
+                        try {
+                            hgramSentFileType = Integer.parseInt(slot);
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                    // Prepared without a local slot: skip the cache instead of guessing legacy.
+                } else {
+                    // Legacy OFF keeps the historical 1/2 slots and never writes prepared.
+                    hgramSentFileType = (isVideo || MessageObject.isGifMessage(sentMessage)) ? 2 : 1;
+                }
                 if ((isVideo || MessageObject.isGifMessage(sentMessage)) && MessageObject.isGifDocument(sentMedia.document) == MessageObject.isGifDocument(newMedia.document)) {
-                    if (!newMsgObj.scheduled && !MessageObject.isEphemeral(sentMessage)) {
+                    if (hgramSentFileType > 0 && !newMsgObj.scheduled && !MessageObject.isEphemeral(sentMessage)) {
                         MessageObject messageObject = new MessageObject(currentAccount, sentMessage, false, false);
-                        getMessagesStorage().putSentFile(originalPath, sentMedia.document, 2, "sent_" + sentMessage.peer_id.channel_id + "_" + sentMessage.id + "_" + DialogObject.getPeerDialogId(sentMessage.peer_id) + "_" + messageObject.type + "_" + messageObject.getSize());
+                        getMessagesStorage().putSentFile(originalPath, sentMedia.document, hgramSentFileType, "sent_" + sentMessage.peer_id.channel_id + "_" + sentMessage.id + "_" + DialogObject.getPeerDialogId(sentMessage.peer_id) + "_" + messageObject.type + "_" + messageObject.getSize());
                     }
                     if (isVideo) {
                         sentMessage.attachPath = newMsg.attachPath;
                     }
-                } else if (!MessageObject.isVoiceMessage(sentMessage) && !MessageObject.isRoundVideoMessage(sentMessage) && !newMsgObj.scheduled && !MessageObject.isEphemeral(sentMessage)) {
+                } else if (hgramSentFileType > 0 && !MessageObject.isVoiceMessage(sentMessage) && !MessageObject.isRoundVideoMessage(sentMessage) && !newMsgObj.scheduled && !MessageObject.isEphemeral(sentMessage)) {
                     MessageObject messageObject = new MessageObject(currentAccount, sentMessage, false, false);
-                    getMessagesStorage().putSentFile(originalPath, sentMedia.document, 1, "sent_" + sentMessage.peer_id.channel_id + "_" + sentMessage.id + "_" + DialogObject.getPeerDialogId(sentMessage.peer_id) + "_" + messageObject.type + "_" + messageObject.getSize());
+                    getMessagesStorage().putSentFile(originalPath, sentMedia.document, hgramSentFileType, "sent_" + sentMessage.peer_id.channel_id + "_" + sentMessage.id + "_" + DialogObject.getPeerDialogId(sentMessage.peer_id) + "_" + messageObject.type + "_" + messageObject.getSize());
                 }
             }
 
@@ -9122,6 +9203,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     sentMessage.message = newMsg.message;
                 }
             }
+            if (newAttachPath != null && !newAttachPath.isEmpty()) {
+                // The document now lives at its permanent path or keeps its attachPath: drop the
+                // owner/lease without deleting the prepared artifact.
+                HgramExifCleaner.releaseOwner(newAttachPath, false);
+            }
         } else if (sentMessage.media instanceof TLRPC.TL_messageMediaContact && newMsg.media instanceof TLRPC.TL_messageMediaContact) {
             newMsg.media = sentMessage.media;
         } else if (sentMessage.media instanceof TLRPC.TL_messageMediaWebPage) {
@@ -9174,6 +9260,29 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             getMessagesController().putUsers(users, true);
             getMessagesController().putChats(chats, true);
             getMessagesController().putEncryptedChats(encryptedChats, true);
+            final boolean hgramExifCleanupEnabled = HgramConfig.isExifCleanupEnabled();
+            if (hgramExifCleanupEnabled) {
+                for (int a = 0, N = messages.size(); a < N; a++) {
+                    final TLRPC.Message pending = messages.get(a);
+                    if (pending != null && pending.attachPath != null && !pending.attachPath.isEmpty()) {
+                        HgramExifCleaner.pinAttachPath(pending.attachPath);
+                        String hgramSlot = pending.params != null ? pending.params.get("hgramExifSlot") : null;
+                        HgramExifCleaner.registerOwner(pending.attachPath, currentAccount,
+                                pending.dialog_id, pending.id, hgramSlot != null ? hgramSlot : "document");
+                    }
+                }
+                if (scheduledMessages != null) {
+                    for (int a = 0; a < scheduledMessages.size(); a++) {
+                        final TLRPC.Message pending = scheduledMessages.get(a);
+                        if (pending != null && pending.attachPath != null && !pending.attachPath.isEmpty()) {
+                            HgramExifCleaner.pinAttachPath(pending.attachPath);
+                            String hgramSlot = pending.params != null ? pending.params.get("hgramExifSlot") : null;
+                            HgramExifCleaner.registerOwner(pending.attachPath, currentAccount,
+                                    pending.dialog_id, pending.id, hgramSlot != null ? hgramSlot : "document");
+                        }
+                    }
+                }
+            }
             for (int a = 0, N = messages.size(); a < N; a++) {
                 MessageObject messageObject = new MessageObject(currentAccount, messages.get(a), false, true);
                 long groupId = messageObject.getGroupId();
@@ -9190,6 +9299,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     messageObject.scheduled = true;
                     retrySendMessage(messageObject, true, 0);
                 }
+            }
+            if (hgramExifCleanupEnabled) {
+                // The cache is shared by all accounts: the pin pass still runs so a manual cleanup
+                // only deletes files that no account needs (see HgramExifCleaner.registerPendingPins).
+                // The automatic sweep itself stays disabled (HgramExifCleaner.AUTO_SWEEP_ENABLED):
+                // restored queue state is incomplete, so only an explicit user action may clear.
+                final int pinAccounts = Math.max(UserConfig.getActivatedAccountsCount(),
+                        SharedConfig.activeAccounts.size());
+                HgramExifCleaner.registerPendingPins(currentAccount, pinAccounts);
             }
         });
     }
@@ -9477,286 +9595,356 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 extension = null;
             }
         }
+        final boolean hgramExifClean = forceDocument && HgramConfig.isExifCleanupEnabled();
+        final File sourceFile = new File(path);
+        if (!sourceFile.exists() || sourceFile.length() == 0) {
+            return ERROR_TYPE_UNSUPPORTED;
+        }
+        HgramExifCleaner.PrepareResult hgramPrepareResult = null;
+        boolean hgramExifPrepared = false;
+        int hgramExifPreparedSlot = 0;
+        if (hgramExifClean) {
+            final File cacheDir = FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE);
+            final HgramExifCleaner.Prepared prepared = HgramExifCleaner.prepareForSendDetailed(sourceFile, cacheDir);
+            if (prepared != null) {
+                hgramPrepareResult = prepared.result;
+                if (prepared.file != null) {
+                    path = prepared.file.getAbsolutePath();
+                    hgramExifPrepared = true;
+                    if (hgramPrepareResult == HgramExifCleaner.PrepareResult.CLEANED
+                            || hgramPrepareResult == HgramExifCleaner.PrepareResult.COPIED) {
+                        hgramExifPreparedSlot = HgramExifCleaner.sentFileType(
+                                DialogObject.isEncryptedDialog(dialogId)
+                                        ? MessagesStorage.SENT_FILE_TYPE_AUDIO_ENCRYPTED
+                                        : MessagesStorage.SENT_FILE_TYPE_AUDIO,
+                                HgramExifCleaner.isGifLikeExtension(path), true);
+                    }
+                    HgramExifCleaner.pinAttachPath(path);
+                    HgramExifCleaner.registerOwner(path, accountInstance.getCurrentAccount(),
+                            dialogId, 0, String.valueOf(hgramExifPreparedSlot));
+                }
+            }
+        }
         final File f = new File(path);
         if (!f.exists() || f.length() == 0) {
+            if (hgramExifPrepared) {
+                // The send is rejected before any message exists, so the prepared copy is dead.
+                HgramExifCleaner.discardPrepared(path);
+            }
             return ERROR_TYPE_UNSUPPORTED;
         }
 
         if (!FileLoader.checkUploadFileSize(accountInstance.getCurrentAccount(), f.length())) {
+            if (hgramExifPrepared) {
+                HgramExifCleaner.discardPrepared(path);
+            }
             return ERROR_TYPE_FILE_TOO_LARGE;
         }
 
-        boolean isEncrypted = DialogObject.isEncryptedDialog(dialogId);
+        // prepareForSendDetailed already leased the copy and registered a provisional owner.
+        // Until the message is handed off to the UI queue nothing can ever retry this file, so
+        // an exception below must release the lease/owner instead of leaking them.
+        final String hgramExifPreparedPath = hgramExifPrepared ? path : null;
+        boolean hgramExifHandedOff = false;
+        try {
+            boolean isEncrypted = DialogObject.isEncryptedDialog(dialogId);
 
-        String name = f.getName();
-        String ext = "";
-        if (extension != null) {
-            ext = extension;
-        } else {
-            int idx = path.lastIndexOf('.');
-            if (idx != -1) {
-                ext = path.substring(idx + 1);
+            String name = f.getName();
+            String ext = "";
+            if (extension != null) {
+                ext = extension;
+            } else {
+                int idx = path.lastIndexOf('.');
+                if (idx != -1) {
+                    ext = path.substring(idx + 1);
+                }
             }
-        }
-        String extL = ext.toLowerCase();
-        String permormer = null;
-        String title = null;
-        boolean isVoice = false;
-        int duration = 0;
-        Bitmap cover = null;
-        if (extL.equals("mp3") || extL.equals("m4a")) {
-            AudioInfo audioInfo = AudioInfo.getAudioInfo(f);
-            if (audioInfo != null) {
-                long d = audioInfo.getDuration();
-                if (d != 0) {
-                    permormer = audioInfo.getArtist();
-                    title = audioInfo.getTitle();
-                    duration = (int) (d / 1000);
+            String extL = ext.toLowerCase();
+            String permormer = null;
+            String title = null;
+            boolean isVoice = false;
+            int duration = 0;
+            Bitmap cover = null;
+            if (extL.equals("mp3") || extL.equals("m4a")) {
+                AudioInfo audioInfo = AudioInfo.getAudioInfo(f);
+                if (audioInfo != null) {
+                    long d = audioInfo.getDuration();
+                    if (d != 0) {
+                        permormer = audioInfo.getArtist();
+                        title = audioInfo.getTitle();
+                        duration = (int) (d / 1000);
+                    }
+                    cover = audioInfo.getCover();
                 }
-                cover = audioInfo.getCover();
-            }
-        } else if (extL.equals("opus") || extL.equals("ogg") || extL.equals("flac")) {
-            MediaMetadataRetriever mediaMetadataRetriever = null;
-            try {
-                mediaMetadataRetriever = new MediaMetadataRetriever();
-                mediaMetadataRetriever.setDataSource(f.getAbsolutePath());
-                String d = mediaMetadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
-                if (d != null) {
-                    duration = (int) Math.ceil(Long.parseLong(d) / 1000.0f);
-                    title = mediaMetadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
-                    permormer = mediaMetadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST);
-                }
-                byte[] art = mediaMetadataRetriever.getEmbeddedPicture();
-                if (art != null) {
-                    cover = BitmapFactory.decodeByteArray(art, 0, art.length);
-                }
-                if (editingMessageObject == null && extL.equals("opus") && MediaController.isOpusFile(f.getAbsolutePath()) == 1) {
-                    isVoice = true;
-                }
-            } catch (Exception e) {
-                FileLog.e(e);
-            } finally {
+            } else if (extL.equals("opus") || extL.equals("ogg") || extL.equals("flac")) {
+                MediaMetadataRetriever mediaMetadataRetriever = null;
                 try {
-                    if (mediaMetadataRetriever != null) {
-                        mediaMetadataRetriever.release();
+                    mediaMetadataRetriever = new MediaMetadataRetriever();
+                    mediaMetadataRetriever.setDataSource(f.getAbsolutePath());
+                    String d = mediaMetadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    if (d != null) {
+                        duration = (int) Math.ceil(Long.parseLong(d) / 1000.0f);
+                        title = mediaMetadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_TITLE);
+                        permormer = mediaMetadataRetriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST);
+                    }
+                    byte[] art = mediaMetadataRetriever.getEmbeddedPicture();
+                    if (art != null) {
+                        cover = BitmapFactory.decodeByteArray(art, 0, art.length);
+                    }
+                    if (editingMessageObject == null && extL.equals("opus") && MediaController.isOpusFile(f.getAbsolutePath()) == 1) {
+                        isVoice = true;
                     }
                 } catch (Exception e) {
                     FileLog.e(e);
+                } finally {
+                    try {
+                        if (mediaMetadataRetriever != null) {
+                            mediaMetadataRetriever.release();
+                        }
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
                 }
             }
-        }
-        if (duration != 0) {
-            attributeAudio = new TLRPC.TL_documentAttributeAudio();
-            attributeAudio.duration = duration;
-            attributeAudio.title = title;
-            attributeAudio.performer = permormer;
-            if (attributeAudio.title == null) {
-                attributeAudio.title = "";
+            if (duration != 0) {
+                attributeAudio = new TLRPC.TL_documentAttributeAudio();
+                attributeAudio.duration = duration;
+                attributeAudio.title = title;
+                attributeAudio.performer = permormer;
+                if (attributeAudio.title == null) {
+                    attributeAudio.title = "";
+                }
+                attributeAudio.flags |= 1;
+                if (attributeAudio.performer == null) {
+                    attributeAudio.performer = "";
+                }
+                attributeAudio.flags |= 2;
+                if (isVoice) {
+                    attributeAudio.voice = true;
+                }
             }
-            attributeAudio.flags |= 1;
-            if (attributeAudio.performer == null) {
-                attributeAudio.performer = "";
+            boolean sendNew = false;
+            if (originalPath != null) {
+                if (originalPath.endsWith("attheme")) {
+                    sendNew = true;
+                } else if (attributeAudio != null) {
+                    originalPath += "audio" + f.length();
+                } else {
+                    originalPath += "" + f.length();
+                }
             }
-            attributeAudio.flags |= 2;
-            if (isVoice) {
-                attributeAudio.voice = true;
-            }
-        }
-        boolean sendNew = false;
-        if (originalPath != null) {
-            if (originalPath.endsWith("attheme")) {
-                sendNew = true;
-            } else if (attributeAudio != null) {
-                originalPath += "audio" + f.length();
-            } else {
-                originalPath += "" + f.length();
-            }
-        }
 
-        final boolean forceDisableCheckSentMedia = pollSendParams != null;
-        TLRPC.TL_document document = null;
-        String parentObject = null;
-        if (!sendNew && !isEncrypted && !forceDisableCheckSentMedia) {
-            Object[] sentData = accountInstance.getMessagesStorage().getSentFile(originalPath, !isEncrypted ? MessagesStorage.SENT_FILE_TYPE_AUDIO : MessagesStorage.SENT_FILE_TYPE_AUDIO_ENCRYPTED);
-            if (sentData != null && sentData[0] instanceof TLRPC.TL_document) {
-                document = (TLRPC.TL_document) sentData[0];
-                parentObject = (String) sentData[1];
-            }
-            if (document == null && !path.equals(originalPath) && !isEncrypted) {
-                sentData = accountInstance.getMessagesStorage().getSentFile(path + f.length(), !isEncrypted ? MessagesStorage.SENT_FILE_TYPE_AUDIO : MessagesStorage.SENT_FILE_TYPE_AUDIO_ENCRYPTED);
+            final boolean forceDisableCheckSentMedia = pollSendParams != null;
+            final boolean hgramExifReuseBlocked = hgramPrepareResult == HgramExifCleaner.PrepareResult.PARSE_FAILED
+                    || hgramPrepareResult == HgramExifCleaner.PrepareResult.FAILED;
+            final int hgramExifBaseType = !isEncrypted
+                    ? MessagesStorage.SENT_FILE_TYPE_AUDIO
+                    : MessagesStorage.SENT_FILE_TYPE_AUDIO_ENCRYPTED;
+            TLRPC.TL_document document = null;
+            final boolean hgramExifGifLike = HgramExifCleaner.isGifLikeExtension(extL)
+                    || (document != null && (MessageObject.isGifDocument(document)
+                    || MessageObject.isVideoDocument(document)));
+            // One slot for probe and ACK/put: gif-like containers use the video namespace and a
+            // prepared copy adds the typed offset. The same value is persisted in params below.
+            final int hgramExifSlot = HgramExifCleaner.sentFileType(
+                    hgramExifBaseType, hgramExifGifLike, hgramExifPrepared);
+            String parentObject = null;
+            if (!sendNew && !isEncrypted && !forceDisableCheckSentMedia && !hgramExifReuseBlocked) {
+                Object[] sentData = accountInstance.getMessagesStorage().getSentFile(originalPath, hgramExifSlot);
                 if (sentData != null && sentData[0] instanceof TLRPC.TL_document) {
                     document = (TLRPC.TL_document) sentData[0];
                     parentObject = (String) sentData[1];
                 }
-            }
-            ensureMediaThumbExists(accountInstance, isEncrypted, document, path, null, 0);
-        }
-        if (document == null) {
-            document = new TLRPC.TL_document();
-            document.id = 0;
-            document.date = accountInstance.getConnectionsManager().getCurrentTime();
-            TLRPC.TL_documentAttributeFilename fileName = new TLRPC.TL_documentAttributeFilename();
-            fileName.file_name = name;
-            document.file_reference = new byte[0];
-            document.attributes.add(fileName);
-            document.size = f.length();
-            document.dc_id = 0;
-            if (attributeAudio != null) {
-                document.attributes.add(attributeAudio);
-            }
-            if (ext.length() != 0) {
-                switch (extL) {
-                    case "webp":
-                        document.mime_type = "image/webp";
-                        break;
-                    case "opus":
-                        document.mime_type = "audio/opus";
-                        break;
-                    case "mp3":
-                        document.mime_type = "audio/mpeg";
-                        break;
-                    case "m4a":
-                        document.mime_type = "audio/m4a";
-                        break;
-                    case "ogg":
-                        document.mime_type = "audio/ogg";
-                        break;
-                    case "flac":
-                        document.mime_type = "audio/flac";
-                        break;
-                    default:
-                        String mimeType = myMime.getMimeTypeFromExtension(extL);
-                        if (mimeType != null) {
-                            document.mime_type = mimeType;
-                        } else {
-                            document.mime_type = "application/octet-stream";
-                        }
-                        break;
-                }
-            } else {
-                document.mime_type = "application/octet-stream";
-            }
-            if (!forceDocument && document.mime_type.equals("image/gif") && (editingMessageObject == null || editingMessageObject.getGroupIdForUse() == 0)) {
-                try {
-                    Bitmap bitmap = ImageLoader.loadBitmap(f.getAbsolutePath(), null, 90, 90, true);
-                    if (bitmap != null) {
-                        fileName.file_name = "animation.gif";
-                        document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
-                        TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(bitmap, 90, 90, 55, isEncrypted);
-                        if (thumb != null) {
-                            document.thumbs.add(thumb);
-                            document.flags |= 1;
-                        }
-                        bitmap.recycle();
+                if (document == null && !hgramExifPrepared && !path.equals(originalPath) && !isEncrypted && !hgramExifReuseBlocked) {
+                    sentData = accountInstance.getMessagesStorage().getSentFile(path + f.length(), hgramExifBaseType);
+                    if (sentData != null && sentData[0] instanceof TLRPC.TL_document) {
+                        document = (TLRPC.TL_document) sentData[0];
+                        parentObject = (String) sentData[1];
                     }
-                } catch (Exception e) {
-                    FileLog.e(e);
                 }
+                ensureMediaThumbExists(accountInstance, isEncrypted, document, path, null, 0);
             }
-            if (cover != null) {
-                TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(cover, 132, 132, 55, isEncrypted);
-                if (thumb != null) {
-                    document.thumbs.add(thumb);
-                    document.flags |= 1;
+            if (document == null) {
+                document = new TLRPC.TL_document();
+                document.id = 0;
+                document.date = accountInstance.getConnectionsManager().getCurrentTime();
+                TLRPC.TL_documentAttributeFilename fileName = new TLRPC.TL_documentAttributeFilename();
+                fileName.file_name = name;
+                document.file_reference = new byte[0];
+                document.attributes.add(fileName);
+                document.size = f.length();
+                document.dc_id = 0;
+                if (attributeAudio != null) {
+                    document.attributes.add(attributeAudio);
                 }
-                cover.recycle();
-            }
-            if (document.mime_type.equals("image/webp") && editingMessageObject == null) {
-                BitmapFactory.Options bmOptions = new BitmapFactory.Options();
-                try {
-                    bmOptions.inJustDecodeBounds = true;
-//                    RandomAccessFile file = new RandomAccessFile(path, "r");
-//                    ByteBuffer buffer = file.getChannel().map(FileChannel.MapMode.READ_ONLY, 0, path.length());
-//                    Utilities.loadWebpImage(null, buffer, buffer.limit(), bmOptions, true);
-                    BitmapFactory.decodeFile(path, bmOptions);
-//                    file.close();
-                } catch (Exception e) {
-                    FileLog.e(e);
+                if (ext.length() != 0) {
+                    switch (extL) {
+                        case "webp":
+                            document.mime_type = "image/webp";
+                            break;
+                        case "opus":
+                            document.mime_type = "audio/opus";
+                            break;
+                        case "mp3":
+                            document.mime_type = "audio/mpeg";
+                            break;
+                        case "m4a":
+                            document.mime_type = "audio/m4a";
+                            break;
+                        case "ogg":
+                            document.mime_type = "audio/ogg";
+                            break;
+                        case "flac":
+                            document.mime_type = "audio/flac";
+                            break;
+                        default:
+                            String mimeType = myMime.getMimeTypeFromExtension(extL);
+                            if (mimeType != null) {
+                                document.mime_type = mimeType;
+                            } else {
+                                document.mime_type = "application/octet-stream";
+                            }
+                            break;
+                    }
+                } else {
+                    document.mime_type = "application/octet-stream";
                 }
-                if (bmOptions.outWidth != 0 && bmOptions.outHeight != 0 && bmOptions.outWidth <= 800 && bmOptions.outHeight <= 800) {
-                    TLRPC.TL_documentAttributeSticker attributeSticker = new TLRPC.TL_documentAttributeSticker();
-                    attributeSticker.alt = "";
-                    attributeSticker.stickerset = new TLRPC.TL_inputStickerSetEmpty();
-                    document.attributes.add(attributeSticker);
-                    TLRPC.TL_documentAttributeImageSize attributeImageSize = new TLRPC.TL_documentAttributeImageSize();
-                    attributeImageSize.w = bmOptions.outWidth;
-                    attributeImageSize.h = bmOptions.outHeight;
-                    document.attributes.add(attributeImageSize);
-
-                    Bitmap bitmap = ImageLoader.loadBitmap(f.getAbsolutePath(), null, 400, 400, true);
-                    TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(null, bitmap, Bitmap.CompressFormat.PNG, false, 400, 400, 100, isEncrypted, 0, 0, false);
+                if (!forceDocument && document.mime_type.equals("image/gif") && (editingMessageObject == null || editingMessageObject.getGroupIdForUse() == 0)) {
+                    try {
+                        Bitmap bitmap = ImageLoader.loadBitmap(f.getAbsolutePath(), null, 90, 90, true);
+                        if (bitmap != null) {
+                            fileName.file_name = "animation.gif";
+                            document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+                            TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(bitmap, 90, 90, 55, isEncrypted);
+                            if (thumb != null) {
+                                document.thumbs.add(thumb);
+                                document.flags |= 1;
+                            }
+                            bitmap.recycle();
+                        }
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
+                }
+                if (cover != null) {
+                    TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(cover, 132, 132, 55, isEncrypted);
                     if (thumb != null) {
                         document.thumbs.add(thumb);
                         document.flags |= 1;
                     }
+                    cover.recycle();
+                }
+                if (document.mime_type.equals("image/webp") && editingMessageObject == null) {
+                    BitmapFactory.Options bmOptions = new BitmapFactory.Options();
+                    try {
+                        bmOptions.inJustDecodeBounds = true;
+//                            RandomAccessFile file = new RandomAccessFile(path, "r");
+//                            ByteBuffer buffer = file.getChannel().map(FileChannel.MapMode.READ_ONLY, 0, path.length());
+//                            Utilities.loadWebpImage(null, buffer, buffer.limit(), bmOptions, true);
+                        BitmapFactory.decodeFile(path, bmOptions);
+//                            file.close();
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
+                    if (bmOptions.outWidth != 0 && bmOptions.outHeight != 0 && bmOptions.outWidth <= 800 && bmOptions.outHeight <= 800) {
+                        TLRPC.TL_documentAttributeSticker attributeSticker = new TLRPC.TL_documentAttributeSticker();
+                        attributeSticker.alt = "";
+                        attributeSticker.stickerset = new TLRPC.TL_inputStickerSetEmpty();
+                        document.attributes.add(attributeSticker);
+                        TLRPC.TL_documentAttributeImageSize attributeImageSize = new TLRPC.TL_documentAttributeImageSize();
+                        attributeImageSize.w = bmOptions.outWidth;
+                        attributeImageSize.h = bmOptions.outHeight;
+                        document.attributes.add(attributeImageSize);
+
+                        Bitmap bitmap = ImageLoader.loadBitmap(f.getAbsolutePath(), null, 400, 400, true);
+                        TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(null, bitmap, Bitmap.CompressFormat.PNG, false, 400, 400, 100, isEncrypted, 0, 0, false);
+                        if (thumb != null) {
+                            document.thumbs.add(thumb);
+                            document.flags |= 1;
+                        }
+                    }
                 }
             }
-        }
-        final String captionFinal = caption != null ? caption.toString() : "";
+            final String captionFinal = caption != null ? caption.toString() : "";
 
-        final TLRPC.TL_document documentFinal = document;
-        final String pathFinal = path;
-        final String parentFinal = parentObject;
-        final HashMap<String, String> params = new HashMap<>();
-        if (originalPath != null) {
-            params.put("originalPath", originalPath);
-        }
-        if (forceDocument && attributeAudio == null) {
-            params.put("forceDocument", "1");
-        }
-        if (parentFinal != null) {
-            params.put("parentObject", parentFinal);
-        }
-        Integer prevType = 0;
-        boolean isSticker = false;
-        if (docType != null) {
-            prevType = docType[0];
-            if (document.mime_type != null && document.mime_type.toLowerCase().startsWith("image/webp")) {
-                docType[0] = -1;
-                isSticker = true;
-            } else if (document.mime_type != null && (document.mime_type.toLowerCase().startsWith("image/") || document.mime_type.toLowerCase().startsWith("video/mp4")) || MessageObject.canPreviewDocument(document)) {
-                docType[0] = 1;
-            } else if (attributeAudio != null) {
-                docType[0] = 2;
-            } else {
-                docType[0] = 0;
+            final TLRPC.TL_document documentFinal = document;
+            final String pathFinal = path;
+            final String parentFinal = parentObject;
+            final HashMap<String, String> params = new HashMap<>();
+            if (originalPath != null) {
+                params.put("originalPath", originalPath);
             }
-        }
-        if (!isEncrypted && groupId != null) {
-            if (docType != null && prevType != null && prevType != docType[0] && pollSendParams == null) {
-                finishGroup(accountInstance, groupId[0], scheduleDate);
-                groupId[0] = Utilities.random.nextLong();
+            if (hgramExifPrepared) {
+                params.put("hgramExifPrepared", "1");
+                params.put("hgramExifResult", hgramPrepareResult != null ? hgramPrepareResult.name() : "");
+                params.put("hgramExifSlot", String.valueOf(hgramExifSlot));
+                params.put("hgramExifPath", path);
             }
-            if (!isSticker) {
-                params.put("groupId", "" + groupId[0]);
-                if (isGroupFinal) {
-                    params.put("final", "1");
+            if (forceDocument && attributeAudio == null) {
+                params.put("forceDocument", "1");
+            }
+            if (parentFinal != null) {
+                params.put("parentObject", parentFinal);
+            }
+            Integer prevType = 0;
+            boolean isSticker = false;
+            if (docType != null) {
+                prevType = docType[0];
+                if (document.mime_type != null && document.mime_type.toLowerCase().startsWith("image/webp")) {
+                    docType[0] = -1;
+                    isSticker = true;
+                } else if (document.mime_type != null && (document.mime_type.toLowerCase().startsWith("image/") || document.mime_type.toLowerCase().startsWith("video/mp4")) || MessageObject.canPreviewDocument(document)) {
+                    docType[0] = 1;
+                } else if (attributeAudio != null) {
+                    docType[0] = 2;
+                } else {
+                    docType[0] = 0;
                 }
             }
-        }
-        if (forcedPollGroupId != 0) {
-            params.put("groupId", "" + forcedPollGroupId);
-        }
-
-        AndroidUtilities.runOnUIThread(() -> {
-            if (editingMessageObject != null) {
-                accountInstance.getSendMessagesHelper().editMessage(editingMessageObject, null, null, documentFinal, pathFinal, null, params, false, false, parentFinal);
-            } else {
-                SendMessageParams sendMessageParams = SendMessagesHelper.SendMessageParams.of(documentFinal, null, pathFinal, dialogId, replyToMsg, replyToTopMsg, captionFinal, entities, null, params, notify, scheduleDate, scheduleRepeatPeriod, 0, parentFinal, null, false);
-                sendMessageParams.replyToStoryItem = storyItem;
-                sendMessageParams.replyQuote = quote;
-                sendMessageParams.sendMessageChatArguments = sendMessageChatArguments;
-                sendMessageParams.effect_id = effectId;
-                sendMessageParams.invert_media = invertMedia;
-                sendMessageParams.payStars = payStars;
-                sendMessageParams.monoForumPeer = monoForumPeerId;
-                sendMessageParams.suggestionParams = suggestionParams;
-                sendMessageParams.pollIndex = pollIndex;
-                sendMessageParams.pollSendParams = pollSendParams;
-                accountInstance.getSendMessagesHelper().sendMessage(sendMessageParams);
+            if (!isEncrypted && groupId != null) {
+                if (docType != null && prevType != null && prevType != docType[0] && pollSendParams == null) {
+                    finishGroup(accountInstance, groupId[0], scheduleDate);
+                    groupId[0] = Utilities.random.nextLong();
+                }
+                if (!isSticker) {
+                    params.put("groupId", "" + groupId[0]);
+                    if (isGroupFinal) {
+                        params.put("final", "1");
+                    }
+                }
             }
-        });
-        return 0;
+            if (forcedPollGroupId != 0) {
+                params.put("groupId", "" + forcedPollGroupId);
+            }
+
+            // From here on the send is owned by the queued message; the prepare-time cleanup
+            // guard must not delete its attachPath anymore.
+            hgramExifHandedOff = true;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (editingMessageObject != null) {
+                    accountInstance.getSendMessagesHelper().editMessage(editingMessageObject, null, null, documentFinal, pathFinal, null, params, false, false, parentFinal);
+                } else {
+                    SendMessageParams sendMessageParams = SendMessagesHelper.SendMessageParams.of(documentFinal, null, pathFinal, dialogId, replyToMsg, replyToTopMsg, captionFinal, entities, null, params, notify, scheduleDate, scheduleRepeatPeriod, 0, parentFinal, null, false);
+                    sendMessageParams.replyToStoryItem = storyItem;
+                    sendMessageParams.replyQuote = quote;
+                    sendMessageParams.sendMessageChatArguments = sendMessageChatArguments;
+                    sendMessageParams.effect_id = effectId;
+                    sendMessageParams.invert_media = invertMedia;
+                    sendMessageParams.payStars = payStars;
+                    sendMessageParams.monoForumPeer = monoForumPeerId;
+                    sendMessageParams.suggestionParams = suggestionParams;
+                    sendMessageParams.pollIndex = pollIndex;
+                    sendMessageParams.pollSendParams = pollSendParams;
+                    accountInstance.getSendMessagesHelper().sendMessage(sendMessageParams);
+                }
+            });
+            return 0;
+        } finally {
+            if (hgramExifPreparedPath != null && !hgramExifHandedOff) {
+                // Exception before hand-off: nothing can ever retry this copy, release both.
+                HgramExifCleaner.releaseOwner(hgramExifPreparedPath, true);
+            }
+        }
     }
 
     private static boolean checkFileSize(AccountInstance accountInstance, Uri uri) {
@@ -12572,9 +12760,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             } else {
                 reqSend.reply_to = new TLRPC.TL_inputReplyToMonoForum();
                 reqSend.reply_to.monoforum_peer_id = monoforumPeer;
+                reqSend.flags |= 1;
             }
         }
     }
+
     private static void copyRange(File src, long start, long length, File outFile) throws IOException {
         try (FileChannel in = new FileInputStream(src).getChannel()) {
         try (FileChannel out = new FileOutputStream(outFile).getChannel()) {

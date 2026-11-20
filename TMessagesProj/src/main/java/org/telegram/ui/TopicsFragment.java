@@ -149,6 +149,8 @@ import java.util.concurrent.CountDownLatch;
 import tw.nekomimi.nekogram.BackButtonMenuRecent;
 import tw.nekomimi.nekogram.NekoConfig;
 import xyz.nextalone.nagram.hgram.HgramAntiPeek;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
 
 public class TopicsFragment extends BaseFragment implements NotificationCenter.NotificationCenterDelegate, ChatActivityInterface, RightSlidingDialogContainer.BaseFragmentWithFullscreen, MainTabsActivity.TabFragmentDelegate {
 
@@ -1068,11 +1070,12 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
             toggleSelection(view);
             if (!NekoConfig.disableVibration.Bool()) {
                 try {
-                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                    HgramHaptics.play(view, HgramHapticProfile.PLACE_LONG_PRESS, HapticFeedbackConstants.LONG_PRESS, 0);
                 } catch (Exception ignored) {}
             }
             return true;
         });
+        recyclerListView.setSuppressAutoLongPressHaptic(true);
         recyclerListView.setOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
@@ -1203,7 +1206,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
                             if (pullViewState == ARCHIVE_ITEM_STATE_HIDDEN) {
                                 if (!NekoConfig.disableVibration.Bool()) {
                                     try {
-                                        recyclerListView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                                        HgramHaptics.play(recyclerListView, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                                     } catch (Exception ignored) {}
                                 }
                                 if (pullForegroundDrawable != null) {
@@ -1868,7 +1871,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
                                     canShowHiddenArchive = true;
                                     if (!NekoConfig.disableVibration.Bool()) {
                                         try {
-                                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                                            HgramHaptics.play(this, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                                         } catch (Exception ignored) {}
                                     }
                                     if (pullForegroundDrawable != null) {
@@ -1966,7 +1969,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
     private boolean showChatPreview(DialogCell cell) {
         if (!NekoConfig.disableVibration.Bool()) {
             try {
-                cell.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                HgramHaptics.play(cell, HgramHapticProfile.PLACE_LONG_PRESS, HapticFeedbackConstants.LONG_PRESS, 0);
             } catch (Exception ignored) {}
         }
         final ActionBarPopupWindow.ActionBarPopupWindowLayout[] previewMenu = new ActionBarPopupWindow.ActionBarPopupWindowLayout[1];

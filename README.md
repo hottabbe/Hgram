@@ -170,6 +170,12 @@ Hgram основан на работе других проектов:
 собственное имя и собственные иконки; см. [BRANDING.md](BRANDING.md). Упоминания upstream-проектов
 носят информационный характер и не означают их одобрения или поддержки Hgram.
 
+### Сторонние компоненты OCR
+
+Распознавание текста на фото использует [Tesseract4Android](https://github.com/adaptech-cz/Tesseract4Android)
+4.8.0 (Apache License 2.0) и языковые модели `rus`/`eng` из
+[tesseract-ocr/tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) (Apache License 2.0).
+
 Документация предыдущих версий сохранена в [README.legacy.md](README.legacy.md),
 [README.Nagram.md](README.Nagram.md) и [README.NekoX.md](README.NekoX.md).
 

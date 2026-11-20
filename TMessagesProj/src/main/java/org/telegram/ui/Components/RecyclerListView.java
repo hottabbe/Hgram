@@ -123,6 +123,12 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
     private OnItemLongClickListener onItemLongClickListener;
     private OnItemLongClickListenerExtended onItemLongClickListenerExtended;
     private boolean longPressCalled;
+    /**
+     * Opt-in for lists whose long-press handler plays the Hgram response itself. Such a list
+     * must not also issue the built-in {@link HapticFeedbackConstants#LONG_PRESS} feedback,
+     * otherwise one gesture produces two vibrations.
+     */
+    private boolean suppressAutoLongPressHaptic;
     private OnScrollListener onScrollListener;
     private OnInterceptTouchListener onInterceptTouchListener;
     private View emptyView;
@@ -1186,7 +1192,7 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
                     View child = currentChildView;
                     if (onItemLongClickListener != null) {
                         if (onItemLongClickListener.onItemClick(currentChildView, currentChildPosition)) {
-                            if (!NekoConfig.disableVibration.Bool()) {
+                            if (shouldPlayAutoLongPressHaptic(suppressAutoLongPressHaptic) && !NekoConfig.disableVibration.Bool()) {
                                 try {
                                     child.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                                 } catch (Exception ignored) {}
@@ -1195,7 +1201,7 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
                         }
                     } else {
                         if (onItemLongClickListenerExtended.onItemClick(currentChildView, currentChildPosition, event.getX() - currentChildView.getX(), event.getY() - currentChildView.getY())) {
-                            if (!NekoConfig.disableVibration.Bool()) {
+                            if (shouldPlayAutoLongPressHaptic(suppressAutoLongPressHaptic) && !NekoConfig.disableVibration.Bool()) {
                                 try {
                                     child.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
                                 } catch (Exception ignored) {}
@@ -2331,6 +2337,21 @@ public class RecyclerListView extends RecyclerView implements IBlur3Capture {
 
     public void setInstantClick(boolean value) {
         instantClick = value;
+    }
+
+    /**
+     * Declares the list's long-press handler as the single owner of the haptic response.
+     * Only the automatic {@link HapticFeedbackConstants#LONG_PRESS} call is skipped; the
+     * listener return value, {@code longPressCalled}, accessibility events, selection and
+     * move/release handling stay untouched.
+     */
+    public void setSuppressAutoLongPressHaptic(boolean value) {
+        suppressAutoLongPressHaptic = value;
+    }
+
+    /** The built-in feedback plays only for lists that did not hand ownership to a handler. */
+    static boolean shouldPlayAutoLongPressHaptic(boolean suppressAuto) {
+        return !suppressAuto;
     }
 
     public void setDisallowInterceptTouchEvents(boolean value) {

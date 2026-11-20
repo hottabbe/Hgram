@@ -36,6 +36,7 @@ import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 
 import tw.nekomimi.nekogram.utils.AlertUtil;
+import xyz.nextalone.nagram.hgram.HgramExifCleaner;
 
 public class SecretChatHelper extends BaseController {
 
@@ -568,7 +569,15 @@ public class SecretChatHelper extends BaseController {
                     if (cacheFile.renameTo(cacheFile2)) {
                         newMsgObj.mediaExists = newMsgObj.attachPathExists;
                         newMsgObj.attachPathExists = false;
+                        // The prepared copy now lives at its permanent path: drop owner/lease
+                        // without deleting the file.
+                        HgramExifCleaner.releaseOwner(newMsg.attachPath, false);
                         newMsg.attachPath = "";
+                    } else {
+                        // The message is already sent and keeps its attachPath; the lease is no
+                        // longer needed, but the file is not ours to delete here. It goes away
+                        // with the regular TTL/manual cache cleanup.
+                        HgramExifCleaner.releaseOwner(newMsg.attachPath, false);
                     }
                 }
 

@@ -42,12 +42,20 @@ public final class HgramHapticProfile {
     public int durationMs;
     public int pattern;
     public int gapMs;
+    /** Built-in effect; {@link HgramHapticEffect#AUTO} keeps the amplitude profile. */
+    public HgramHapticEffect effect;
 
     public HgramHapticProfile(int intensity, int durationMs, int pattern, int gapMs) {
+        this(intensity, durationMs, pattern, gapMs, HgramHapticEffect.AUTO);
+    }
+
+    public HgramHapticProfile(int intensity, int durationMs, int pattern, int gapMs,
+                              HgramHapticEffect effect) {
         this.intensity = clamp(intensity, MIN_INTENSITY, 255);
         this.durationMs = clamp(durationMs, 10, 300);
         this.pattern = clamp(pattern, 0, 2);
         this.gapMs = clamp(gapMs, 20, 200);
+        this.effect = effect == null ? HgramHapticEffect.AUTO : effect;
     }
 
     public static HgramHapticProfile defaults(String place) {
@@ -100,11 +108,13 @@ public final class HgramHapticProfile {
         String raw = preferences().getString(key(place), null);
         if (raw != null) {
             String[] parts = raw.split(",");
-            if (parts.length == 4) {
+            if (parts.length >= 4) {
                 try {
+                    final HgramHapticEffect effect = parts.length >= 5
+                            ? HgramHapticEffect.parse(parts[4]) : HgramHapticEffect.AUTO;
                     return new HgramHapticProfile(Integer.parseInt(parts[0].trim()),
                             Integer.parseInt(parts[1].trim()), Integer.parseInt(parts[2].trim()),
-                            Integer.parseInt(parts[3].trim()));
+                            Integer.parseInt(parts[3].trim()), effect);
                 } catch (NumberFormatException ignore) {
                 }
             }
@@ -113,12 +123,13 @@ public final class HgramHapticProfile {
     }
 
     public HgramHapticProfile copy() {
-        return new HgramHapticProfile(intensity, durationMs, pattern, gapMs);
+        return new HgramHapticProfile(intensity, durationMs, pattern, gapMs, effect);
     }
 
     public void save(String place) {
         preferences().edit().putString(key(place),
-                intensity + "," + durationMs + "," + pattern + "," + gapMs).apply();
+                intensity + "," + durationMs + "," + pattern + "," + gapMs + ","
+                        + (effect == null ? HgramHapticEffect.AUTO : effect).csvName()).apply();
     }
 
     public static void reset(String place) {
@@ -136,7 +147,12 @@ public final class HgramHapticProfile {
     public String summary() {
         String repeat = pattern == 0 ? "single" : pattern == 1 ? "double" : "triple";
         int percent = Math.round(intensity / 255f * 100f);
-        return percent + "% · " + durationMs + " ms · " + repeat;
+        String result = percent + "% · " + durationMs + " ms · " + repeat;
+        final HgramHapticEffect value = effect == null ? HgramHapticEffect.AUTO : effect;
+        if (value != HgramHapticEffect.AUTO) {
+            result += " · " + value.csvName();
+        }
+        return result;
     }
 
     public static String key(String place) {

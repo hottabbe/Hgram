@@ -151,6 +151,7 @@ import tw.nekomimi.nekogram.NekoXConfig;
 import tw.nekomimi.nekogram.utils.AlertUtil;
 import tw.nekomimi.nekogram.utils.UIUtil;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramExifCleaner;
 
 public class MessagesController extends BaseController implements NotificationCenter.NotificationCenterDelegate {
 
@@ -9544,6 +9545,9 @@ public class MessagesController extends BaseController implements NotificationCe
         if ((messages == null || messages.isEmpty()) && taskId == 0) {
             return;
         }
+        // Deleted messages can never be retried: drop their prepared-copy owners and files.
+        // The helper is idempotent and returns 0 for the taskId != 0 / null-list case.
+        HgramExifCleaner.releaseOwnersForMessages(currentAccount, dialogId, messages, true);
         ArrayList<Integer> toSend = null;
         long channelId;
         if (taskId == 0) {

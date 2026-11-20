@@ -9084,6 +9084,16 @@ public class Theme {
         return drawable;
     }
 
+    // A theme may define the action bar background without the matching icon key
+    // (e.g. AMOLED); derive a readable icon color instead of falling back to black.
+    static int resolveActionBarDefaultIconColor(int actionBarDefaultColor) {
+        return ThemeColors.resolveActionBarDefaultIconColor(actionBarDefaultColor);
+    }
+
+    private static boolean needsActionBarDefaultIconFallback(int key) {
+        return key == key_actionBarDefaultIcon && !hasThemeKey(key) && fallbackKeys.get(key, -1) == -1;
+    }
+
     public static int getDefaultColor(int key) {
         int value = defaultColors[key];
         if (value == 0) {
@@ -9141,7 +9151,11 @@ public class Theme {
 
     public static int getColor(int key, ResourcesProvider provider) {
         if (provider != null) {
-            return provider.getColor(key);
+            final int color = provider.getColor(key);
+            if (needsActionBarDefaultIconFallback(key) && color == getDefaultColor(key)) {
+                return resolveActionBarDefaultIconColor(provider.getColor(key_actionBarDefault));
+            }
+            return color;
         }
         return getColor(key);
     }
@@ -9198,6 +9212,13 @@ public class Theme {
                 if (fallbackIndex >= 0) {
                     return currentColors.valueAt(fallbackIndex);
                 }
+            }
+
+            if (needsActionBarDefaultIconFallback(key)) {
+                if (isDefault != null) {
+                    isDefault[0] = true;
+                }
+                return resolveActionBarDefaultIconColor(getColor(key_actionBarDefault, null, ignoreAnimation));
             }
 
             if (isDefault != null) {

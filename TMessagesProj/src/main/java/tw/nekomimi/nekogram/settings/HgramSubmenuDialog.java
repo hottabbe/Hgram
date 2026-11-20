@@ -51,6 +51,8 @@ public final class HgramSubmenuDialog {
         private final int step;
         private final ValueFormatter formatter;
         private OnValueChanged listener;
+        private Runnable onStartTracking;
+        private Runnable onStopTracking;
         private boolean notify = true;
 
         private SliderRow(Context context, Theme.ResourcesProvider resourcesProvider,
@@ -113,10 +115,16 @@ public final class HgramSubmenuDialog {
 
                 @Override
                 public void onStartTrackingTouch(SeekBar bar) {
+                    if (onStartTracking != null) {
+                        onStartTracking.run();
+                    }
                 }
 
                 @Override
                 public void onStopTrackingTouch(SeekBar bar) {
+                    if (onStopTracking != null) {
+                        onStopTracking.run();
+                    }
                 }
             });
         }
@@ -140,6 +148,16 @@ public final class HgramSubmenuDialog {
             this.listener = listener;
         }
 
+        /** Runs once when the user starts dragging the seek bar. */
+        public void setOnStartTracking(Runnable listener) {
+            this.onStartTracking = listener;
+        }
+
+        /** Runs once when the user lifts the finger off the seek bar. */
+        public void setOnStopTracking(Runnable listener) {
+            this.onStopTracking = listener;
+        }
+
         public void setEnabled(boolean enabled) {
             seekBar.setEnabled(enabled);
             view.setAlpha(enabled ? 1f : 0.45f);
@@ -155,6 +173,58 @@ public final class HgramSubmenuDialog {
 
         private void updateValueText() {
             valueView.setText(formatter == null ? String.valueOf(getValue()) : formatter.format(getValue()));
+        }
+    }
+
+    /** A tappable "label -> value" row that opens a picker without closing the parent dialog. */
+    public static final class ValueRow {
+        private final LinearLayout view;
+        private final TextView valueView;
+
+        private ValueRow(Context context, Theme.ResourcesProvider resourcesProvider,
+                         CharSequence label, CharSequence value, Runnable action) {
+            view = new LinearLayout(context);
+            view.setOrientation(LinearLayout.HORIZONTAL);
+            view.setGravity(Gravity.CENTER_VERTICAL);
+            view.setPadding(AndroidUtilities.dp(24), 0, AndroidUtilities.dp(24), 0);
+            view.setMinimumHeight(AndroidUtilities.dp(48));
+            view.setBackground(Theme.createRadSelectorDrawable(
+                    0x00000000, Theme.getColor(Theme.key_listSelector, resourcesProvider),
+                    0, 0));
+
+            TextView title = new TextView(context);
+            title.setText(label);
+            title.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
+            title.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider));
+            title.setMaxLines(2);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            title.setGravity((LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT) | Gravity.CENTER_VERTICAL);
+            view.addView(title, LayoutHelper.createLinear(0, LayoutHelper.WRAP_CONTENT, 1f));
+
+            valueView = new TextView(context);
+            valueView.setText(value);
+            valueView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
+            valueView.setTextColor(Theme.getColor(Theme.key_dialogTextGray, resourcesProvider));
+            valueView.setSingleLine(true);
+            valueView.setEllipsize(TextUtils.TruncateAt.END);
+            valueView.setGravity((LocaleController.isRTL ? Gravity.LEFT : Gravity.RIGHT) | Gravity.CENTER_VERTICAL);
+            valueView.setPaddingRelative(AndroidUtilities.dp(12), 0, 0, 0);
+            view.addView(valueView, LayoutHelper.createLinear(
+                    LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT));
+
+            view.setClickable(true);
+            view.setFocusable(true);
+            if (action != null) {
+                view.setOnClickListener(v -> action.run());
+            }
+        }
+
+        public void setValueText(CharSequence value) {
+            valueView.setText(value);
+        }
+
+        public View getView() {
+            return view;
         }
     }
 
@@ -259,6 +329,13 @@ public final class HgramSubmenuDialog {
                                 int value, ValueFormatter formatter) {
             SliderRow row = new SliderRow(context, resourcesProvider, label, hint, min, max, step,
                     value, formatter);
+            items.addView(row.getView(), LayoutHelper.createLinear(
+                    LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+            return row;
+        }
+
+        public ValueRow choiceRow(CharSequence label, CharSequence value, Runnable action) {
+            ValueRow row = new ValueRow(context, resourcesProvider, label, value, action);
             items.addView(row.getView(), LayoutHelper.createLinear(
                     LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
             return row;

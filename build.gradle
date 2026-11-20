@@ -68,5 +68,6 @@ allprojects {
         // The order in which you list these repositories matter.
         mavenCentral()
         google()
+        maven { url 'https://jitpack.io' }
     }
 }

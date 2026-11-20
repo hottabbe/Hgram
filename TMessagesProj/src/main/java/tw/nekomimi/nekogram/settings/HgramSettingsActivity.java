@@ -1,6 +1,7 @@
 package tw.nekomimi.nekogram.settings;
 
 import android.content.Context;
+import android.os.Build;
 import android.view.View;
 import android.widget.Button;
 import android.widget.EditText;
@@ -19,13 +20,16 @@ import androidx.recyclerview.widget.RecyclerView;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.function.Consumer;
 
 import org.telegram.messenger.FlagSecureReason;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
+import org.telegram.messenger.Utilities;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.ActionBarMenu;
@@ -44,7 +48,9 @@ import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.hgram.HgramAntiPeek;
 import xyz.nextalone.nagram.hgram.HgramConfig;
 import xyz.nextalone.nagram.hgram.HgramDcAddressCache;
+import xyz.nextalone.nagram.hgram.HgramExifCleaner;
 import xyz.nextalone.nagram.hgram.HgramNotificationDebouncer;
+import xyz.nextalone.nagram.hgram.HgramOcrModels;
 import xyz.nextalone.nagram.hgram.HgramOfflineTranscriber;
 import xyz.nextalone.nagram.hgram.HgramGigaAmRecognizer;
 import xyz.nextalone.nagram.hgram.HgramSherpaRecognizer;
@@ -52,6 +58,8 @@ import xyz.nextalone.nagram.hgram.HgramSummarizerModel;
 import xyz.nextalone.nagram.hgram.HgramVoskModels;
 import xyz.nextalone.nagram.hgram.HgramDownloadThreadsCell;
 import xyz.nextalone.nagram.hgram.HgramHapticCapabilities;
+import xyz.nextalone.nagram.hgram.HgramHapticEffect;
+import xyz.nextalone.nagram.hgram.HgramHapticPreview;
 import xyz.nextalone.nagram.hgram.HgramHapticProfile;
 import xyz.nextalone.nagram.hgram.HgramHaptics;
 import org.telegram.ui.Components.RecyclerListView;
@@ -118,6 +126,10 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     static final int ROW_SUMMARIZER_KEY = 74;
     static final int ROW_SUMMARIZER_MODEL = 75;
     static final int ROW_SUMMARIZER_PROMPT = 76;
+    static final int ROW_EXIF_CLEAN = 78;
+    static final int ROW_EXIF_CLEAR = 79;
+    static final int ROW_OCR_LONG_PRESS = 80;
+    static final int ROW_OCR_MODELS = 81;
     private static final int ROW_DOWNLOAD_THREADS_INFO = 34;
     private static final int ROW_SHORT_MERGE = 35;
     private static final int ROW_SHORT_MERGE_INFO = 36;
@@ -133,6 +145,10 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     static final int[] ROWS = {
             ROW_HEADER_CHAT, ROW_SHORT_MERGE, ROW_PIN_TO_SCREEN,
             ROW_SUMMARIZER_ENABLE, ROW_SUMMARIZER_TRIGGER, ROW_SUMMARIZER_KEY, ROW_SUMMARIZER_MODEL, ROW_SUMMARIZER_PROMPT,
+            ROW_EXIF_CLEAN,
+            ROW_EXIF_CLEAR,
+            ROW_OCR_LONG_PRESS,
+            ROW_OCR_MODELS,
             ROW_HEADER_FEED, ROW_COMPACT_ALBUMS, ROW_SIMILAR_POST_DEDUPLICATION, ROW_CLEAN_FEED_FILTER, ROW_FEED_KEYWORDS,
             ROW_HEADER_AUDIO, ROW_AUTO_LOUDNESS,
             ROW_HEADER_RECOGNITION, ROW_OFFLINE_TRANSCRIPTION, ROW_STT_ENGINE, ROW_VOSK_MODELS, ROW_SHERPA_MODEL, ROW_SHERPA_DEVICE, ROW_GIGAAM_MODEL, ROW_GIGAAM_INFO,
@@ -185,7 +201,8 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 || id == ROW_SIMILAR_POST_DEDUPLICATION || id == ROW_CLEAN_FEED_FILTER || id == ROW_AUTO_LOUDNESS
                 || id == ROW_OFFLINE_TRANSCRIPTION || id == ROW_ALLOW_SCREENSHOTS
                 || id == ROW_FAST_HANDOVER || id == ROW_NOTIFICATION_DEBOUNCE || id == ROW_FRAME_THROTTLING
-                || id == ROW_HAPTIC_TOGGLE || id == ROW_SUMMARIZER_ENABLE;
+                || id == ROW_HAPTIC_TOGGLE || id == ROW_SUMMARIZER_ENABLE || id == ROW_EXIF_CLEAN
+                || id == ROW_OCR_LONG_PRESS;
     }
 
     private void bindToggle(TextCheckCell cell, int id, boolean divider) {
@@ -204,6 +221,8 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_NOTIFICATION_DEBOUNCE: title = R.string.HgramNotificationDebounce; description = R.string.HgramNotificationDebounceInfo; checked = HgramConfig.isSmartNotificationDebounceEnabled(); break;
             case ROW_HAPTIC_TOGGLE: title = R.string.HgramHapticEnabled; description = R.string.HgramHapticEnabledInfo; checked = HgramConfig.isHapticEnabled(); break;
             case ROW_SUMMARIZER_ENABLE: title = R.string.HgramSummarizerEnable; description = R.string.HgramSummarizerEnableInfo; checked = HgramConfig.isSummarizerEnabled(); break;
+            case ROW_EXIF_CLEAN: title = R.string.HgramExifCleanTitle; description = R.string.HgramExifCleanInfo; checked = HgramConfig.isExifCleanupEnabled(); break;
+            case ROW_OCR_LONG_PRESS: title = R.string.HgramOcrLongPressTitle; description = R.string.HgramOcrLongPressInfo; checked = HgramConfig.isOcrLongPressEnabled(); break;
             default: title = R.string.HgramRoadmapFrameThrottling; description = R.string.HgramFrameThrottlingInfo; checked = HgramConfig.isSmartFrameThrottlingEnabled(); break;
         }
         cell.setTextAndValueAndCheck(LocaleController.getString(title),
@@ -331,6 +350,20 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             showSummarizerModelDialog();
         } else if (position == ROW_SUMMARIZER_PROMPT) {
             showSummarizerPromptDialog();
+        } else if (position == ROW_EXIF_CLEAN) {
+            boolean enabled = !HgramConfig.isExifCleanupEnabled();
+            HgramConfig.setExifCleanupEnabled(enabled);
+            ((TextCheckCell) view).setChecked(enabled);
+            notifyRow(ROW_EXIF_CLEAN);
+        } else if (position == ROW_EXIF_CLEAR) {
+            showExifClearPreparedDialog();
+        } else if (position == ROW_OCR_LONG_PRESS) {
+            boolean enabled = !HgramConfig.isOcrLongPressEnabled();
+            HgramConfig.setOcrLongPressEnabled(enabled);
+            ((TextCheckCell) view).setChecked(enabled);
+            notifyRow(ROW_OCR_LONG_PRESS);
+        } else if (position == ROW_OCR_MODELS) {
+            toggleOcrModels();
         } else if (position == ROW_STT_ENGINE) {
             showSttEngineDialog();
         } else if (position == ROW_VOSK_MODELS) {
@@ -667,6 +700,10 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_SUMMARIZER_KEY: return LocaleController.getString(R.string.HgramSummarizerKey);
             case ROW_SUMMARIZER_MODEL: return LocaleController.getString(R.string.HgramSummarizerModel);
             case ROW_SUMMARIZER_PROMPT: return LocaleController.getString(R.string.HgramSummarizerPrompt);
+            case ROW_EXIF_CLEAN: return LocaleController.getString(R.string.HgramExifCleanTitle);
+            case ROW_OCR_LONG_PRESS: return LocaleController.getString(R.string.HgramOcrLongPressTitle);
+            case ROW_OCR_MODELS: return LocaleController.getString(R.string.HgramOcrModelsTitle);
+            case ROW_EXIF_CLEAR: return LocaleController.getString(R.string.HgramExifClearPrepared);
             case ROW_RESET_HGRAM_SETTINGS: return LocaleController.getString(R.string.HgramResetSettings);
             case ROW_HEADER_HAPTICS: return LocaleController.getString(R.string.HgramHeaderHaptics);
             case ROW_HAPTIC_TOGGLE: return LocaleController.getString(R.string.HgramHapticEnabled);
@@ -692,6 +729,8 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_NOTIFICATION_DEBOUNCE: return R.string.HgramNotificationDebounceInfo;
             case ROW_FRAME_THROTTLING: return R.string.HgramFrameThrottlingInfo;
             case ROW_HAPTIC_TOGGLE: return R.string.HgramHapticEnabledInfo;
+            case ROW_EXIF_CLEAN: return R.string.HgramExifCleanInfo;
+            case ROW_OCR_LONG_PRESS: return R.string.HgramOcrLongPressInfo;
             default: return 0;
         }
     }
@@ -705,6 +744,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_VOSK_MODELS: return voskStatusText();
             case ROW_SHERPA_MODEL: return sherpaStatusText();
             case ROW_GIGAAM_MODEL: return gigaAmStatusText();
+            case ROW_OCR_MODELS: return ocrModelsStatusText();
             case ROW_SHERPA_DEVICE: return sherpaDeviceName();
             case ROW_ANTI_PEEK: return antiPeekStatusText();
             case ROW_WEAK_NETWORK: return weakNetworkName();
@@ -989,12 +1029,20 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         }
         final HgramHapticProfile initial = HgramHapticProfile.of(place);
         final int index = java.util.Arrays.asList(HgramHapticProfile.PLACES).indexOf(place);
+        final HgramHapticEffect[] effect = {
+                initial.effect != null ? initial.effect : HgramHapticEffect.AUTO
+        };
         final HgramSubmenuDialog.Builder builder =
                 new HgramSubmenuDialog.Builder(getParentActivity(), resourcesProvider)
                         .title(LocaleController.getString(hapticPlaceTitle(index)));
         if (!capabilities.systemHapticsEnabled) {
             builder.message(LocaleController.getString(R.string.HgramHapticSystemOff));
         }
+        final HgramSubmenuDialog.ValueRow[] typeHolder = new HgramSubmenuDialog.ValueRow[1];
+        typeHolder[0] = builder.choiceRow(
+                LocaleController.getString(R.string.HgramHapticType),
+                hapticEffectName(effect[0]),
+                () -> showHapticEffectPicker(effect, typeHolder[0]));
         final HgramSubmenuDialog.SliderRow intensity = builder.slider(
                 LocaleController.getString(R.string.HgramHapticStrength),
                 capabilities.showIntensity() ? capabilities.intensityHint() : null,
@@ -1015,27 +1063,119 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         pattern.setOnValueChanged(value -> gap.setEnabled(value > 0));
         gap.setEnabled(initial.pattern > 0);
 
+        final HgramHapticPreview preview = new HgramHapticPreview();
+        final HgramHapticProfile[] current = new HgramHapticProfile[1];
+        final Runnable refreshCurrent = () -> current[0] = new HgramHapticProfile(
+                intensity.getValue(), duration.getValue(), pattern.getValue(), gap.getValue(),
+                effect[0]);
+        final Runnable playPreview = () -> {
+            if (getParentActivity() == null) return;
+            refreshCurrent.run();
+            HgramHaptics.preview(getParentActivity(), current[0]);
+        };
+        final Consumer<HgramHapticProfile> playSnapshot = p -> {
+            if (getParentActivity() != null) {
+                HgramHaptics.preview(getParentActivity(), p);
+            }
+        };
+        intensity.setOnStartTracking(() -> {
+            refreshCurrent.run();
+            preview.beginTracking(current[0]);
+        });
+        intensity.setOnStopTracking(() -> {
+            refreshCurrent.run();
+            preview.release(current[0], playSnapshot);
+        });
+        duration.setOnStartTracking(() -> {
+            refreshCurrent.run();
+            preview.beginTracking(current[0]);
+        });
+        duration.setOnStopTracking(() -> {
+            refreshCurrent.run();
+            preview.release(current[0], playSnapshot);
+        });
+        pattern.setOnStartTracking(() -> {
+            refreshCurrent.run();
+            preview.beginTracking(current[0]);
+        });
+        pattern.setOnStopTracking(() -> {
+            refreshCurrent.run();
+            preview.release(current[0], playSnapshot);
+        });
+        gap.setOnStartTracking(() -> {
+            refreshCurrent.run();
+            preview.beginTracking(current[0]);
+        });
+        gap.setOnStopTracking(() -> {
+            refreshCurrent.run();
+            preview.release(current[0], playSnapshot);
+        });
+
         builder.footerButton(LocaleController.getString(R.string.HgramHapticPreview), () -> {
-            HgramHapticProfile temp = new HgramHapticProfile(
-                    intensity.getValue(), duration.getValue(), pattern.getValue(), gap.getValue());
-            HgramHaptics.preview(getParentActivity(), temp);
+            playPreview.run();
             Toast.makeText(getParentActivity(), HgramHaptics.lastPath(), Toast.LENGTH_SHORT).show();
         });
         builder.footerButton(LocaleController.getString(R.string.HgramHapticReset), () -> {
+            preview.reset();
             HgramHapticProfile defaults = HgramHapticProfile.defaults(place);
             intensity.setValue(defaults.intensity, false);
             duration.setValue(defaults.durationMs, false);
             pattern.setValue(defaults.pattern, false);
             gap.setValue(defaults.gapMs, false);
             gap.setEnabled(defaults.pattern > 0);
+            effect[0] = HgramHapticEffect.AUTO;
+            if (typeHolder[0] != null) {
+                typeHolder[0].setValueText(LocaleController.getString(R.string.HgramHapticTypeAuto));
+            }
         });
         builder.footerButton(LocaleController.getString(R.string.Close), null, true);
         builder.footerButton(LocaleController.getString(R.string.HgramHapticSave), () -> {
             new HgramHapticProfile(intensity.getValue(), duration.getValue(),
-                    pattern.getValue(), gap.getValue()).save(place);
+                    pattern.getValue(), gap.getValue(), effect[0]).save(place);
             if (index >= 0) notifyRow(ROW_HAPTIC_BASE + index);
         }, true);
+        builder.onDismiss(preview::cancel);
         builder.show();
+    }
+
+    private static final HgramHapticEffect[] HAPTIC_EFFECTS = {
+            HgramHapticEffect.AUTO,
+            HgramHapticEffect.TICK,
+            HgramHapticEffect.CLICK,
+            HgramHapticEffect.THUD,
+            HgramHapticEffect.POP,
+            HgramHapticEffect.RISE,
+            HgramHapticEffect.FALL,
+            HgramHapticEffect.SPIN
+    };
+
+    private static CharSequence hapticEffectName(HgramHapticEffect effect) {
+        final HgramHapticEffect value = effect == null ? HgramHapticEffect.AUTO : effect;
+        return LocaleController.getString(value.localizedNameRes());
+    }
+
+    private void showHapticEffectPicker(HgramHapticEffect[] holder, HgramSubmenuDialog.ValueRow row) {
+        if (getParentActivity() == null) return;
+        final CharSequence[] names = new CharSequence[HAPTIC_EFFECTS.length];
+        for (int i = 0; i < HAPTIC_EFFECTS.length; i++) {
+            names[i] = hapticEffectName(HAPTIC_EFFECTS[i]);
+        }
+        new AlertDialog.Builder(getParentActivity())
+                .setTitle(LocaleController.getString(R.string.HgramHapticType))
+                .setItems(names, (dialog, which) -> {
+                    if (which < 0 || which >= HAPTIC_EFFECTS.length) return;
+                    holder[0] = HAPTIC_EFFECTS[which];
+                    if (row != null) {
+                        row.setValueText(hapticEffectName(holder[0]));
+                    }
+                    if (Build.VERSION.SDK_INT < 31 && holder[0] != HgramHapticEffect.AUTO
+                            && getParentActivity() != null) {
+                        Toast.makeText(getParentActivity(), R.string.HgramHapticTypeUnavailable,
+                                Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                .show();
     }
 
     @Override
@@ -1213,6 +1353,9 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 case ROW_GIGAAM_MODEL:
                     ((TextSettingsCell) holder.itemView).setTextAndValue(LocaleController.getString(R.string.HgramGigaAmModel), gigaAmStatusText(), divider);
                     break;
+                case ROW_OCR_MODELS:
+                    ((TextSettingsCell) holder.itemView).setTextAndValue(LocaleController.getString(R.string.HgramOcrModelsTitle), ocrModelsStatusText(), divider);
+                    break;
                 case ROW_SHERPA_DEVICE:
                     ((TextSettingsCell) holder.itemView).setTextAndValue(LocaleController.getString(R.string.HgramSherpaDevice), sherpaDeviceName(), divider);
                     break;
@@ -1225,6 +1368,10 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 case ROW_RESET_HGRAM_SETTINGS:
                     ((TextSettingsCell) holder.itemView).setTextAndValue(
                             LocaleController.getString(R.string.HgramResetSettings), "", divider);
+                    break;
+                case ROW_EXIF_CLEAR:
+                    ((TextSettingsCell) holder.itemView).setTextAndValue(
+                            LocaleController.getString(R.string.HgramExifClearPrepared), "", divider);
                     break;
                 case ROW_SEARCH_EMPTY:
                     ((TextInfoPrivacyCell) holder.itemView).setText(
@@ -1268,6 +1415,9 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
 
     private int lastSherpaProgress = -1;
     private int lastGigaAmProgress = -1;
+    private int lastOcrModelsProgress = -1;
+    private boolean ocrModelsDownloadActive;
+    private String cachedOcrModelsStatus;
     private String cachedVoskInstalledStatus;
     private String cachedSherpaInstalledStatus;
     private String cachedGigaAmInstalledStatus;
@@ -1310,6 +1460,18 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 lastGigaAmProgress = gigaAmProgress;
             }
             downloading |= gigaAmProgress >= 0;
+            int ocrModelsProgress = HgramOcrModels.progress();
+            if (ocrModelsProgress != lastOcrModelsProgress) {
+                notifyRow(ROW_OCR_MODELS);
+                if (lastOcrModelsProgress >= 0 && ocrModelsProgress < 0) {
+                    cachedOcrModelsStatus = null;
+                    if (ocrModelsDownloadActive) {
+                        finishOcrModelsDownload(HgramOcrModels.isReady(settingsContext()));
+                    }
+                }
+                lastOcrModelsProgress = ocrModelsProgress;
+            }
+            downloading |= ocrModelsProgress >= 0 || ocrModelsDownloadActive;
             if (downloading) AndroidUtilities.runOnUIThread(this, 1000);
         }
     };
@@ -1328,10 +1490,13 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         cachedVoskInstalledStatus = null;
         cachedSherpaInstalledStatus = null;
         cachedGigaAmInstalledStatus = null;
+        cachedOcrModelsStatus = null;
         lastVoskProgress[0] = HgramVoskModels.downloadProgress(HgramVoskModels.LANG_RU);
         lastVoskProgress[1] = HgramVoskModels.downloadProgress(HgramVoskModels.LANG_EN);
         lastSherpaProgress = HgramSherpaRecognizer.downloadProgress();
         lastGigaAmProgress = HgramGigaAmRecognizer.downloadProgress();
+        lastOcrModelsProgress = HgramOcrModels.progress();
+        ocrModelsDownloadActive = lastOcrModelsProgress >= 0;
         if (listAdapter != null && !resetSearch) {
             notifyAllRows();
         }
@@ -1801,6 +1966,45 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 .show();
     }
 
+    /** Manual replacement for the disabled automatic sweep; only stale, unleased copies go. */
+    private void showExifClearPreparedDialog() {
+        if (!HgramConfig.isExifCleanupEnabled()) {
+            Toast.makeText(getParentActivity(),
+                    LocaleController.getString(R.string.HgramExifClearPreparedDisabled),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new AlertDialog.Builder(getParentActivity())
+                .setTitle(LocaleController.getString(R.string.HgramExifClearPrepared))
+                .setMessage(LocaleController.getString(R.string.HgramExifClearPreparedInfo))
+                .setPositiveButton(LocaleController.getString(R.string.Delete), (dialog, which) ->
+                        Utilities.globalQueue.postRunnable(() -> {
+                            final int deleted = HgramExifCleaner.sweepPreparedIfEnabled(
+                                    FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE));
+                            AndroidUtilities.runOnUIThread(() -> {
+                                if (getParentActivity() == null) {
+                                    return;
+                                }
+                                if (deleted == HgramExifCleaner.SWEEP_NOT_READY) {
+                                    Toast.makeText(getParentActivity(),
+                                            LocaleController.getString(R.string.HgramExifClearPreparedNotReady),
+                                            Toast.LENGTH_SHORT).show();
+                                } else if (deleted == HgramExifCleaner.SWEEP_DISABLED) {
+                                    Toast.makeText(getParentActivity(),
+                                            LocaleController.getString(R.string.HgramExifClearPreparedDisabled),
+                                            Toast.LENGTH_SHORT).show();
+                                } else {
+                                    Toast.makeText(getParentActivity(),
+                                            LocaleController.formatString(
+                                                    R.string.HgramExifClearPreparedDone, deleted),
+                                            Toast.LENGTH_SHORT).show();
+                                }
+                            });
+                        }))
+                .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                .show();
+    }
+
     private void showWeakNetworkDialog() {
         final int current = HgramConfig.getWeakNetworkMode();
         HgramSubmenuDialog.Builder builder = new HgramSubmenuDialog.Builder(getParentActivity(), resourcesProvider)
@@ -1971,5 +2175,92 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             return kotlin.Unit.INSTANCE;
         });
         scheduleModelProgressRefresh();
+    }
+
+    private Context settingsContext() {
+        return getParentActivity() != null ? getParentActivity() : ApplicationLoader.applicationContext;
+    }
+
+    private static int ocrModelsSizeMb() {
+        return (int) Math.ceil(HgramOcrModels.TOTAL_SIZE_BYTES / (1024.0 * 1024.0));
+    }
+
+    private static String ocrModelsSizeLabel() {
+        return LocaleController.formatString(R.string.HgramGigaAmModelSize, ocrModelsSizeMb());
+    }
+
+    private String ocrModelsStatusText() {
+        final int progress = HgramOcrModels.progress();
+        if (progress >= 0) {
+            return LocaleController.formatString(R.string.HgramOcrModelsDownloading, progress)
+                    + " · " + LocaleController.getString(R.string.HgramOcrCancel);
+        }
+        if (cachedOcrModelsStatus == null) {
+            if (HgramOcrModels.isReady(settingsContext())) {
+                cachedOcrModelsStatus = LocaleController.getString(R.string.HgramOcrModelsReady)
+                        + " · " + LocaleController.getString(R.string.HgramOcrModelsDelete);
+            } else {
+                cachedOcrModelsStatus = LocaleController.formatString(R.string.HgramOcrModelsNotInstalled, ocrModelsSizeMb())
+                        + " · " + LocaleController.getString(R.string.HgramOcrModelsDownload);
+            }
+        }
+        return cachedOcrModelsStatus;
+    }
+
+    private void toggleOcrModels() {
+        if (HgramOcrModels.progress() >= 0) {
+            new AlertDialog.Builder(getParentActivity())
+                    .setTitle(LocaleController.getString(R.string.HgramOcrModelsTitle))
+                    .setMessage(LocaleController.getString(R.string.HgramOcrCancelConfirm))
+                    .setPositiveButton(LocaleController.getString(R.string.HgramOcrCancel), (dialog, which) -> HgramOcrModels.cancel())
+                    .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                    .show();
+            return;
+        }
+        if (HgramOcrModels.isReady(settingsContext())) {
+            new AlertDialog.Builder(getParentActivity())
+                    .setTitle(LocaleController.getString(R.string.HgramOcrModelsTitle))
+                    .setMessage(LocaleController.getString(R.string.HgramModelDeleteConfirm))
+                    .setPositiveButton(LocaleController.getString(R.string.HgramOcrModelsDelete), (dialog, which) -> {
+                        cachedOcrModelsStatus = null;
+                        HgramOcrModels.delete(settingsContext());
+                        notifyRow(ROW_OCR_MODELS);
+                    })
+                    .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                    .show();
+            return;
+        }
+        new AlertDialog.Builder(getParentActivity())
+                .setTitle(LocaleController.getString(R.string.HgramOcrModelsTitle))
+                .setMessage(LocaleController.formatString(R.string.HgramOcrNeedModelsText, ocrModelsSizeLabel()))
+                .setPositiveButton(LocaleController.getString(R.string.HgramOcrModelsDownload), (dialog, which) -> startOcrModelsDownload())
+                .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                .show();
+    }
+
+    private void startOcrModelsDownload() {
+        ocrModelsDownloadActive = true;
+        cachedOcrModelsStatus = null;
+        HgramOcrModels.download(settingsContext(), null, success -> {
+            AndroidUtilities.runOnUIThread(() -> finishOcrModelsDownload(success));
+            return kotlin.Unit.INSTANCE;
+        });
+        lastOcrModelsProgress = HgramOcrModels.progress();
+        notifyRow(ROW_OCR_MODELS);
+        scheduleModelProgressRefresh();
+    }
+
+    private void finishOcrModelsDownload(boolean success) {
+        if (!ocrModelsDownloadActive) {
+            return;
+        }
+        ocrModelsDownloadActive = false;
+        cachedOcrModelsStatus = null;
+        lastOcrModelsProgress = HgramOcrModels.progress();
+        notifyRow(ROW_OCR_MODELS);
+        if (getParentActivity() != null) {
+            Toast.makeText(getParentActivity(), LocaleController.getString(success
+                    ? R.string.HgramOcrModelsReady : R.string.HgramOcrDownloadFailed), Toast.LENGTH_SHORT).show();
+        }
     }
 }

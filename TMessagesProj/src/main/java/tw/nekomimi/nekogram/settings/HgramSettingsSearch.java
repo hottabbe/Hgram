@@ -41,6 +41,10 @@ final class HgramSettingsSearch {
     static final int ROW_SUMMARIZER_MODEL = 75;
     static final int ROW_SUMMARIZER_PROMPT = 76;
     static final int ROW_GIGAAM_INFO = 77;
+    static final int ROW_EXIF_CLEAN = 78;
+    static final int ROW_EXIF_CLEAR = 79;
+    static final int ROW_OCR_LONG_PRESS = 80;
+    static final int ROW_OCR_MODELS = 81;
 
     private static final String HAPTIC_COMMON =
             "вибра вибро вибрация haptic feedback сила длительность";
@@ -119,6 +123,14 @@ final class HgramSettingsSearch {
             case ROW_SUMMARIZER_MODEL:
             case ROW_SUMMARIZER_PROMPT:
                 return "суммар summary суммаризация пересказ openrouter ключ key модель model промпт prompt порог words слова ai";
+            case ROW_EXIF_CLEAN:
+                return "exif метаданные metadata gps файл file";
+            case ROW_EXIF_CLEAR:
+                return "exif метаданные metadata очистить подготовленные clear prepared cache files файлы";
+            case ROW_OCR_LONG_PRESS:
+                return "ocr tesseract распознавание текста recognition text выделение selection фото photo снимок image долгое нажатие long press";
+            case ROW_OCR_MODELS:
+                return "ocr text tesseract модели models tessdata распознавание скачать download загрузка language языковые";
             case ROW_ANTI_PEEK:
                 return "antipeek peek anti-peek скрыть подглядывание подгляд маска переворот приватность privacy hide";
             case ROW_STT_ENGINE:

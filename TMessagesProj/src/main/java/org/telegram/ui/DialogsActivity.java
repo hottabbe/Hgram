@@ -291,6 +291,8 @@ import tw.nekomimi.nekogram.utils.UpdateUtil;
 import xyz.nextalone.nagram.MainTabsStyle;
 import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.hgram.HgramAntiPeek;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
 import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 import xyz.nextalone.nagram.hgram.HgramSecretCache;
 import tw.nekomimi.nekogram.helpers.PasscodeHelper;
@@ -2391,7 +2393,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                     canShowHiddenArchive = true;
                                     if (!NekoConfig.disableVibration.Bool()) {
                                         try {
-                                            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                                            HgramHaptics.play(this, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                                         } catch (Exception ignored) {}
                                     }
                                     if (parentPage.pullForegroundDrawable != null) {
@@ -3773,7 +3775,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     if (!getMessagesController().premiumFeaturesBlocked()) {
                         try {
                             if (!NekoConfig.disableVibration.Bool())
-                                performHapticFeedback(HapticFeedbackConstants.KEYBOARD_PRESS, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
+                                HgramHaptics.play(this, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_PRESS, HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
                         } catch (Exception ignore) {}
                         topBulletin = BulletinFactory.of(DialogsActivity.this).createSimpleBulletin(R.raw.filter_reorder, AndroidUtilities.replaceTags(LocaleController.formatString(R.string.LimitReachedReorderFolder, LocaleController.getString(R.string.FilterAllChats))), LocaleController.getString(R.string.PremiumMore), Bulletin.DURATION_PROLONG, () -> {
                             showDialog(new PremiumFeatureBottomSheet(DialogsActivity.this, PremiumPreviewFragment.PREMIUM_FEATURE_ADVANCED_CHAT_MANAGEMENT, true));
@@ -4609,7 +4611,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                 if (viewPage.archivePullViewState == ARCHIVE_ITEM_STATE_HIDDEN) {
                                     if (!NekoConfig.disableVibration.Bool()) {
                                         try {
-                                            viewPage.listView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                                            HgramHaptics.play(viewPage.listView, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                                         } catch (Exception ignored) {}
                                     }
                                     if (viewPage.pullForegroundDrawable != null) {
@@ -4690,7 +4692,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     return;
                 }
                 if (clickSelectsDialog()) {
-                    onItemLongClick(viewPage.listView, view, position, 0, 0, viewPage.dialogsType, viewPage.dialogsAdapter);
+                    onItemLongClick(viewPage.listView, view, position, 0, 0, viewPage.dialogsType, viewPage.dialogsAdapter, false);
                     return;
                 } else if (initialDialogsType == DIALOGS_TYPE_BOT_REQUEST_PEER && view instanceof TextCell) {
                     viewPage.dialogsAdapter.onCreateGroupForThisClick();
@@ -4758,7 +4760,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     if (filterTabsView != null && filterTabsView.getVisibility() == View.VISIBLE && filterTabsView.isEditing()) {
                         return false;
                     }
-                    return onItemLongClick(viewPage.listView, view, position, x, y, viewPage.dialogsType, viewPage.dialogsAdapter);
+                    return onItemLongClick(viewPage.listView, view, position, x, y, viewPage.dialogsType, viewPage.dialogsAdapter, true);
                 }
 
                 @Override
@@ -4775,6 +4777,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     }
                 }
             });
+            viewPage.listView.setSuppressAutoLongPressHaptic(true);
             viewPage.swipeController = new SwipeController(viewPage);
             viewPage.recyclerItemsEnterAnimator = new RecyclerItemsEnterAnimator(viewPage.listView, false);
 
@@ -4992,7 +4995,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
                 @Override
                 public void onButtonLongPress(DialogCell dialogCell) {
-                    onItemLongClick(viewPage.listView, dialogCell, viewPage.listView.getChildAdapterPosition(dialogCell), 0, 0, viewPage.dialogsType, viewPage.dialogsAdapter);
+                    onItemLongClick(viewPage.listView, dialogCell, viewPage.listView.getChildAdapterPosition(dialogCell), 0, 0, viewPage.dialogsType, viewPage.dialogsAdapter, true);
                 }
 
                 @Override
@@ -5511,7 +5514,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 }
                 if (!NekoConfig.disableVibration.Bool()) {
                     try {
-                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                        HgramHaptics.play(view, HgramHapticProfile.PLACE_LONG_PRESS, HapticFeedbackConstants.LONG_PRESS, 0);
                     } catch (Exception ignored) {}
                 }
                 if (dialogId == UserConfig.getInstance(currentAccount).getClientUserId()) {
@@ -8762,7 +8765,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         updateVisibleRows(MessagesController.UPDATE_MASK_SELECT_DIALOG);
     }
 
-    private boolean onItemLongClick(RecyclerListView listView, View view, int position, float x, float y, int dialogsType, RecyclerListView.Adapter adapter) {
+    private boolean onItemLongClick(RecyclerListView listView, View view, int position, float x, float y, int dialogsType, RecyclerListView.Adapter adapter, boolean longPress) {
         if (getParentActivity() == null || view instanceof DialogsHintCell) {
             return false;
         }
@@ -8773,7 +8776,15 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         if (!actionBar.isActionModeShowed() && !AndroidUtilities.isTablet() && !onlySelect && view instanceof DialogCell && !getMessagesController().isForum(((DialogCell) view).getDialogId()) && !rightSlidingDialogContainer.hasFragment()) {
             DialogCell cell = (DialogCell) view;
             if (cell.isPointInsideAvatar(x, y)) {
-                return showChatPreview(cell);
+                final boolean previewed = showChatPreview(cell);
+                if (previewed && longPress
+                        && (searchViewPager == null || adapter != searchViewPager.dialogsSearchAdapter)) {
+                    // Only an actually opened preview owns the response; rejected previews
+                    // and archive rows (which play in onArchiveLongPress) stay single-owner.
+                    // The search list keeps its built-in feedback, so it is not translated here.
+                    playRowLongPressHaptic(view);
+                }
+                return previewed;
             }
         }
         if (rightSlidingDialogContainer != null && rightSlidingDialogContainer.hasFragment()) {
@@ -8883,6 +8894,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             addOrRemoveSelectedDialog(dialog.id, view);
             updateSelectedCount();
+            if (longPress) {
+                playRowLongPressHaptic(view);
+            }
             return true;
         } else {
             if (dialog instanceof TLRPC.TL_dialogFolder) {
@@ -8893,14 +8907,32 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 return false;
             }
             showOrUpdateActionMode(dialog.id, view);
+            if (longPress) {
+                playRowLongPressHaptic(view);
+            }
             return true;
+        }
+    }
+
+    /**
+     * Single owner of the dialog row long-press haptic: the list disables its automatic
+     * LONG_PRESS feedback, so this runs exactly once per gesture that actually opened a
+     * menu, preview or selection. Archive rows play in {@link #onArchiveLongPress(View)}.
+     */
+    private void playRowLongPressHaptic(View view) {
+        if (!NekoConfig.disableVibration.Bool()) {
+            try {
+                HgramHaptics.play(view, HgramHapticProfile.PLACE_LONG_PRESS,
+                        HapticFeedbackConstants.LONG_PRESS, 0);
+            } catch (Exception ignored) {
+            }
         }
     }
 
     private void onArchiveLongPress(View view) {
         if (!NekoConfig.disableVibration.Bool()) {
             try {
-                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                HgramHaptics.play(view, HgramHapticProfile.PLACE_LONG_PRESS, HapticFeedbackConstants.LONG_PRESS, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
             } catch (Exception ignored) {}
         }
         BottomSheet.NekoXBuilder builder = new BottomSheet.NekoXBuilder(getParentActivity());
@@ -9555,7 +9587,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             if (isOpen && afterSignup) {
                 try {
                     if (!NekoConfig.disableVibration.Bool())
-                        fragmentView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                        HgramHaptics.play(fragmentView, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                 } catch (Exception ignored) {}
                 if (getParentActivity() instanceof LaunchActivity) {
                     ((LaunchActivity) getParentActivity()).getFireworksOverlay().start();
@@ -13836,7 +13868,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 return;
             }
             if (initialDialogsType == DIALOGS_TYPE_WIDGET) {
-                onItemLongClick(searchViewPager.searchListView, view, position, x, y, -1, searchViewPager.dialogsSearchAdapter);
+                onItemLongClick(searchViewPager.searchListView, view, position, x, y, -1, searchViewPager.dialogsSearchAdapter, false);
                 return;
             }
             onItemClick(view, position, searchViewPager.dialogsSearchAdapter, x, y);
@@ -13848,7 +13880,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     showPremiumBlockedToast(view, ((ProfileSearchCell) view).getDialogId());
                     return true;
                 }
-                return onItemLongClick(searchViewPager.searchListView, view, position, x, y, -1, searchViewPager.dialogsSearchAdapter);
+                return onItemLongClick(searchViewPager.searchListView, view, position, x, y, -1, searchViewPager.dialogsSearchAdapter, true);
             }
 
             @Override
@@ -14179,7 +14211,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 Bulletin.make(DialogsActivity.this, layout, duration).show();
                 try {
                     if (!NekoConfig.disableVibration.Bool())
-                    fragmentView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                    HgramHaptics.play(fragmentView, HgramHapticProfile.PLACE_LIST_ITEMS, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                 } catch (Exception ignored) {}
 
             }, () -> getMessagesController().removeSuggestion(0, "SETUP_LOGIN_EMAIL"),

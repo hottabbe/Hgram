@@ -11,9 +11,10 @@ public class HgramSettingsRowsTest {
     @Test
     public void voskKeepsFullList() {
         int[] rows = HgramSettingsActivity.buildBaseVisibleRows("vosk");
-        assertEquals(50, rows.length);
+        assertEquals(54, rows.length);
         assertTrue(contains(rows, HgramSettingsActivity.ROW_STT_ENGINE));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_VOSK_MODELS));
+        assertTrue(contains(rows, HgramSettingsActivity.ROW_EXIF_CLEAN));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_HAPTIC_TOGGLE));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_HAPTIC_BASE));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_HAPTIC_BASE + 14));
@@ -26,9 +27,10 @@ public class HgramSettingsRowsTest {
     @Test
     public void sherpaShowsOnlySherpaModels() {
         int[] rows = HgramSettingsActivity.buildBaseVisibleRows("sherpa");
-        assertEquals(51, rows.length);
+        assertEquals(55, rows.length);
         assertTrue(contains(rows, HgramSettingsActivity.ROW_SHERPA_MODEL));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_SHERPA_DEVICE));
+        assertTrue(contains(rows, HgramSettingsActivity.ROW_EXIF_CLEAN));
         assertFalse(contains(rows, HgramSettingsActivity.ROW_VOSK_MODELS));
         assertFalse(contains(rows, HgramSettingsActivity.ROW_GIGAAM_MODEL));
     }
@@ -36,8 +38,9 @@ public class HgramSettingsRowsTest {
     @Test
     public void gigaamShowsOnlyGigaAmModelAndUnknownFallsBackToVosk() {
         int[] gigaam = HgramSettingsActivity.buildBaseVisibleRows("gigaam");
-        assertEquals(51, gigaam.length);
+        assertEquals(55, gigaam.length);
         assertTrue(contains(gigaam, HgramSettingsActivity.ROW_GIGAAM_INFO));
+        assertTrue(contains(gigaam, HgramSettingsActivity.ROW_EXIF_CLEAN));
         assertFalse(contains(gigaam, HgramSettingsActivity.ROW_VOSK_MODELS));
         assertFalse(contains(gigaam, HgramSettingsActivity.ROW_SHERPA_MODEL));
 
@@ -49,19 +52,22 @@ public class HgramSettingsRowsTest {
     @Test
     public void gigaAmInfoDisappearsWhenTranscriptionTurnsOff() {
         int[] on = HgramSettingsActivity.buildBaseVisibleRows("gigaam", true);
-        assertEquals(51, on.length);
+        assertEquals(55, on.length);
         assertTrue(contains(on, HgramSettingsActivity.ROW_GIGAAM_INFO));
         assertTrue(contains(on, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+        assertTrue(contains(on, HgramSettingsActivity.ROW_EXIF_CLEAN));
 
         int[] off = HgramSettingsActivity.buildBaseVisibleRows("gigaam", false);
-        assertEquals(50, off.length);
+        assertEquals(54, off.length);
         assertFalse(contains(off, HgramSettingsActivity.ROW_GIGAAM_INFO));
         assertTrue(contains(off, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+        assertTrue(contains(off, HgramSettingsActivity.ROW_EXIF_CLEAN));
 
         int[] vosk = HgramSettingsActivity.buildBaseVisibleRows("vosk", false);
-        assertEquals(50, vosk.length);
+        assertEquals(54, vosk.length);
         assertFalse(contains(vosk, HgramSettingsActivity.ROW_GIGAAM_INFO));
         assertFalse(contains(vosk, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+        assertTrue(contains(vosk, HgramSettingsActivity.ROW_EXIF_CLEAN));
     }
 
     @Test

@@ -48620,7 +48620,7 @@ public class ChatActivity extends BaseFragment implements
         }
         if (longpress || messageObject.areTags() && (isInsideContainer || searchingReaction != null && searchingReaction.isSame(reaction.reaction))) {
             if (!NekoConfig.disableVibration.Bool())
-            cell.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+            HgramHaptics.play(cell, HgramHapticProfile.PLACE_LONG_PRESS, HapticFeedbackConstants.LONG_PRESS, 0);
             FrameLayout scrimPopupContainerLayout = new FrameLayout(getParentActivity()) {
                 @Override
                 public boolean dispatchKeyEvent(KeyEvent event) {

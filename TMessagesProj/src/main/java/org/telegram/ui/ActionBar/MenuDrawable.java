@@ -315,11 +315,21 @@ public class MenuDrawable extends Drawable {
     }
 
     public void setIconColor(int iconColor) {
-        this.iconColor = iconColor;
+        if (this.iconColor != iconColor) {
+            this.iconColor = iconColor;
+            invalidateSelf();
+        }
+    }
+
+    public int getIconColor() {
+        return iconColor == 0 ? Theme.getColor(Theme.key_actionBarDefaultIcon) : iconColor;
     }
 
     public void setBackColor(int backColor) {
-        this.backColor = backColor;
+        if (this.backColor != backColor) {
+            this.backColor = backColor;
+            invalidateSelf();
+        }
     }
 
     public void setRoundCap() {

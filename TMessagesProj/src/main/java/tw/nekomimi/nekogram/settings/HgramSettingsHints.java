@@ -36,6 +36,10 @@ final class HgramSettingsHints {
     static final int ROW_SUMMARIZER_KEY = 74;
     static final int ROW_SUMMARIZER_MODEL = 75;
     static final int ROW_SUMMARIZER_PROMPT = 76;
+    static final int ROW_EXIF_CLEAN = 78;
+    static final int ROW_EXIF_CLEAR = 79;
+    static final int ROW_OCR_LONG_PRESS = 80;
+    static final int ROW_OCR_MODELS = 81;
 
     private HgramSettingsHints() {
     }
@@ -71,6 +75,10 @@ final class HgramSettingsHints {
             case ROW_SUMMARIZER_KEY:
             case ROW_SUMMARIZER_MODEL:
             case ROW_SUMMARIZER_PROMPT: return R.string.HgramHintSummarizer;
+            case ROW_EXIF_CLEAN: return R.string.HgramExifCleanInfo;
+            case ROW_EXIF_CLEAR: return R.string.HgramExifClearPreparedInfo;
+            case ROW_OCR_LONG_PRESS: return R.string.HgramOcrLongPressInfo;
+            case ROW_OCR_MODELS: return R.string.HgramOcrModelsTitle;
             case ROW_RESET_HGRAM_SETTINGS: return R.string.HgramHintResetSettings;
             default:
                 if (row >= ROW_HAPTIC_BASE && row < ROW_HAPTIC_BASE + 15) {

@@ -92,6 +92,8 @@ import tw.nekomimi.nekogram.helpers.PasscodeHelper;
 import tw.nekomimi.nekogram.utils.VibrateUtil;
 
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramHapticProfile;
+import xyz.nextalone.nagram.hgram.HgramHaptics;
 
 public class PasscodeView extends FrameLayout implements NotificationCenter.NotificationCenterDelegate {
     private final static float BACKGROUND_SPRING_STIFFNESS = 300f;
@@ -1448,7 +1450,7 @@ public class PasscodeView extends FrameLayout implements NotificationCenter.Noti
                     if (!NekoConfig.disableVibration.Bool()) {
                         AndroidUtilities.runOnUIThread(() -> {
                             try {
-                                imageView.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
+                                HgramHaptics.play(imageView, HgramHapticProfile.PLACE_PASSCODE_LOCK, HapticFeedbackConstants.KEYBOARD_TAP, HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING);
                             } catch (Exception ignore) {}
                         }, 350);
                     }
