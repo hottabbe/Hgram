@@ -998,7 +998,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         final HgramSubmenuDialog.SliderRow intensity = builder.slider(
                 LocaleController.getString(R.string.HgramHapticStrength),
                 capabilities.showIntensity() ? capabilities.intensityHint() : null,
-                10, 255, 1, initial.intensity,
+                HgramHapticProfile.MIN_INTENSITY, 255, 1, initial.intensity,
                 value -> Math.round(value / 255f * 100f) + "%");
         intensity.setVisible(capabilities.showIntensity());
         final HgramSubmenuDialog.SliderRow duration = builder.slider(

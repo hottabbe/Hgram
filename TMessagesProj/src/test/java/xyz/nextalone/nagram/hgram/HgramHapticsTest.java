@@ -44,7 +44,7 @@ public class HgramHapticsTest {
     @Test
     public void sanitizesBrokenAndOutOfRangeValues() {
         HgramHapticProfile profile = new HgramHapticProfile(-10, 1000, 9, 1);
-        assertEquals(10, profile.intensity);
+        assertEquals(HgramHapticProfile.MIN_INTENSITY, profile.intensity);
         assertEquals(300, profile.durationMs);
         assertEquals(2, profile.pattern);
         assertEquals(20, profile.gapMs);
@@ -54,16 +54,25 @@ public class HgramHapticsTest {
     }
 
     @Test
-    public void intensityIsClampedToMinimumTen() {
-        assertEquals(10, new HgramHapticProfile(0, 20, 0, 60).intensity);
-        assertEquals(10, new HgramHapticProfile(1, 20, 0, 60).intensity);
-        assertEquals(10, new HgramHapticProfile(9, 20, 0, 60).intensity);
-        assertEquals(10, new HgramHapticProfile(10, 20, 0, 60).intensity);
+    public void intensityIsClampedToTenPercent() {
+        assertEquals(26, HgramHapticProfile.MIN_INTENSITY);
+        assertEquals(26, new HgramHapticProfile(0, 20, 0, 60).intensity);
+        assertEquals(26, new HgramHapticProfile(1, 20, 0, 60).intensity);
+        assertEquals(26, new HgramHapticProfile(9, 20, 0, 60).intensity);
+        assertEquals(26, new HgramHapticProfile(25, 20, 0, 60).intensity);
+        assertEquals(26, new HgramHapticProfile(26, 20, 0, 60).intensity);
         assertEquals(255, new HgramHapticProfile(255, 20, 0, 60).intensity);
         // Legacy saved profiles with zero intensity load without crashing and get the new minimum.
         HgramConfig.preferences().edit().putString(
                 HgramHapticProfile.key(HgramHapticProfile.PLACE_ALBUM), "0,20,0,60").apply();
-        assertEquals(10, HgramHapticProfile.of(HgramHapticProfile.PLACE_ALBUM).intensity);
+        assertEquals(HgramHapticProfile.MIN_INTENSITY,
+                HgramHapticProfile.of(HgramHapticProfile.PLACE_ALBUM).intensity);
+        // Older 10/255 (4%) profiles are raised to the 10% floor on load.
+        HgramConfig.preferences().edit().putString(
+                HgramHapticProfile.key(HgramHapticProfile.PLACE_TOGGLES), "10,20,0,60").apply();
+        HgramHapticProfile legacyTen = HgramHapticProfile.of(HgramHapticProfile.PLACE_TOGGLES);
+        assertEquals(HgramHapticProfile.MIN_INTENSITY, legacyTen.intensity);
+        assertTrue(legacyTen.summary().startsWith("10%"));
     }
 
     @Test
@@ -84,7 +93,7 @@ public class HgramHapticsTest {
         for (String place : HgramHapticProfile.PLACES) {
             unique.add(place);
             HgramHapticProfile p = HgramHapticProfile.defaults(place);
-            assertTrue(p.intensity >= 10 && p.intensity <= 255);
+            assertTrue(p.intensity >= HgramHapticProfile.MIN_INTENSITY && p.intensity <= 255);
             assertTrue(p.durationMs >= 10 && p.durationMs <= 300);
         }
         assertEquals(15, unique.size());
@@ -123,15 +132,26 @@ public class HgramHapticsTest {
 
     @Test
     public void minimumIntensityAndDisabledToggle() {
-        // Intensity 0 is no longer representable: the floor is 10 on every path.
+        // Intensity 0 is no longer representable: the floor is 10% on every path.
         HgramHapticProfile minimum = new HgramHapticProfile(10, 20, 0, 60);
-        assertEquals(10, HgramHaptics.amplitudes(minimum, true)[0]);
-        assertEquals(10, HgramHaptics.amplitudes(minimum, false)[0]);
+        assertEquals(HgramHapticProfile.MIN_INTENSITY, HgramHaptics.amplitudes(minimum, true)[0]);
+        assertEquals(HgramHapticProfile.MIN_INTENSITY, HgramHaptics.amplitudes(minimum, false)[0]);
         assertTrue(HgramConfig.isHapticEnabled());
         HgramConfig.setHapticEnabled(false);
         assertFalse(HgramConfig.isHapticEnabled());
         HgramConfig.reset();
         assertTrue(HgramConfig.isHapticEnabled());
+    }
+
+    @Test
+    public void minimumIntensityPreviewDoesNotThrow() {
+        HgramHapticProfile profile = new HgramHapticProfile(0, 20, 0, 60);
+        try {
+            HgramHaptics.preview(ApplicationProvider.getApplicationContext(), profile);
+        } catch (Throwable t) {
+            org.junit.Assert.fail("preview threw for minimum intensity: " + t);
+        }
+        assertEquals(HgramHapticProfile.MIN_INTENSITY, HgramHaptics.amplitudes(profile, true)[0]);
     }
 
     @Test

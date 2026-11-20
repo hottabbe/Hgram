@@ -35,13 +35,16 @@ public final class HgramHapticProfile {
             PLACE_SECRET_SPACE, PLACE_TEXT_CURSOR, PLACE_MINIAPPS
     };
 
+    /** Lowest representable intensity: 10% of the 255 amplitude range. */
+    public static final int MIN_INTENSITY = Math.round(255 * 0.10f);
+
     public int intensity;
     public int durationMs;
     public int pattern;
     public int gapMs;
 
     public HgramHapticProfile(int intensity, int durationMs, int pattern, int gapMs) {
-        this.intensity = clamp(intensity, 10, 255);
+        this.intensity = clamp(intensity, MIN_INTENSITY, 255);
         this.durationMs = clamp(durationMs, 10, 300);
         this.pattern = clamp(pattern, 0, 2);
         this.gapMs = clamp(gapMs, 20, 200);
