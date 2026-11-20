@@ -11717,6 +11717,8 @@
     <string name="HgramVoiceActionListen">Listen</string>
     <string name="HgramVoiceActionPause">Pause</string>
     <string name="HgramVoiceActionText">Text</string>
+    <string name="HgramVoiceTranscribing">Transcribing…</string>
+    <string name="HgramVoiceTranscriptionFailed">Could not transcribe</string>
     <string name="HgramVoicePlaybackChannel">Voice playback</string>
     <string name="HgramVoicePlaybackRunning">Playing from notification</string>
     <string name="HgramHeaderHaptics">Vibration settings</string>

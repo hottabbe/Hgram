@@ -44,13 +44,26 @@ public class HgramHapticsTest {
     @Test
     public void sanitizesBrokenAndOutOfRangeValues() {
         HgramHapticProfile profile = new HgramHapticProfile(-10, 1000, 9, 1);
-        assertEquals(0, profile.intensity);
+        assertEquals(10, profile.intensity);
         assertEquals(300, profile.durationMs);
         assertEquals(2, profile.pattern);
         assertEquals(20, profile.gapMs);
         HgramConfig.preferences().edit().putString(
                 HgramHapticProfile.key(HgramHapticProfile.PLACE_ALBUM), "bad,data").apply();
         assertEquals(50, HgramHapticProfile.of(HgramHapticProfile.PLACE_ALBUM).intensity);
+    }
+
+    @Test
+    public void intensityIsClampedToMinimumTen() {
+        assertEquals(10, new HgramHapticProfile(0, 20, 0, 60).intensity);
+        assertEquals(10, new HgramHapticProfile(1, 20, 0, 60).intensity);
+        assertEquals(10, new HgramHapticProfile(9, 20, 0, 60).intensity);
+        assertEquals(10, new HgramHapticProfile(10, 20, 0, 60).intensity);
+        assertEquals(255, new HgramHapticProfile(255, 20, 0, 60).intensity);
+        // Legacy saved profiles with zero intensity load without crashing and get the new minimum.
+        HgramConfig.preferences().edit().putString(
+                HgramHapticProfile.key(HgramHapticProfile.PLACE_ALBUM), "0,20,0,60").apply();
+        assertEquals(10, HgramHapticProfile.of(HgramHapticProfile.PLACE_ALBUM).intensity);
     }
 
     @Test
@@ -71,7 +84,7 @@ public class HgramHapticsTest {
         for (String place : HgramHapticProfile.PLACES) {
             unique.add(place);
             HgramHapticProfile p = HgramHapticProfile.defaults(place);
-            assertTrue(p.intensity >= 1 && p.intensity <= 255);
+            assertTrue(p.intensity >= 10 && p.intensity <= 255);
             assertTrue(p.durationMs >= 10 && p.durationMs <= 300);
         }
         assertEquals(15, unique.size());
@@ -109,15 +122,24 @@ public class HgramHapticsTest {
     }
 
     @Test
-    public void zeroIntensityUsesSystemDefaultAndDisabledBlocks() {
-        HgramHapticProfile zero = new HgramHapticProfile(0, 20, 0, 60);
-        assertEquals(VibrationEffect.DEFAULT_AMPLITUDE, HgramHaptics.amplitudes(zero, true)[0]);
-        assertEquals(0, HgramHaptics.amplitudes(zero, false)[0]);
+    public void minimumIntensityAndDisabledToggle() {
+        // Intensity 0 is no longer representable: the floor is 10 on every path.
+        HgramHapticProfile minimum = new HgramHapticProfile(10, 20, 0, 60);
+        assertEquals(10, HgramHaptics.amplitudes(minimum, true)[0]);
+        assertEquals(10, HgramHaptics.amplitudes(minimum, false)[0]);
         assertTrue(HgramConfig.isHapticEnabled());
         HgramConfig.setHapticEnabled(false);
         assertFalse(HgramConfig.isHapticEnabled());
         HgramConfig.reset();
         assertTrue(HgramConfig.isHapticEnabled());
+    }
+
+    @Test
+    public void profilesAreUnavailableWithoutVibrator() {
+        assertFalse(new HgramHapticCapabilities(33, false, false, true, true, true)
+                .canConfigureProfiles());
+        assertTrue(new HgramHapticCapabilities(33, true, false, true, true, true)
+                .canConfigureProfiles());
     }
 
     @Test

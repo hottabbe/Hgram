@@ -43,6 +43,15 @@ public class HgramVoiceNotificationActionsTest {
     }
 
     @Test
+    public void transcriptionActionGateStaysClosedUntilReview() {
+        assertFalse(HgramVoiceNotificationActions.isTranscriptionActionAvailable());
+        assertTrue(HgramVoiceNotificationActions.canTranscribe(true, false, false));
+        assertFalse(HgramVoiceNotificationActions.canTranscribe(false, false, false));
+        assertFalse(HgramVoiceNotificationActions.canTranscribe(true, true, false));
+        assertFalse(HgramVoiceNotificationActions.canTranscribe(true, false, true));
+    }
+
+    @Test
     public void listenPendingIntentTargetsPlaybackService() throws Exception {
         PendingIntent pending = HgramVoiceNotificationActions.listenIntent(
                 context, 2, 123456789L, 77, "Alice", 1);

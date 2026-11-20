@@ -444,6 +444,8 @@
     <string name="HgramVoiceActionListen">Слушать</string>
     <string name="HgramVoiceActionPause">Пауза</string>
     <string name="HgramVoiceActionText">Текст</string>
+    <string name="HgramVoiceTranscribing">Расшифровка…</string>
+    <string name="HgramVoiceTranscriptionFailed">Не удалось расшифровать</string>
     <string name="HgramVoicePlaybackChannel">Воспроизведение голосового</string>
     <string name="HgramVoicePlaybackRunning">Воспроизведение из уведомления</string>
     <string name="HgramHeaderHaptics">Настройки вибрации</string>

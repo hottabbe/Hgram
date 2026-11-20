@@ -116,6 +116,7 @@ import xyz.nextalone.nagram.hgram.HgramNotificationStyle;
 import xyz.nextalone.nagram.hgram.HgramOfflineTranscriber;
 import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 import xyz.nextalone.nagram.hgram.HgramVoiceNotificationActions;
+import xyz.nextalone.nagram.hgram.HgramVoiceNotificationText;
 
 public class NotificationsController extends BaseController implements NotificationCenter.NotificationCenterDelegate {
 
@@ -133,6 +134,7 @@ public class NotificationsController extends BaseController implements Notificat
     private static NotificationManager systemNotificationManager = null;
     private final LongSparseArray<Integer> pushDialogs = new LongSparseArray<>();
     private final LongSparseArray<Integer> wearNotificationsIds = new LongSparseArray<>();
+    private final LongSparseArray<Long> hgramVoiceGenerations = new LongSparseArray<>();
     private final LongSparseArray<Integer> lastWearNotifiedMessageId = new LongSparseArray<>();
     private final LongSparseArray<Integer> pushDialogsOverrideMention = new LongSparseArray<>();
     private final HashSet<String> pendingVoiceLoads = new HashSet<>();
@@ -451,6 +453,7 @@ public class NotificationsController extends BaseController implements Notificat
             fcmRandomMessagesDict.clear();
             pushDialogs.clear();
             wearNotificationsIds.clear();
+            hgramVoiceGenerations.clear();
             lastWearNotifiedMessageId.clear();
             openedInBubbleDialogs.clear();
             delayedPushMessages.clear();
@@ -3430,6 +3433,7 @@ public class NotificationsController extends BaseController implements Notificat
                 notificationManager.cancel(wearNotificationsIds.valueAt(a));
             }
             wearNotificationsIds.clear();
+            hgramVoiceGenerations.clear();
         });
     }
 
@@ -3448,6 +3452,7 @@ public class NotificationsController extends BaseController implements Notificat
                 notificationManager.cancel(wearNotificationsIds.valueAt(a));
             }
             wearNotificationsIds.clear();
+            hgramVoiceGenerations.clear();
             AndroidUtilities.runOnUIThread(() -> NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.pushMessagesUpdated));
         } catch (Exception e) {
             FileLog.e(e);
@@ -5036,6 +5041,73 @@ public class NotificationsController extends BaseController implements Notificat
         return false;
     }
 
+    /**
+     * Re-posts the per-dialog notification with the transcription text (or a neutral
+     * placeholder when the chat must stay hidden). The notification id and tag are kept,
+     * so actions, avatars and click intents survive; nothing alerts again.
+     * <p>
+     * Runs entirely on {@link #notificationsQueue} so it cannot race with
+     * {@code showExtraNotifications}/{@code dismissNotification} over
+     * {@link #wearNotificationsIds}; privacy is re-evaluated on the queue as well.
+     */
+    @SuppressWarnings("deprecation")
+    public void updateHgramVoiceTranscription(int account, long dialogId, long generation,
+                                              CharSequence bigText, boolean allowText) {
+        notificationsQueue.postRunnable(() -> {
+            final Integer internalId = wearNotificationsIds.get(dialogId);
+            if (internalId == null) {
+                return;
+            }
+            final Long lastGeneration = hgramVoiceGenerations.get(dialogId);
+            if (lastGeneration != null && generation < lastGeneration) {
+                return;
+            }
+            hgramVoiceGenerations.put(dialogId, generation);
+            final boolean visible = allowText && HgramVoiceNotificationText.canShowText(
+                    HgramSecretSpace.isHidden(account, dialogId),
+                    HgramConfig.isAntiPeekActive(),
+                    DialogObject.isEncryptedDialog(dialogId));
+            if (Build.VERSION.SDK_INT < 23 || notificationManager == null) {
+                return;
+            }
+            try {
+                StatusBarNotification active = null;
+                for (StatusBarNotification notification : notificationManager.getActiveNotifications()) {
+                    if (notification.getId() == internalId) {
+                        active = notification;
+                        break;
+                    }
+                }
+                if (active == null) {
+                    return;
+                }
+                NotificationCompat.Builder builder = new NotificationCompat.Builder(
+                        ApplicationLoader.applicationContext, active.getNotification());
+                builder.setOnlyAlertOnce(true);
+                builder.setSilent(true);
+                builder.setSound(null);
+                builder.setVibrate(null);
+                builder.setDefaults(0);
+                builder.setTicker(null);
+                builder.setSubText(null);
+                builder.setPublicVersion(null);
+                builder.setVisibility(NotificationCompat.VISIBILITY_PRIVATE);
+                if (visible && !TextUtils.isEmpty(bigText)) {
+                    builder.setStyle(new NotificationCompat.BigTextStyle().bigText(bigText));
+                    builder.setContentText(HgramVoiceNotificationText.truncate(bigText.toString(), 120));
+                } else {
+                    final String neutral = ApplicationLoader.applicationContext.getString(
+                            R.string.HgramAntiPeekHidden);
+                    builder.setContentText(neutral);
+                    builder.setStyle(new NotificationCompat.BigTextStyle().bigText(neutral));
+                }
+                notificationManager.notify(internalId, builder.build());
+            } catch (Throwable t) {
+                FileLog.e(t);
+            }
+        });
+    }
+
     @SuppressLint("InlinedApi")
     private boolean hgramCanShowPreview(DialogKey key) {
         if (key == null) {
@@ -5145,6 +5217,7 @@ public class NotificationsController extends BaseController implements Notificat
             oldIdsWear.put(wearNotificationsIds.keyAt(i), wearNotificationsIds.valueAt(i));
         }
         wearNotificationsIds.clear();
+        hgramVoiceGenerations.clear();
 
         class NotificationHolder {
             int id;
@@ -5971,6 +6044,7 @@ public class NotificationsController extends BaseController implements Notificat
                         final boolean hidden = HgramSecretSpace.isHidden(currentAccount, dialogId);
                         final boolean antiPeek = HgramConfig.isAntiPeekActive();
                         if (HgramVoiceNotificationActions.isTranscriptionActionAvailable()
+                                && HgramConfig.isOfflineTranscriptionEnabled()
                                 && HgramVoiceNotificationActions.canTranscribe(
                                 HgramOfflineTranscriber.hasAnyModelInstalled(), hidden, antiPeek)) {
                             builder.addAction(new NotificationCompat.Action.Builder(

@@ -64,6 +64,11 @@ public final class HgramHapticCapabilities {
                 sdk >= 33, supportsBuilder(), system);
     }
 
+    /** Per-place profiles make no sense on a device that cannot vibrate at all. */
+    public boolean canConfigureProfiles() {
+        return hasVibrator;
+    }
+
     public boolean showIntensity() {
         return hasVibrator && sdk >= Build.VERSION_CODES.O;
     }

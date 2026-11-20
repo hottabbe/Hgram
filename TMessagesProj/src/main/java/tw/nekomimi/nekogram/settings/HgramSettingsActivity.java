@@ -314,6 +314,9 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             notifyRow(ROW_HAPTIC_TOGGLE);
             for (int i = 0; i < 15; i++) notifyRow(ROW_HAPTIC_BASE + i);
         } else if (position >= ROW_HAPTIC_BASE && position < ROW_HAPTIC_BASE + 15) {
+            if (!HgramHapticCapabilities.detect(getParentActivity()).canConfigureProfiles()) {
+                return;
+            }
             showHapticDialog(HgramHapticProfile.PLACES[position - ROW_HAPTIC_BASE]);
         } else if (position == ROW_SUMMARIZER_ENABLE) {
             HgramConfig.setSummarizerEnabled(!HgramConfig.isSummarizerEnabled());
@@ -757,6 +760,10 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         if (row == ROW_SEARCH_EMPTY || isHeaderRow(row)) {
             return false;
         }
+        if (row >= ROW_HAPTIC_BASE && row < ROW_HAPTIC_BASE + 15
+                && !HgramHapticCapabilities.detect(getParentActivity()).canConfigureProfiles()) {
+            return false;
+        }
         final int hint = HgramSettingsHints.hintRes(row);
         final String title = rowTitle(row);
         if (hint == 0 || title.isEmpty() || getParentActivity() == null) {
@@ -991,7 +998,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         final HgramSubmenuDialog.SliderRow intensity = builder.slider(
                 LocaleController.getString(R.string.HgramHapticStrength),
                 capabilities.showIntensity() ? capabilities.intensityHint() : null,
-                1, 255, 1, initial.intensity,
+                10, 255, 1, initial.intensity,
                 value -> Math.round(value / 255f * 100f) + "%");
         intensity.setVisible(capabilities.showIntensity());
         final HgramSubmenuDialog.SliderRow duration = builder.slider(
@@ -1119,12 +1126,17 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             }
             if (position >= ROW_HAPTIC_BASE && position < ROW_HAPTIC_BASE + 15) {
                 final String place = HgramHapticProfile.PLACES[position - ROW_HAPTIC_BASE];
-                ((TextSettingsCell) holder.itemView).setTextAndValue(
+                final boolean canConfigure =
+                        HgramHapticCapabilities.detect(getParentActivity()).canConfigureProfiles();
+                final TextSettingsCell cell = (TextSettingsCell) holder.itemView;
+                cell.setTextAndValue(
                         LocaleController.getString(hapticPlaceTitle(position - ROW_HAPTIC_BASE)),
                         HgramHaptics.isEnabled()
                                 ? HgramHapticProfile.of(place).summary()
                                 : LocaleController.getString(R.string.HgramHapticDisabled),
                         divider);
+                cell.setCanDisable(true);
+                cell.setEnabled(canConfigure);
                 return;
             }
             switch (position) {

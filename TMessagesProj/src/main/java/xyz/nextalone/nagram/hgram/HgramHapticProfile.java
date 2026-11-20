@@ -41,7 +41,7 @@ public final class HgramHapticProfile {
     public int gapMs;
 
     public HgramHapticProfile(int intensity, int durationMs, int pattern, int gapMs) {
-        this.intensity = clamp(intensity, 0, 255);
+        this.intensity = clamp(intensity, 10, 255);
         this.durationMs = clamp(durationMs, 10, 300);
         this.pattern = clamp(pattern, 0, 2);
         this.gapMs = clamp(gapMs, 20, 200);

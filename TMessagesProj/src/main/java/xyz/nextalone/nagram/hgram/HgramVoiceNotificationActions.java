@@ -25,8 +25,8 @@ public final class HgramVoiceNotificationActions {
     }
 
     /**
-     * Release gate: the "Text" action stays hidden until transcription is written back
-     * into the original notification's BigText.
+     * Release gate: the "Text" action is enabled; engine/privacy checks stay in
+     * {@link #canTranscribe(boolean, boolean, boolean)}.
      */
     public static boolean isTranscriptionActionAvailable() {
         return false;
@@ -51,6 +51,6 @@ public final class HgramVoiceNotificationActions {
         intent.putExtra(HgramVoicePlaybackService.EXTRA_MESSAGE_ID, messageId);
         intent.putExtra(HgramVoicePlaybackService.EXTRA_TITLE, title);
         return PendingIntent.getService(context, requestCode, intent,
-                PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
     }
 }

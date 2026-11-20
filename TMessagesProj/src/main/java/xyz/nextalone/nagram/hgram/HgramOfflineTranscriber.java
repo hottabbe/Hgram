@@ -44,12 +44,26 @@ public final class HgramOfflineTranscriber {
     private static final Set<String> ACTIVE = ConcurrentHashMap.newKeySet();
     private static final Set<String> CANCELLED = ConcurrentHashMap.newKeySet();
     private static final Map<String, PendingVoiceLoad> PENDING = new ConcurrentHashMap<>();
+    /** Memory-only listeners, registered only by {@link #start(Context, MessageObject, ResultCallback)}. */
+    private static final Map<String, ResultCallback> CALLBACKS = new ConcurrentHashMap<>();
     private static volatile Thread activeThread;
     private static volatile String activeKey;
 
     /** Receives partial transcripts from the isolated :stt process. */
     public interface PartialListener {
         void onPartial(String text);
+    }
+
+    /**
+     * Memory-only result sink. When it is passed to
+     * {@link #start(Context, MessageObject, ResultCallback)} the transcriber leaves
+     * TranscribeButton, {@code messageOwner} and storage untouched and reports everything here
+     * (main thread) instead.
+     */
+    public interface ResultCallback {
+        void onPartial(String text);
+
+        void onFinished(String text, boolean cancelled, int error);
     }
 
     private HgramOfflineTranscriber() {
@@ -122,6 +136,7 @@ public final class HgramOfflineTranscriber {
         }
         final String key = key(message);
         CANCELLED.add(key);
+        final ResultCallback resultCallback = CALLBACKS.remove(key);
         final PendingVoiceLoad pending = PENDING.remove(key);
         if (pending != null) {
             pending.cleanup();
@@ -146,12 +161,21 @@ public final class HgramOfflineTranscriber {
         HgramSttClient.cancel(key);
         ACTIVE.remove(key);
         AndroidUtilities.runOnUIThread(() -> {
+            if (resultCallback != null) {
+                // Memory-only request: there is no TranscribeButton/message state to reset.
+                resultCallback.onFinished("", true, HgramSttProtocol.ERROR_NONE);
+                return;
+            }
             TranscribeButton.endOfflineTranscription(message);
             TranscribeButton.notifyOfflineTranscriptionFinished(message);
         });
     }
 
     public static boolean start(Context context, MessageObject message) {
+        return start(context, message, null);
+    }
+
+    public static boolean start(Context context, MessageObject message, ResultCallback callback) {
         if (!HgramConfig.isOfflineTranscriptionEnabled() || message == null || message.messageOwner == null || !isAvailable(context)) {
             return false;
         }
@@ -160,6 +184,9 @@ public final class HgramOfflineTranscriber {
             return true;
         }
         CANCELLED.remove(key);
+        if (callback != null) {
+            CALLBACKS.put(key, callback);
+        }
         File file = findDownloadedFile(message);
         final String engine = HgramConfig.getSttEngine();
         final boolean gigaAm = HgramConfig.STT_ENGINE_GIGAAM.equals(engine);
@@ -174,25 +201,38 @@ public final class HgramOfflineTranscriber {
         }
         if (lang == null) {
             ACTIVE.remove(key);
+            dropCallback(key, callback);
             return false;
         }
-        TranscribeButton.beginOfflineTranscription(message);
+        if (callback == null) {
+            TranscribeButton.beginOfflineTranscription(message);
+        }
         if (file == null) {
             // The message is not downloaded yet. Download it with normal priority, keep the
             // transcribe button in its loading state and continue automatically when the file
             // appears. A failure resets the UI with an explicit network error.
-            if (!startPendingDownload(context, message, key, lang, gigaAm, sherpa)) {
+            if (!startPendingDownload(context, message, key, lang, gigaAm, sherpa, callback)) {
                 ACTIVE.remove(key);
-                TranscribeButton.endOfflineTranscription(message);
+                dropCallback(key, callback);
+                if (callback == null) {
+                    TranscribeButton.endOfflineTranscription(message);
+                }
                 return false;
             }
             return true;
         }
-        startTranscription(context, message, file, key, lang, gigaAm, sherpa);
+        startTranscription(context, message, file, key, lang, gigaAm, sherpa, callback);
         return true;
     }
 
-    private static boolean startPendingDownload(Context context, MessageObject message, String key, String lang, boolean gigaAm, boolean sherpa) {
+    /** Removes only the listener that still owns this key, so a newer request is never dropped. */
+    private static void dropCallback(String key, ResultCallback callback) {
+        if (callback != null) {
+            CALLBACKS.remove(key, callback);
+        }
+    }
+
+    private static boolean startPendingDownload(Context context, MessageObject message, String key, String lang, boolean gigaAm, boolean sherpa, ResultCallback callback) {
         final TLRPC.Document document = message.getDocument();
         if (document == null) {
             return false;
@@ -201,7 +241,7 @@ public final class HgramOfflineTranscriber {
         if (TextUtils.isEmpty(fileName)) {
             return false;
         }
-        final PendingVoiceLoad pending = new PendingVoiceLoad(context, message, key, fileName, lang, gigaAm, sherpa);
+        final PendingVoiceLoad pending = new PendingVoiceLoad(context, message, key, fileName, lang, gigaAm, sherpa, callback);
         PENDING.put(key, pending);
         try {
             final int account = message.currentAccount;
@@ -213,7 +253,7 @@ public final class HgramOfflineTranscriber {
             final File downloaded = findDownloadedFile(message);
             if (downloaded != null) {
                 pending.cleanup();
-                startTranscription(context, message, downloaded, key, lang, gigaAm, sherpa);
+                startTranscription(context, message, downloaded, key, lang, gigaAm, sherpa, callback);
                 return true;
             }
             if (!loader.isLoadingFile(fileName)) {
@@ -228,24 +268,32 @@ public final class HgramOfflineTranscriber {
         }
     }
 
-    private static void startTranscription(Context context, MessageObject message, File file, String key, String lang, boolean gigaAm, boolean sherpa) {
+    private static void startTranscription(Context context, MessageObject message, File file, String key, String lang, boolean gigaAm, boolean sherpa, ResultCallback callback) {
         Utilities.globalQueue.postRunnable(() -> {
             final int cacheFreeMb = clearMainImageCaches();
-            AndroidUtilities.runOnUIThread(() -> startTranscriptionRequest(context, message, file, key, lang, gigaAm, sherpa, cacheFreeMb));
+            AndroidUtilities.runOnUIThread(() -> startTranscriptionRequest(context, message, file, key, lang, gigaAm, sherpa, cacheFreeMb, callback));
         });
     }
 
-    private static void startTranscriptionRequest(Context context, MessageObject message, File file, String key, String lang, boolean gigaAm, boolean sherpa, int cacheFreeMb) {
+    private static void startTranscriptionRequest(Context context, MessageObject message, File file, String key, String lang, boolean gigaAm, boolean sherpa, int cacheFreeMb, ResultCallback callback) {
         if (!ACTIVE.contains(key)) {
             return;
         }
         final String engine = gigaAm
                 ? HgramConfig.STT_ENGINE_GIGAAM
                 : sherpa ? HgramConfig.STT_ENGINE_SHERPA : HgramConfig.STT_ENGINE_VOSK;
-        final HgramSttClient.Callback callback = new HgramSttClient.Callback() {
+        final HgramSttClient.Callback clientCallback = new HgramSttClient.Callback() {
             @Override
             public void onPartial(String text) {
-                if (TextUtils.isEmpty(text) || message.messageOwner == null) {
+                if (TextUtils.isEmpty(text)) {
+                    return;
+                }
+                if (callback != null) {
+                    // Memory-only mode: never mirror partials into the message or storage.
+                    AndroidUtilities.runOnUIThread(() -> callback.onPartial(text));
+                    return;
+                }
+                if (message.messageOwner == null) {
                     return;
                 }
                 message.messageOwner.voiceTranscription = text;
@@ -259,6 +307,14 @@ public final class HgramOfflineTranscriber {
             public void onFinished(String text, boolean cancelled, int error) {
                 ACTIVE.remove(key);
                 AndroidUtilities.runOnUIThread(() -> {
+                    if (callback != null) {
+                        // remove() is the ownership check: a cancel()/newer start() already took
+                        // the listener, so the result of this run must not be delivered twice.
+                        if (CALLBACKS.remove(key, callback)) {
+                            callback.onFinished(text, cancelled, error);
+                        }
+                        return;
+                    }
                     TranscribeButton.endOfflineTranscription(message);
                     if (cancelled) {
                         TranscribeButton.notifyOfflineTranscriptionFinished(message);
@@ -282,12 +338,18 @@ public final class HgramOfflineTranscriber {
             }
         };
         final HgramSttClient.Request request = new HgramSttClient.Request(
-                key, file.getAbsolutePath(), message.currentAccount, engine, lang, cacheFreeMb, callback
+                key, file.getAbsolutePath(), message.currentAccount, engine, lang, cacheFreeMb, clientCallback
         );
         final boolean started = HgramSttClient.start(context, request);
         if (!started) {
             ACTIVE.remove(key);
             AndroidUtilities.runOnUIThread(() -> {
+                if (callback != null) {
+                    if (CALLBACKS.remove(key, callback)) {
+                        callback.onFinished("", false, HgramSttProtocol.ERROR_GENERAL);
+                    }
+                    return;
+                }
                 TranscribeButton.endOfflineTranscription(message);
                 TranscribeButton.notifyOfflineTranscriptionFinished(message);
                 Toast.makeText(context, LocaleController.getString(R.string.HgramOfflineTranscriptionFailed), Toast.LENGTH_SHORT).show();
@@ -341,10 +403,11 @@ public final class HgramOfflineTranscriber {
         private final String lang;
         private final boolean gigaAm;
         private final boolean sherpa;
+        private final ResultCallback callback;
         private final int account;
         private boolean finished;
 
-        PendingVoiceLoad(Context context, MessageObject message, String key, String fileName, String lang, boolean gigaAm, boolean sherpa) {
+        PendingVoiceLoad(Context context, MessageObject message, String key, String fileName, String lang, boolean gigaAm, boolean sherpa, ResultCallback callback) {
             this.context = context;
             this.message = message;
             this.key = key;
@@ -352,6 +415,7 @@ public final class HgramOfflineTranscriber {
             this.lang = lang;
             this.gigaAm = gigaAm;
             this.sherpa = sherpa;
+            this.callback = callback;
             this.account = message.currentAccount;
         }
 
@@ -378,6 +442,15 @@ public final class HgramOfflineTranscriber {
         private void fail() {
             ACTIVE.remove(key);
             CANCELLED.remove(key);
+            final ResultCallback resultCallback = callback;
+            if (resultCallback != null) {
+                // Memory-only mode: report the download failure instead of resetting the UI.
+                if (CALLBACKS.remove(key, resultCallback)) {
+                    AndroidUtilities.runOnUIThread(
+                            () -> resultCallback.onFinished("", false, HgramSttProtocol.ERROR_GENERAL));
+                }
+                return;
+            }
             AndroidUtilities.runOnUIThread(() -> {
                 TranscribeButton.endOfflineTranscription(message);
                 TranscribeButton.notifyOfflineTranscriptionFinished(message);
@@ -399,7 +472,7 @@ public final class HgramOfflineTranscriber {
                 if (file == null) {
                     fail();
                 } else {
-                    startTranscription(context, message, file, key, lang, gigaAm, sherpa);
+                    startTranscription(context, message, file, key, lang, gigaAm, sherpa, callback);
                 }
             } else if (id == NotificationCenter.fileLoadFailed) {
                 if (args.length == 0 || !fileName.equals(args[0])) {
