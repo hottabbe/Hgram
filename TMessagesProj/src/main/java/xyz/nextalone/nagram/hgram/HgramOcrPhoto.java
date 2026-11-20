@@ -10,7 +10,12 @@ public final class HgramOcrPhoto {
 
     /** Photos only: videos, GIFs and round videos keep their existing long-press behaviour. */
     public static boolean canRecognize(boolean photo, boolean video, boolean gif, boolean roundVideo) {
-        return photo && !video && !gif && !roundVideo;
+        return canRecognize(photo, video, gif, roundVideo, false);
+    }
+
+    /** A protected avatar (no message object) must not open the OCR overlay. */
+    public static boolean canRecognize(boolean photo, boolean video, boolean gif, boolean roundVideo, boolean protectedContent) {
+        return !protectedContent && photo && !video && !gif && !roundVideo;
     }
 
     /**

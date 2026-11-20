@@ -367,9 +367,12 @@ import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.hgram.HgramAntiPeek;
 import xyz.nextalone.nagram.helper.MessageHelper;
 import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramOcrDownloadCallback;
+import xyz.nextalone.nagram.hgram.HgramOcrDownloadSession;
 import xyz.nextalone.nagram.hgram.HgramOcrEngine;
 import xyz.nextalone.nagram.hgram.HgramOcrModels;
 import xyz.nextalone.nagram.hgram.HgramOcrPhoto;
+import xyz.nextalone.nagram.hgram.HgramOcrProtection;
 
 import me.vkryl.android.animator.BoolAnimator;
 import me.vkryl.android.animator.FactorAnimator;
@@ -379,7 +382,7 @@ import xyz.nextalone.nagram.helper.MotionPhotoHelper;
 @SuppressLint("WrongConstant")
 @SuppressWarnings("unchecked")
 @OptIn(markerClass = UnstableApi.class)
-public class PhotoViewer implements NotificationCenter.NotificationCenterDelegate, GestureDetector2.OnGestureListener, GestureDetector2.OnDoubleTapListener, IPipSourceDelegate, FactorAnimator.Target {
+public class PhotoViewer implements NotificationCenter.NotificationCenterDelegate, GestureDetector2.OnGestureListener, GestureDetector2.OnDoubleTapListener, IPipSourceDelegate, FactorAnimator.Target, HgramOcrDownloadCallback.Target {
 
     private static final int ANIMATOR_ID_POLL_ATTACH_BUTTONS_VISIBLE = 0;
     private final BoolAnimator animatorPollAttachButtonsVisibility = new BoolAnimator(ANIMATOR_ID_POLL_ATTACH_BUTTONS_VISIBLE, this, CubicBezierInterpolator.EASE_OUT_QUINT, 380);
@@ -2076,17 +2079,20 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private TextView ocrOverlayText;
     private View ocrProgressView;
     private ActionMode ocrActionMode;
+    private HgramOcrEngine.RequestToken ocrRequestToken;
     private boolean ocrRunning;
-    private int ocrRequestSeq;
     private boolean ocrDestroyed;
     private AlertDialog ocrModelsDialog;
+    private AlertDialog ocrModelsConfirmDialog;
     private Context ocrModelsDialogContext;
     private TextView ocrModelsDialogText;
     private ProgressBar ocrModelsDialogProgress;
     private boolean ocrModelsDownloadActive;
-    private int ocrModelsPhotoIndex = -1;
-    private MessageObject ocrModelsPhotoObject;
+    private boolean ocrModelsVerifyPending;
+    private long ocrModelsJobId;
     private int ocrModelsPollMisses;
+    private HgramOcrDownloadCallback ocrModelsCallback;
+    private final HgramOcrDownloadSession ocrDownloadSession = new HgramOcrDownloadSession();
     private long currentPathVideoOffset;
     private String currentImagePath;
     private boolean currentVideoFinishedLoading;
@@ -4858,6 +4864,15 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         inBubbleMode = activity instanceof BubbleActivity;
         parentActivity = activity;
         activityContext = new ContextThemeWrapper(parentActivity, R.style.Theme_TMessages);
+        // Rotation replaces the Activity. Drop UI objects created with the old theme/context; the
+        // download itself keeps running and the poll recreates its dialog with the current context.
+        if (ocrModelsDialogContext != null && ocrModelsDialogContext != parentActivity) {
+            dismissOcrModelsDialog();
+        }
+        dismissOcrModelsConfirmDialog();
+        if (ocrOverlay != null) {
+            dismissOcrOverlay();
+        }
         touchSlop = ViewConfiguration.get(parentActivity).getScaledTouchSlop();
 
         if (progressDrawables == null) {
@@ -14236,6 +14251,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     private void onPhotoShow(final MessageObject messageObject, final TLRPC.FileLocation fileLocation, ImageLocation imageLocation, ImageLocation videoLocation, final ArrayList<MessageObject> messages, final ArrayList<SecureDocument> documents, final List<Object> photos, int index, final PlaceProviderObject object) {
         dismissOcrOverlay();
+        abandonOcrDownloadSession(true);
         ocrDestroyed = false;
         classGuid = ConnectionsManager.generateClassGuid();
         customTitle = null;
@@ -16039,6 +16055,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return;
         }
         dismissOcrOverlay();
+        abandonOcrDownloadSession(true);
         if (!init) {
             if (currentThumb != null) {
                 currentThumb.release();
@@ -18500,6 +18517,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     public void closePhoto(boolean animated, boolean fromEditMode) {
         dismissOcrOverlay();
+        abandonOcrDownloadSession(true);
         if (stickerMakerView != null) {
             stickerMakerView.isThanosInProgress = false;
             if (cutOutBtn.isCancelState()) {
@@ -19051,8 +19069,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     public void destroyPhotoViewer() {
         ocrDestroyed = true;
         dismissOcrOverlay();
-        cancelOcrModelsPoll();
-        dismissOcrModelsDialog();
+        abandonOcrDownloadSession(true);
         // Destruction is a terminal path: release this viewer's block even if the window was
         // already detached. Owner checking keeps another still-open viewer's block intact.
         HgramAntiPeek.setOverlayBlocking(this, false);
@@ -19099,6 +19116,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         isVisible = false;
         isVisibleOrAnimating = false;
+        abandonOcrDownloadSession(true);
         HgramAntiPeek.setOverlayBlocking(this, false);
         cropInitied = false;
         disableShowCheck = true;
@@ -21244,14 +21262,21 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (isEmbedVideo || centerImageIsVideo) {
             return false;
         }
+        final boolean protectedAvatar = HgramOcrProtection.isProtectedAvatar(avatarsDialogId,
+                avatarsDialogId != 0 && MessagesController.getInstance(currentAccount)
+                        .isPeerNoForwardsWithOverride(avatarsDialogId));
         if (currentMessageObject != null) {
             return HgramOcrPhoto.canRecognize(
                     currentMessageObject.isPhoto(),
                     currentMessageObject.isVideo(),
                     currentMessageObject.isGif(),
-                    currentMessageObject.isRoundVideo());
+                    currentMessageObject.isRoundVideo(),
+                    protectedAvatar);
         }
         if (currentFileLocationVideo != null) {
+            return false;
+        }
+        if (protectedAvatar) {
             return false;
         }
         if (currentPathObject != null) {
@@ -21282,8 +21307,51 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         return null;
     }
 
+    /** Stable photo identity independent of the mutable viewer index and message reference. */
+    private String currentOcrPhotoKey() {
+        final MessageObject message = currentMessageObject;
+        if (message != null) {
+            return "m:" + message.getDialogId() + ":" + message.getId();
+        }
+        final File file = resolveOcrFile();
+        if (file != null) {
+            return "f:" + file.getAbsolutePath();
+        }
+        if (currentPathObject != null && !currentPathObject.isEmpty()) {
+            return "p:" + currentPathObject;
+        }
+        final String name = currentFileNames[0];
+        return name != null ? "n:" + name : "none";
+    }
+
+    private long beginOcrPhotoSession() {
+        final String key = currentOcrPhotoKey();
+        if (ocrDownloadSession.isCurrent(key)) {
+            return ocrDownloadSession.generation();
+        }
+        return ocrDownloadSession.switchTo(key);
+    }
+
+    private boolean isOcrCopyProtected() {
+        final boolean messageNoForwards = currentMessageObject != null
+                && (MessagesController.getInstance(currentAccount).isPeerNoForwards(currentMessageObject.getDialogId())
+                || (currentMessageObject.messageOwner != null && currentMessageObject.messageOwner.noforwards)
+                || currentMessageObject.hasRevealedExtendedMedia());
+        final boolean protectedAvatar = HgramOcrProtection.isProtectedAvatar(avatarsDialogId,
+                avatarsDialogId != 0 && MessagesController.getInstance(currentAccount)
+                        .isPeerNoForwardsWithOverride(avatarsDialogId));
+        final boolean encryptedChat = parentChatActivity != null
+                && parentChatActivity.getCurrentEncryptedChat() != null;
+        final int ttl = currentMessageObject != null && currentMessageObject.messageOwner != null
+                ? currentMessageObject.messageOwner.ttl : 0;
+        return HgramOcrProtection.isCopyProtected(messageNoForwards, protectedAvatar, encryptedChat,
+                ttl, !secureDocuments.isEmpty(), isEmbedVideo,
+                NekoXConfig.disableFlagSecure || NaConfig.INSTANCE.getForceCopy().Bool());
+    }
+
     private void runOcrForCurrentPhoto() {
-        if (containerView == null || ocrDestroyed) {
+        if (containerView == null || ocrDestroyed || ocrRunning || ocrOverlay != null
+                || !HgramConfig.isOcrLongPressEnabled()) {
             return;
         }
         final File file = resolveOcrFile();
@@ -21296,32 +21364,54 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             showOcrToast(R.string.HgramOcrFailed);
             return;
         }
-        final int requestId = ++ocrRequestSeq;
+        final Context appContext = context.getApplicationContext();
+        final HgramOcrEngine engine = HgramOcrEngine.get(appContext);
+        HgramOcrEngine.RequestToken createdToken;
+        try {
+            createdToken = engine.newRequest();
+        } catch (Throwable ignored) {
+            createdToken = null;
+        }
+        if (createdToken == null) {
+            showOcrToast(R.string.HgramOcrFailed);
+            return;
+        }
+        final HgramOcrEngine.RequestToken token = createdToken;
+        final long generation = beginOcrPhotoSession();
+        final String photoKey = ocrDownloadSession.photoKey();
+        ocrRequestToken = token;
         ocrRunning = true;
         showOcrProgress(true);
-        final Context appContext = context.getApplicationContext();
-        try {
-            HgramOcrEngine.get(appContext).beginRequest(requestId);
-        } catch (Throwable ignored) {
-        }
         Utilities.globalQueue.postRunnable(() -> {
             HgramOcrEngine.Result result;
             try {
-                result = HgramOcrEngine.get(appContext).recognize(appContext, file, requestId);
+                result = engine.recognize(appContext, file, token);
             } catch (Throwable ignored) {
                 result = null;
             }
             final HgramOcrEngine.Result finalResult = result;
-            AndroidUtilities.runOnUIThread(() -> handleOcrResult(requestId, finalResult));
+            AndroidUtilities.runOnUIThread(() -> handleOcrResult(token, generation, photoKey, finalResult));
         });
     }
 
-    private void handleOcrResult(int requestId, HgramOcrEngine.Result result) {
-        if (requestId != ocrRequestSeq || ocrDestroyed || containerView == null) {
+    private void handleOcrResult(HgramOcrEngine.RequestToken token, long generation, String photoKey,
+                                 HgramOcrEngine.Result result) {
+        if (token != ocrRequestToken) {
             return;
         }
+        ocrRequestToken = null;
         ocrRunning = false;
         showOcrProgress(false);
+        try {
+            final Context appContext = (activityContext != null ? activityContext
+                    : ApplicationLoader.applicationContext);
+            HgramOcrEngine.get(appContext.getApplicationContext()).finish(token);
+        } catch (Throwable ignored) {
+        }
+        if (ocrDestroyed || containerView == null || !isVisible()
+                || !ocrDownloadSession.isCurrent(generation, photoKey)) {
+            return;
+        }
         if (result != null && result.status == HgramOcrEngine.Status.NEED_MODELS) {
             showOcrModelsDownloadDialog();
             return;
@@ -21394,7 +21484,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (context == null) {
             return;
         }
-        if (HgramOcrModels.progress() >= 0) {
+        final long activeJobId = HgramOcrModels.activeJobId();
+        if (activeJobId != 0 && HgramOcrModels.isJobActive(activeJobId) || HgramOcrModels.progress() >= 0) {
             startOcrModelsDownload();
             return;
         }
@@ -21404,22 +21495,87 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
             return;
         }
-        new AlertDialog.Builder(context)
+        verifyOcrModelsThenShowDialog(context);
+    }
+
+    /** Readiness is verified on a worker; the UI never hashes the installed models. */
+    private void verifyOcrModelsThenShowDialog(Context context) {
+        if (ocrModelsVerifyPending) {
+            return;
+        }
+        ocrModelsVerifyPending = true;
+        final long generation = beginOcrPhotoSession();
+        final String photoKey = ocrDownloadSession.photoKey();
+        final Context appContext = context.getApplicationContext();
+        HgramOcrModels.verifyReady(appContext, ready -> {
+            AndroidUtilities.runOnUIThread(() -> {
+                ocrModelsVerifyPending = false;
+                if (ocrDestroyed || !ocrDownloadSession.isCurrent(generation, photoKey)) {
+                    return;
+                }
+                final Context current = currentOcrContext();
+                if (current == null) {
+                    return;
+                }
+                if (ready) {
+                    if (!ocrRunning && ocrOverlay == null) {
+                        runOcrForCurrentPhoto();
+                    }
+                    return;
+                }
+                if (HgramOcrModels.progress() >= 0) {
+                    startOcrModelsDownload();
+                    return;
+                }
+                showOcrModelsConfirmDialog(current);
+            });
+            return kotlin.Unit.INSTANCE;
+        });
+    }
+
+    private void showOcrModelsConfirmDialog(Context context) {
+        dismissOcrModelsConfirmDialog();
+        final AlertDialog dialog = new AlertDialog.Builder(context)
                 .setTitle(LocaleController.getString(R.string.HgramOcrNeedModelsTitle))
                 .setMessage(LocaleController.formatString(R.string.HgramOcrNeedModelsText, ocrModelsSizeLabel()))
-                .setPositiveButton(LocaleController.getString(R.string.HgramOcrModelsDownload), (dialog, which) -> startOcrModelsDownload())
+                .setPositiveButton(LocaleController.getString(R.string.HgramOcrModelsDownload), (d, which) -> startOcrModelsDownload())
                 .setNegativeButton(LocaleController.getString(R.string.HgramOcrCancel), null)
-                .show();
+                .create();
+        dialog.setOnDismissListener(d -> {
+            if (ocrModelsConfirmDialog == d) {
+                ocrModelsConfirmDialog = null;
+            }
+        });
+        ocrModelsConfirmDialog = dialog;
+        try {
+            dialog.show();
+        } catch (Throwable ignored) {
+            ocrModelsConfirmDialog = null;
+        }
+    }
+
+    private void dismissOcrModelsConfirmDialog() {
+        final AlertDialog dialog = ocrModelsConfirmDialog;
+        ocrModelsConfirmDialog = null;
+        if (dialog != null) {
+            try {
+                dialog.dismiss();
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     private void startOcrModelsDownload() {
-        if (ocrDestroyed) {
+        if (ocrDestroyed || !HgramConfig.isOcrLongPressEnabled()) {
             return;
         }
         final Context context = currentOcrContext();
         if (context == null) {
             return;
         }
+        final long generation = beginOcrPhotoSession();
+        final String photoKey = ocrDownloadSession.photoKey();
+        dismissOcrModelsConfirmDialog();
         if (ocrModelsDownloadActive) {
             ensureOcrModelsDialog(context);
             updateOcrModelsDialogProgress();
@@ -21427,25 +21583,72 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         ocrModelsDownloadActive = true;
         ocrModelsPollMisses = 0;
-        ocrModelsPhotoIndex = currentIndex;
-        ocrModelsPhotoObject = currentMessageObject;
         ensureOcrModelsDialog(context);
         updateOcrModelsDialogProgress();
         AndroidUtilities.cancelRunOnUIThread(ocrModelsProgressPoll);
         AndroidUtilities.runOnUIThread(ocrModelsProgressPoll, 300);
-        if (HgramOcrModels.progress() < 0 && !HgramOcrModels.isReady(context)) {
-            HgramOcrModels.download(context, progress -> {
-                AndroidUtilities.runOnUIThread(() -> {
-                    if (ocrModelsDownloadActive) {
-                        updateOcrModelsDialogProgress();
-                    }
-                });
+        if (HgramOcrModels.isReady(context)) {
+            finishOcrModelsDownload(true, true, generation, photoKey);
+            return;
+        }
+        final long existingJobId = HgramOcrModels.activeJobId();
+        if ((existingJobId != 0 && HgramOcrModels.isJobActive(existingJobId))
+                || HgramOcrModels.progress() >= 0) {
+            // Started by settings or another viewer: observe it, never cancel it from here.
+            ocrModelsJobId = existingJobId;
+            return;
+        }
+        final Context appContext = context.getApplicationContext();
+        final HgramOcrDownloadCallback callback = new HgramOcrDownloadCallback(
+                this, generation, photoKey, AndroidUtilities::runOnUIThread);
+        ocrModelsCallback = callback;
+        final long jobId;
+        try {
+            jobId = HgramOcrModels.download(appContext, (downloadJobId, progress) -> {
+                callback.onProgress(downloadJobId, progress);
                 return kotlin.Unit.INSTANCE;
-            }, success -> {
-                AndroidUtilities.runOnUIThread(() -> finishOcrModelsDownload(success, true));
+            }, (downloadJobId, success) -> {
+                callback.onFinished(downloadJobId, success);
                 return kotlin.Unit.INSTANCE;
             });
+        } catch (Throwable ignored) {
+            finishOcrModelsDownload(false, false, generation, photoKey);
+            return;
         }
+        ocrModelsJobId = jobId;
+        ocrDownloadSession.own(generation, jobId);
+        updateOcrModelsDialogProgress();
+    }
+
+    @Override
+    public void onOcrModelsDownloadProgress(long generation, String photoKey, long jobId, int progress) {
+        if (!ocrModelsDownloadActive || ocrDestroyed
+                || !ocrDownloadSession.isCurrent(generation, photoKey)) {
+            return;
+        }
+        if (ocrModelsJobId != 0 && jobId != 0 && jobId != ocrModelsJobId) {
+            return;
+        }
+        updateOcrModelsDialogProgress();
+    }
+
+    @Override
+    public void onOcrModelsDownloadFinished(long generation, String photoKey, long jobId, boolean success) {
+        if (!ocrModelsDownloadActive || ocrDestroyed
+                || !ocrDownloadSession.isCurrent(generation, photoKey)) {
+            return;
+        }
+        if (jobId == 0) {
+            // Rejected start (another owner won the slot): the poll will attach to it instead.
+            return;
+        }
+        if (ocrModelsJobId != 0 && jobId != ocrModelsJobId) {
+            return;
+        }
+        if (ocrDownloadSession.owns(jobId)) {
+            ocrDownloadSession.detachAndTakeOwned();
+        }
+        finishOcrModelsDownload(success, true, generation, photoKey);
     }
 
     private void ensureOcrModelsDialog(Context context) {
@@ -21476,8 +21679,15 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 .setTitle(LocaleController.getString(R.string.HgramOcrNeedModelsTitle))
                 .setView(layout)
                 .setNegativeButton(LocaleController.getString(R.string.HgramOcrCancel), (d, which) -> {
-                    HgramOcrModels.cancel();
-                    finishOcrModelsDownload(HgramOcrModels.isReady(context), false);
+                    final long activeJobId = ocrModelsJobId != 0 ? ocrModelsJobId : HgramOcrModels.activeJobId();
+                    if (ocrDownloadSession.owns(activeJobId)) {
+                        try {
+                            HgramOcrModels.cancel(activeJobId);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                    finishOcrModelsDownload(false, false,
+                            ocrDownloadSession.generation(), ocrDownloadSession.photoKey());
                 })
                 .create();
         dialog.setCancelable(false);
@@ -21504,28 +21714,57 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         progressBar.setProgress(progress);
     }
 
-    private void finishOcrModelsDownload(boolean success, boolean maybeRunOcr) {
+    private void finishOcrModelsDownload(boolean success, boolean maybeRunOcr, long generation, String photoKey) {
         if (!ocrModelsDownloadActive) {
             return;
         }
         ocrModelsDownloadActive = false;
+        ocrModelsPollMisses = 0;
         AndroidUtilities.cancelRunOnUIThread(ocrModelsProgressPoll);
         dismissOcrModelsDialog();
+        dismissOcrModelsConfirmDialog();
+        detachOcrModelsCallback();
+        ocrDownloadSession.detachAndTakeOwned();
+        ocrModelsJobId = 0;
         final Context context = currentOcrContext();
         if (context != null && !ocrDestroyed) {
             Toast.makeText(context, LocaleController.getString(success
                     ? R.string.HgramOcrModelsReady : R.string.HgramOcrDownloadFailed), Toast.LENGTH_SHORT).show();
         }
         if (success && maybeRunOcr && !ocrDestroyed && !ocrRunning && ocrOverlay == null
-                && isVisible() && currentIndex == ocrModelsPhotoIndex
-                && currentMessageObject == ocrModelsPhotoObject) {
+                && isVisible() && HgramConfig.isOcrLongPressEnabled()
+                && ocrDownloadSession.isCurrent(generation, photoKey)
+                && photoKey.equals(currentOcrPhotoKey())) {
             runOcrForCurrentPhoto();
         }
     }
 
-    private void cancelOcrModelsPoll() {
+    private void abandonOcrDownloadSession(boolean cancelOwned) {
         ocrModelsDownloadActive = false;
+        ocrModelsPollMisses = 0;
+        ocrModelsVerifyPending = false;
+        detachOcrModelsCallback();
         AndroidUtilities.cancelRunOnUIThread(ocrModelsProgressPoll);
+        dismissOcrModelsDialog();
+        dismissOcrModelsConfirmDialog();
+        ocrModelsJobId = 0;
+        final long ownedJobId = ocrDownloadSession.detachAndTakeOwned();
+        ocrDownloadSession.switchTo(null);
+        if (cancelOwned && ownedJobId != 0) {
+            try {
+                HgramOcrModels.cancel(ownedJobId);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** The worker may still finish, but it must not reach this viewer or its Activity. */
+    private void detachOcrModelsCallback() {
+        final HgramOcrDownloadCallback callback = ocrModelsCallback;
+        ocrModelsCallback = null;
+        if (callback != null) {
+            callback.detach();
+        }
     }
 
     private void dismissOcrModelsDialog() {
@@ -21548,6 +21787,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             if (!ocrModelsDownloadActive || ocrDestroyed) {
                 return;
             }
+            final long generation = ocrDownloadSession.generation();
+            final String photoKey = ocrDownloadSession.photoKey();
             final Context context = currentOcrContext();
             if (context == null) {
                 AndroidUtilities.runOnUIThread(this, 500);
@@ -21555,14 +21796,29 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
             ensureOcrModelsDialog(context);
             updateOcrModelsDialogProgress();
-            final int progress = HgramOcrModels.progress();
-            if (progress >= 0) {
+            final long activeJobId = HgramOcrModels.activeJobId();
+            if (activeJobId != 0) {
+                ocrModelsJobId = activeJobId;
+            }
+            final boolean running = (activeJobId != 0 && HgramOcrModels.isJobActive(activeJobId))
+                    || HgramOcrModels.progress() >= 0;
+            if (running) {
                 ocrModelsPollMisses = 0;
                 AndroidUtilities.runOnUIThread(this, 400);
             } else if (++ocrModelsPollMisses < 3) {
                 AndroidUtilities.runOnUIThread(this, 400);
             } else {
-                finishOcrModelsDownload(HgramOcrModels.isReady(context), true);
+                final Context appContext = context.getApplicationContext();
+                HgramOcrModels.verifyReady(appContext, ready -> {
+                    AndroidUtilities.runOnUIThread(() -> {
+                        if (!ocrModelsDownloadActive || ocrDestroyed
+                                || !ocrDownloadSession.isCurrent(generation, photoKey)) {
+                            return;
+                        }
+                        finishOcrModelsDownload(ready, true, generation, photoKey);
+                    });
+                    return kotlin.Unit.INSTANCE;
+                });
             }
         }
     };
@@ -21575,16 +21831,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         final FrameLayout overlay = new FrameLayout(activityContext);
         overlay.setOnClickListener(v -> dismissOcrOverlay());
 
-        final boolean noforwards = currentMessageObject != null
-                && (MessagesController.getInstance(currentAccount).isPeerNoForwards(currentMessageObject.getDialogId())
-                || (currentMessageObject.messageOwner != null && currentMessageObject.messageOwner.noforwards)
-                || currentMessageObject.hasRevealedExtendedMedia());
-        final boolean noforwardsOverride = noforwards && !NekoXConfig.disableFlagSecure
-                && !NaConfig.INSTANCE.getForceCopy().Bool();
-        final boolean copyBlocked = isEmbedVideo || noforwardsOverride
-                || (currentMessageObject != null && currentMessageObject.messageOwner != null
-                && currentMessageObject.messageOwner.ttl != 0 && currentMessageObject.messageOwner.ttl < 60 * 60)
-                || !secureDocuments.isEmpty();
+        final boolean copyBlocked = isOcrCopyProtected();
 
         final FrameLayout panel = new FrameLayout(activityContext);
         final int panelColor = Theme.getColor(Theme.key_dialogBackground, resourcesProvider);
@@ -21605,7 +21852,16 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         };
         scrollView.setVerticalScrollBarEnabled(false);
 
-        final TextView textView = new TextView(activityContext);
+        final TextView textView = new TextView(activityContext) {
+            @Override
+            public boolean onTextContextMenuItem(int id) {
+                // System selection/action mode copy must recheck the policy at the moment of copy.
+                if ((id == android.R.id.copy || id == android.R.id.cut) && isOcrCopyProtected()) {
+                    return true;
+                }
+                return super.onTextContextMenuItem(id);
+            }
+        };
         textView.setText(text, TextView.BufferType.SPANNABLE);
         textView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         textView.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, resourcesProvider));
@@ -21628,7 +21884,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return false;
         });
         textView.post(() -> {
-            if (ocrOverlayText != textView || copyBlocked) {
+            if (ocrOverlayText != textView || isOcrCopyProtected()) {
                 return;
             }
             textView.requestFocus();
@@ -21655,9 +21911,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 @Override
                 public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
                     if (item.getItemId() == android.R.id.copy) {
-                        try {
-                            textView.onTextContextMenuItem(android.R.id.copy);
-                        } catch (Throwable ignored) {
+                        if (!isOcrCopyProtected()) {
+                            try {
+                                textView.onTextContextMenuItem(android.R.id.copy);
+                            } catch (Throwable ignored) {
+                            }
                         }
                         mode.finish();
                         return true;
@@ -21691,15 +21949,17 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     /** Dismisses the OCR overlay and cancels pending recognition. Returns true if an overlay was shown. */
     public boolean dismissOcrOverlay() {
         final boolean hadOverlay = ocrOverlay != null;
-        final int oldRequestId = ocrRequestSeq;
-        ocrRequestSeq++;
-        if (ocrRunning) {
-            ocrRunning = false;
-            if (activityContext != null) {
-                try {
-                    HgramOcrEngine.get(activityContext).cancel(oldRequestId);
-                } catch (Throwable ignored) {
-                }
+        final HgramOcrEngine.RequestToken token = ocrRequestToken;
+        ocrRequestToken = null;
+        ocrRunning = false;
+        if (token != null) {
+            try {
+                final Context context = activityContext != null
+                        ? activityContext : ApplicationLoader.applicationContext;
+                final HgramOcrEngine engine = HgramOcrEngine.get(context.getApplicationContext());
+                engine.cancel(token);
+                engine.finish(token);
+            } catch (Throwable ignored) {
             }
         }
         showOcrProgress(false);

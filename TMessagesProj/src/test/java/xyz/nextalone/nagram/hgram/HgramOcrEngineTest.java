@@ -1,6 +1,7 @@
 package xyz.nextalone.nagram.hgram;
 
 import android.app.Application;
+import android.content.Context;
 import android.graphics.Bitmap;
 
 import org.junit.Rule;
@@ -14,10 +15,13 @@ import org.robolectric.annotation.Config;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
@@ -40,6 +44,7 @@ public class HgramOcrEngineTest {
         int stopCalls;
         int clearCalls;
         Runnable beforeText;
+        Runnable beforeStop;
 
         @Override
         public void init(String datapath, String language) throws Exception {
@@ -69,6 +74,9 @@ public class HgramOcrEngineTest {
 
         @Override
         public void stop() {
+            if (beforeStop != null) {
+                beforeStop.run();
+            }
             stopCalls++;
         }
 
@@ -149,7 +157,108 @@ public class HgramOcrEngineTest {
         engine.cancel(1);
         assertEquals("old cancel must not stop the current engine", stopsAfterRecognition, current.stopCalls);
         engine.cancel(2);
-        assertEquals(stopsAfterRecognition + 1, current.stopCalls);
+        awaitStops(current, stopsAfterRecognition + 1);
+    }
+
+    @Test
+    public void cancelBeforeWorkerStartsDoesNotCreateApiOrDecode() throws Exception {
+        final AtomicInteger created = new AtomicInteger();
+        final HgramOcrEngine engine = HgramOcrEngine.forTests(() -> {
+            created.incrementAndGet();
+            return new FakeApi();
+        }, temporary.newFolder("cancel-before-files"));
+        final File file = temporary.newFile("photo.jpg");
+        write(file, new byte[]{1, 2, 3});
+
+        final HgramOcrEngine.RequestToken token = engine.newRequest();
+        engine.cancel(token);
+
+        assertFalse(engine.isRequestActive(token));
+        final HgramOcrEngine.Result viaFile = engine.recognize((Context) null, file, token);
+        final HgramOcrEngine.Result viaBitmap = engine.recognize((Context) null, bitmap(10, 10), token);
+
+        assertEquals(HgramOcrEngine.Status.FAILED, viaFile.status);
+        assertEquals(HgramOcrEngine.Status.FAILED, viaBitmap.status);
+        assertTrue(viaFile.cancelled);
+        assertTrue(viaBitmap.cancelled);
+        assertEquals("cancelled token must never create an engine", 0, created.get());
+    }
+
+    @Test
+    public void cancelThenFinishStopsNativeBeforeReleasingState() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("cancel-finish"));
+        final FakeApi fake = new FakeApi();
+        fake.text = "late";
+        final CountDownLatch textStarted = new CountDownLatch(1);
+        final CountDownLatch releaseText = new CountDownLatch(1);
+        final CountDownLatch stopEntered = new CountDownLatch(1);
+        final CountDownLatch releaseStop = new CountDownLatch(1);
+        final AtomicInteger stopAttempts = new AtomicInteger();
+        fake.beforeText = () -> {
+            textStarted.countDown();
+            await(releaseText);
+        };
+        fake.beforeStop = () -> {
+            if (stopAttempts.getAndIncrement() == 0) {
+                stopEntered.countDown();
+                await(releaseStop);
+            }
+        };
+        final HgramOcrEngine.RequestToken token = engine.newRequest();
+        final Thread worker = new Thread(
+                () -> engine.recognize(fake, bitmap(10, 10), token),
+                "ocr-token-worker");
+        worker.start();
+        assertTrue(textStarted.await(5, TimeUnit.SECONDS));
+
+        engine.cancel(token);
+        engine.finish(token);
+        assertTrue("native stop must reach the control worker",
+                stopEntered.await(5, TimeUnit.SECONDS));
+        assertEquals("token state must survive until stop returns",
+                1, engine.requestCountForTests());
+
+        releaseStop.countDown();
+        awaitRequestCount(engine, 0);
+        releaseText.countDown();
+        worker.join(5_000L);
+        assertFalse(worker.isAlive());
+    }
+
+    @Test
+    public void twoViewersCannotProduceSameEngineToken() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("two-viewers"));
+
+        final HgramOcrEngine.RequestToken first = engine.newRequest();
+        final HgramOcrEngine.RequestToken second = engine.newRequest();
+
+        assertTrue(first.id > 0);
+        assertTrue(second.id > 0);
+        assertNotEquals(first.id, second.id);
+        assertTrue(engine.isRequestActive(first));
+        assertTrue(engine.isRequestActive(second));
+
+        engine.cancel(first);
+
+        assertFalse(engine.isRequestActive(first));
+        assertTrue("one viewer cannot cancel another viewer's token", engine.isRequestActive(second));
+    }
+
+    @Test
+    public void repeatRequestCannotPublishTwice() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("repeat-token"));
+        final FakeApi fake = new FakeApi();
+        fake.text = "once";
+        final HgramOcrEngine.RequestToken token = engine.newRequest();
+
+        final HgramOcrEngine.Result first = engine.recognize(fake, bitmap(10, 10), token);
+        final HgramOcrEngine.Result second = engine.recognize(fake, bitmap(10, 10), token);
+
+        assertEquals(HgramOcrEngine.Status.OK, first.status);
+        assertEquals("once", first.text);
+        assertEquals(HgramOcrEngine.Status.FAILED, second.status);
+        assertTrue(second.cancelled);
+        assertEquals("a consumed token must not run the engine again", 1, fake.initCalls);
     }
 
     @Test
@@ -295,6 +404,33 @@ public class HgramOcrEngineTest {
         assertEquals(HgramOcrEngine.Status.OK, result.status);
         assertFalse(result.cancelled);
         assertEquals("fresh text", result.text);
+    }
+
+    private static void awaitStops(FakeApi fake, int expected) throws InterruptedException {
+        final long deadline = System.currentTimeMillis() + 5_000L;
+        while (fake.stopCalls < expected && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10L);
+        }
+        assertEquals("stop must be dispatched to the control worker", expected, fake.stopCalls);
+    }
+
+    private static void awaitRequestCount(HgramOcrEngine engine, int expected)
+            throws InterruptedException {
+        final long deadline = System.currentTimeMillis() + 5_000L;
+        while (engine.requestCountForTests() != expected
+                && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10L);
+        }
+        assertEquals("request state must be released after native stop", expected,
+                engine.requestCountForTests());
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void write(File file, byte[] data) throws IOException {

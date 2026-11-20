@@ -1417,6 +1417,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     private int lastGigaAmProgress = -1;
     private int lastOcrModelsProgress = -1;
     private boolean ocrModelsDownloadActive;
+    private long ocrModelsJobId;
     private String cachedOcrModelsStatus;
     private String cachedVoskInstalledStatus;
     private String cachedSherpaInstalledStatus;
@@ -1461,17 +1462,27 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             }
             downloading |= gigaAmProgress >= 0;
             int ocrModelsProgress = HgramOcrModels.progress();
+            final long ocrJobId = HgramOcrModels.activeJobId();
+            if (ocrJobId != 0) {
+                ocrModelsJobId = ocrJobId;
+            }
             if (ocrModelsProgress != lastOcrModelsProgress) {
                 notifyRow(ROW_OCR_MODELS);
                 if (lastOcrModelsProgress >= 0 && ocrModelsProgress < 0) {
                     cachedOcrModelsStatus = null;
                     if (ocrModelsDownloadActive) {
-                        finishOcrModelsDownload(HgramOcrModels.isReady(settingsContext()));
+                        // Never hash on the UI thread; verify on a worker and then settle the row.
+                        HgramOcrModels.verifyReady(ApplicationLoader.applicationContext, ready -> {
+                            AndroidUtilities.runOnUIThread(() -> finishOcrModelsDownload(ready));
+                            return kotlin.Unit.INSTANCE;
+                        });
                     }
                 }
                 lastOcrModelsProgress = ocrModelsProgress;
             }
-            downloading |= ocrModelsProgress >= 0 || ocrModelsDownloadActive;
+            downloading |= ocrModelsProgress >= 0
+                    || (ocrJobId != 0 && HgramOcrModels.isJobActive(ocrJobId))
+                    || ocrModelsDownloadActive;
             if (downloading) AndroidUtilities.runOnUIThread(this, 1000);
         }
     };
@@ -1496,11 +1507,13 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
         lastSherpaProgress = HgramSherpaRecognizer.downloadProgress();
         lastGigaAmProgress = HgramGigaAmRecognizer.downloadProgress();
         lastOcrModelsProgress = HgramOcrModels.progress();
-        ocrModelsDownloadActive = lastOcrModelsProgress >= 0;
+        ocrModelsJobId = HgramOcrModels.activeJobId();
+        ocrModelsDownloadActive = lastOcrModelsProgress >= 0 || ocrModelsJobId != 0;
         if (listAdapter != null && !resetSearch) {
             notifyAllRows();
         }
         scheduleModelProgressRefresh();
+        refreshOcrModelsReadiness();
     }
 
     @Override
@@ -2199,6 +2212,9 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             if (HgramOcrModels.isReady(settingsContext())) {
                 cachedOcrModelsStatus = LocaleController.getString(R.string.HgramOcrModelsReady)
                         + " · " + LocaleController.getString(R.string.HgramOcrModelsDelete);
+            } else if (HgramOcrModels.hasPartialFiles(settingsContext())) {
+                cachedOcrModelsStatus = LocaleController.getString(R.string.HgramOcrModelsPartialStatus)
+                        + " · " + LocaleController.getString(R.string.HgramOcrModelsDeletePartial);
             } else {
                 cachedOcrModelsStatus = LocaleController.formatString(R.string.HgramOcrModelsNotInstalled, ocrModelsSizeMb())
                         + " · " + LocaleController.getString(R.string.HgramOcrModelsDownload);
@@ -2208,24 +2224,36 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     }
 
     private void toggleOcrModels() {
-        if (HgramOcrModels.progress() >= 0) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        final Context context = settingsContext();
+        final long activeJobId = HgramOcrModels.activeJobId();
+        final boolean downloading = (activeJobId != 0 && HgramOcrModels.isJobActive(activeJobId))
+                || HgramOcrModels.progress() >= 0;
+        if (downloading) {
             new AlertDialog.Builder(getParentActivity())
                     .setTitle(LocaleController.getString(R.string.HgramOcrModelsTitle))
                     .setMessage(LocaleController.getString(R.string.HgramOcrCancelConfirm))
-                    .setPositiveButton(LocaleController.getString(R.string.HgramOcrCancel), (dialog, which) -> HgramOcrModels.cancel())
-                    .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                    .setPositiveButton(LocaleController.getString(R.string.HgramOcrCancel),
+                            (dialog, which) -> cancelOcrModelsDownload(activeJobId))
+                    .setNegativeButton(LocaleController.getString(R.string.HgramOcrModelsDeletePartial),
+                            (dialog, which) -> confirmDeleteOcrModels(true))
                     .show();
             return;
         }
-        if (HgramOcrModels.isReady(settingsContext())) {
+        if (HgramOcrModels.isReady(context)) {
+            confirmDeleteOcrModels(false);
+            return;
+        }
+        if (HgramOcrModels.hasPartialFiles(context)) {
             new AlertDialog.Builder(getParentActivity())
                     .setTitle(LocaleController.getString(R.string.HgramOcrModelsTitle))
-                    .setMessage(LocaleController.getString(R.string.HgramModelDeleteConfirm))
-                    .setPositiveButton(LocaleController.getString(R.string.HgramOcrModelsDelete), (dialog, which) -> {
-                        cachedOcrModelsStatus = null;
-                        HgramOcrModels.delete(settingsContext());
-                        notifyRow(ROW_OCR_MODELS);
-                    })
+                    .setMessage(LocaleController.formatString(R.string.HgramOcrNeedModelsText, ocrModelsSizeLabel()))
+                    .setPositiveButton(LocaleController.getString(R.string.HgramOcrModelsDownload),
+                            (dialog, which) -> startOcrModelsDownload())
+                    .setNeutralButton(LocaleController.getString(R.string.HgramOcrModelsDeletePartial),
+                            (dialog, which) -> confirmDeleteOcrModels(true))
                     .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
                     .show();
             return;
@@ -2238,13 +2266,104 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 .show();
     }
 
-    private void startOcrModelsDownload() {
-        ocrModelsDownloadActive = true;
+    private void confirmDeleteOcrModels(boolean partial) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        new AlertDialog.Builder(getParentActivity())
+                .setTitle(LocaleController.getString(R.string.HgramOcrModelsTitle))
+                .setMessage(LocaleController.getString(partial
+                        ? R.string.HgramOcrModelsDeletePartialConfirm : R.string.HgramModelDeleteConfirm))
+                .setPositiveButton(LocaleController.getString(partial
+                                ? R.string.HgramOcrModelsDeletePartial : R.string.HgramOcrModelsDelete),
+                        (dialog, which) -> deleteOcrModels())
+                .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
+                .show();
+    }
+
+    private void cancelOcrModelsDownload(long jobId) {
+        if (jobId != 0 && HgramOcrModels.isJobActive(jobId)) {
+            try {
+                HgramOcrModels.cancel(jobId);
+            } catch (Throwable ignored) {
+            }
+        }
+        ocrModelsDownloadActive = false;
+        ocrModelsJobId = 0;
+        lastOcrModelsProgress = -1;
         cachedOcrModelsStatus = null;
-        HgramOcrModels.download(settingsContext(), null, success -> {
-            AndroidUtilities.runOnUIThread(() -> finishOcrModelsDownload(success));
+        notifyRow(ROW_OCR_MODELS);
+        scheduleModelProgressRefresh();
+    }
+
+    private void deleteOcrModels() {
+        final Context context = ApplicationLoader.applicationContext;
+        final long activeJobId = HgramOcrModels.activeJobId();
+        if (activeJobId != 0 && HgramOcrModels.isJobActive(activeJobId)) {
+            cancelOcrModelsDownload(activeJobId);
+        }
+        ocrModelsDownloadActive = false;
+        ocrModelsJobId = 0;
+        cachedOcrModelsStatus = null;
+        lastOcrModelsProgress = -1;
+        notifyRow(ROW_OCR_MODELS);
+        HgramOcrModels.delete(context, success -> {
+            AndroidUtilities.runOnUIThread(() -> {
+                cachedOcrModelsStatus = null;
+                lastOcrModelsProgress = HgramOcrModels.progress();
+                notifyRow(ROW_OCR_MODELS);
+                if (!isPaused() && !isFinished && getParentActivity() != null) {
+                    Toast.makeText(getParentActivity(), LocaleController.getString(success
+                            ? R.string.HgramOcrModelsDeleted : R.string.HgramOcrDownloadFailed), Toast.LENGTH_SHORT).show();
+                }
+                if (success) {
+                    refreshOcrModelsReadiness();
+                }
+            });
             return kotlin.Unit.INSTANCE;
         });
+    }
+
+    private void refreshOcrModelsReadiness() {
+        HgramOcrModels.verifyReady(ApplicationLoader.applicationContext, ready -> {
+            AndroidUtilities.runOnUIThread(() -> {
+                cachedOcrModelsStatus = null;
+                if (isPaused() || isFinished) {
+                    return;
+                }
+                notifyRow(ROW_OCR_MODELS);
+            });
+            return kotlin.Unit.INSTANCE;
+        });
+    }
+
+    private void startOcrModelsDownload() {
+        if (getParentActivity() == null) {
+            return;
+        }
+        ocrModelsDownloadActive = true;
+        cachedOcrModelsStatus = null;
+        final Context appContext = ApplicationLoader.applicationContext;
+        try {
+            ocrModelsJobId = HgramOcrModels.download(appContext, null, (jobId, success) -> {
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (ocrModelsJobId != 0 && jobId != ocrModelsJobId) {
+                        return;
+                    }
+                    finishOcrModelsDownload(success);
+                });
+                return kotlin.Unit.INSTANCE;
+            });
+        } catch (Throwable ignored) {
+            ocrModelsDownloadActive = false;
+            ocrModelsJobId = 0;
+            notifyRow(ROW_OCR_MODELS);
+            if (!isPaused() && !isFinished && getParentActivity() != null) {
+                Toast.makeText(getParentActivity(), LocaleController.getString(R.string.HgramOcrDownloadFailed),
+                        Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
         lastOcrModelsProgress = HgramOcrModels.progress();
         notifyRow(ROW_OCR_MODELS);
         scheduleModelProgressRefresh();
@@ -2255,12 +2374,14 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             return;
         }
         ocrModelsDownloadActive = false;
+        ocrModelsJobId = 0;
         cachedOcrModelsStatus = null;
         lastOcrModelsProgress = HgramOcrModels.progress();
         notifyRow(ROW_OCR_MODELS);
-        if (getParentActivity() != null) {
+        if (!isPaused() && !isFinished && getParentActivity() != null) {
             Toast.makeText(getParentActivity(), LocaleController.getString(success
                     ? R.string.HgramOcrModelsReady : R.string.HgramOcrDownloadFailed), Toast.LENGTH_SHORT).show();
         }
+        refreshOcrModelsReadiness();
     }
 }

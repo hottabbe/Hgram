@@ -11799,6 +11799,10 @@
     <string name="HgramOcrDownloadFailed">Could not download the models</string>
     <string name="HgramOcrCancel">Cancel</string>
     <string name="HgramOcrCancelConfirm">Cancel the model download? You can resume it later.</string>
+    <string name="HgramOcrModelsPartialStatus">Download incomplete</string>
+    <string name="HgramOcrModelsDeletePartial">Delete incomplete download</string>
+    <string name="HgramOcrModelsDeletePartialConfirm">Delete the incomplete download and its partial files?</string>
+    <string name="HgramOcrModelsDeleted">Models deleted</string>
     <string name="HgramSummarizerDeleteKey">Delete key</string>
     <string name="HgramSummarizerResetPrompt">Reset to default</string>
     <string name="HgramSummarizerNeedKey">Enter the OpenRouter key first</string>

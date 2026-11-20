@@ -526,6 +526,10 @@
     <string name="HgramOcrDownloadFailed">Не удалось скачать модели</string>
     <string name="HgramOcrCancel">Отмена</string>
     <string name="HgramOcrCancelConfirm">Отменить загрузку моделей? Загрузку можно будет продолжить позже.</string>
+    <string name="HgramOcrModelsPartialStatus">Загрузка не завершена</string>
+    <string name="HgramOcrModelsDeletePartial">Удалить незавершённую загрузку</string>
+    <string name="HgramOcrModelsDeletePartialConfirm">Удалить незавершённую загрузку и частичные файлы?</string>
+    <string name="HgramOcrModelsDeleted">Модели удалены</string>
     <string name="HgramSummarizerDeleteKey">Удалить ключ</string>
     <string name="HgramSummarizerResetPrompt">Сбросить к стандартному</string>
     <string name="HgramSummarizerNeedKey">Сначала введите ключ OpenRouter</string>

@@ -23,6 +23,8 @@ public class HgramOcrPhotoTest {
         assertFalse(HgramOcrPhoto.canRecognize(true, true, false, false));
         assertFalse(HgramOcrPhoto.canRecognize(true, false, true, false));
         assertFalse(HgramOcrPhoto.canRecognize(true, false, false, true));
+        assertFalse(HgramOcrPhoto.canRecognize(true, false, false, false, true));
+        assertTrue(HgramOcrPhoto.canRecognize(true, false, false, false, false));
     }
 
     @Test

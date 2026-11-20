@@ -38,8 +38,7 @@ APK подписан ключом проекта, поэтому обновле�
 
 ### Суммаризация сообщений
 
-- Кнопка «пересказать» у пузыря появляется, если в сообщении не меньше заданного числа слов, и всегда —
-  у склеенной цепочки коротких сообщений.
+- Кнопка «пересказать» у пузыря появляется, если в сообщении не меньше заданного числа слов.
 - Пересказ делает выбранная модель [OpenRouter](https://openrouter.ai/): по умолчанию бесплатная,
   при желании можно включить платные модели — в списке видна цена за 1 млн токенов.
 - Настройки: **Hgram → Сообщения** — включение, порог появления кнопки, ключ OpenRouter, выбор модели
@@ -79,6 +78,15 @@ APK подписан ключом проекта, поэтому обновле�
   sherpa-onnx (Zipformer RU) и GigaAM v3; модели скачиваются по запросу из настроек.
 - Расшифровка выполняется в отдельном процессе, поэтому большие модели не раздувают память основного.
 - Выравнивание громкости голосовых (компрессор + лимитер) без перекодирования файла.
+
+### Распознавание текста на фото
+
+- Долгое нажатие на снимок в просмотрщике включает режим выделения: текст распознаётся на устройстве
+  и сразу выделяется целиком, работает системное «Копировать».
+- Языки — русский и английский. Движок и языковые модели не входят в APK: при первом использовании
+  модели скачиваются по запросу (≈ 8 МБ), скачивание можно отменить и продолжить позже.
+- Настройка: **Hgram → Сообщения** — включение, статус моделей и кнопки «Скачать» / «Отменить» / «Удалить».
+- Защищённые фото (запрет пересылки, секретные чаты, защищённые аватары) не отдают текст в буфер обмена.
 
 ### Интерфейс и повседневные мелочи
 
@@ -170,6 +178,9 @@ Hgram основан на работе других проектов:
 собственное имя и собственные иконки; см. [BRANDING.md](BRANDING.md). Упоминания upstream-проектов
 носят информационный характер и не означают их одобрения или поддержки Hgram.
 
+Текст распознавания не покидает устройство и не сохраняется: результат только показывается и, по желанию,
+копируется в буфер обмена.
+
 ### Сторонние компоненты OCR
 
 Распознавание текста на фото использует [Tesseract4Android](https://github.com/adaptech-cz/Tesseract4Android)
@@ -182,11 +193,12 @@ Hgram основан на работе других проектов:
 ## English summary
 
 Hgram is an unofficial open-source Telegram client for Android, forked from Nagram (which builds on
-Telegram for Android and NekoX). Current release: **13.0.2 (1307)**, 19 November 2026, arm64-v8a,
-Android 6.0+. Highlights: OpenRouter-powered message summarization with selectable models and pricing,
-merged short-message chains, anti-peek masking triggered by flipping the phone, a hidden space with a
-decoy PIN and encrypted media cache, media previews in notifications, offline voice transcription
-(Vosk / sherpa-onnx / GigaAM), unified vibration settings, and the usual NekoX/Nagram customization.
+Telegram for Android and NekoX). Current release: **13.0.2 (1310)**, 20 November 2026, arm64-v8a,
+Android 6.0+. Highlights: on-device photo text recognition (long-press a photo, models downloaded on
+demand), OpenRouter-powered message summarization with selectable models and pricing, merged
+short-message chains, anti-peek masking triggered by flipping the phone, a hidden space with a decoy
+PIN and encrypted media cache, media previews in notifications, offline voice transcription
+(Vosk / sherpa-onnx / GigaAM), haptic effect types, and the usual NekoX/Nagram customization.
 
 Downloads: <https://github.com/hottabbe/Hgram/releases> · Channel: <https://t.me/hgram_updates>
 
