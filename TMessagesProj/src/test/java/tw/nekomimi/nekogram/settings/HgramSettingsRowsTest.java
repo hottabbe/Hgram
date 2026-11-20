@@ -107,6 +107,41 @@ public class HgramSettingsRowsTest {
         return false;
     }
 
+    @Test
+    public void gigaAmInfoSearchUsesProductionIndex() {
+        int[] on = HgramSettingsActivity.buildSearchVisibleRows(searchKeep("gigaam", true, "giga"));
+        assertTrue(contains(on, HgramSettingsActivity.ROW_GIGAAM_INFO));
+        assertTrue(contains(on, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+
+        int[] onUpper = HgramSettingsActivity.buildSearchVisibleRows(searchKeep("gigaam", true, "GIGA"));
+        assertTrue(contains(onUpper, HgramSettingsActivity.ROW_GIGAAM_INFO));
+
+        int[] onRu = HgramSettingsActivity.buildSearchVisibleRows(searchKeep("gigaam", true, "офлайн"));
+        assertTrue(contains(onRu, HgramSettingsActivity.ROW_GIGAAM_INFO));
+
+        int[] off = HgramSettingsActivity.buildSearchVisibleRows(searchKeep("gigaam", false, "giga"));
+        assertFalse(contains(off, HgramSettingsActivity.ROW_GIGAAM_INFO));
+        assertTrue(contains(off, HgramSettingsActivity.ROW_GIGAAM_MODEL));
+    }
+
+    @Test
+    public void toggleKeepsPartiallyVisibleAnchorOffset() {
+        int[] off = HgramSettingsActivity.buildBaseVisibleRows("gigaam", false);
+        int[] on = HgramSettingsActivity.buildBaseVisibleRows("gigaam", true);
+
+        int anchorIndex = indexOf(off, HgramSettingsSearch.ROW_OFFLINE_TRANSCRIPTION);
+        int anchorRow = off[anchorIndex];
+        // ROW_GIGAAM_INFO is inserted below the toggle, so the anchor index must not shift.
+        assertEquals(anchorIndex, HgramSettingsActivity.findRowIndex(on, anchorRow));
+
+        int infoIndex = HgramSettingsActivity.findRowIndex(on, HgramSettingsActivity.ROW_GIGAAM_INFO);
+        int nearest = HgramSettingsActivity.nearestSurvivingRow(on, off, infoIndex);
+        assertTrue(nearest >= 0);
+        assertTrue(indexOf(off, nearest) >= 0);
+
+        assertArrayEquals(off, HgramSettingsActivity.buildBaseVisibleRows("gigaam", false));
+    }
+
     private static boolean[] searchKeep(String engine, boolean offlineEnabled, String query) {
         int[] rows = HgramSettingsActivity.ROWS;
         boolean[] keep = new boolean[rows.length];
@@ -116,9 +151,9 @@ public class HgramSettingsRowsTest {
                     || row == HgramSettingsActivity.ROW_RESET_HGRAM_SETTINGS) {
                 continue;
             }
-            // searchTextForRow() is private/LocaleController-bound; pass the info row's displayed text.
-            String text = row == HgramSettingsActivity.ROW_GIGAAM_INFO
-                    ? "GigaAM runs fully offline" : "";
+            // searchTextForRow() is private/LocaleController-bound; production matching must rely on
+            // HgramSettingsSearch.keywords() for rows whose localized text is unavailable here.
+            String text = "";
             keep[i] = HgramSettingsSearch.isRowVisible(row, engine, offlineEnabled)
                     && HgramSettingsSearch.matches(row, query, text);
         }

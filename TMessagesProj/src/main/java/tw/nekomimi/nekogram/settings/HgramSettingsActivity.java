@@ -481,7 +481,8 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             int targetIndex = findRowIndex(newRows, anchorRow);
             final boolean targetIndexWasFallback = targetIndex < 0;
             if (targetIndexWasFallback) {
-                targetIndex = nearestSurvivingRow(oldRows, newRows, firstVisible);
+                final int nearestRow = nearestSurvivingRow(oldRows, newRows, firstVisible);
+                targetIndex = nearestRow >= 0 ? findRowIndex(newRows, nearestRow) : -1;
             }
             final int singleDiff = singleInsertOrRemoveIndex(oldRows, newRows);
             final boolean singleDiffApplied = singleDiff >= 0;

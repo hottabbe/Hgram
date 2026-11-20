@@ -40,6 +40,7 @@ final class HgramSettingsSearch {
     static final int ROW_SUMMARIZER_KEY = 74;
     static final int ROW_SUMMARIZER_MODEL = 75;
     static final int ROW_SUMMARIZER_PROMPT = 76;
+    static final int ROW_GIGAAM_INFO = 77;
 
     private static final String HAPTIC_COMMON =
             "вибра вибро вибрация haptic feedback сила длительность";
@@ -130,6 +131,8 @@ final class HgramSettingsSearch {
                 return "устройство device provider провайдер cpu nnapi xnnpack распознавание";
             case ROW_GIGAAM_MODEL:
                 return "gigaam модель model распознавание скачать download 305";
+            case ROW_GIGAAM_INFO:
+                return "gigaam giga офлайн offline расшифровка";
             case ROW_NOTIFICATION_DEBOUNCE:
                 return "debounce уведомления notification 30 задержка";
             case ROW_FRAME_THROTTLING:
