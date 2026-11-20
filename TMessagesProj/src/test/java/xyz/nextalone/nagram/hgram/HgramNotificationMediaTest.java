@@ -15,7 +15,9 @@ import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.SharedConfig;
 import org.telegram.tgnet.TLRPC;
 
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -492,6 +494,85 @@ public class HgramNotificationMediaTest {
                 android.graphics.Bitmap.Config.ARGB_8888);
         assertNull(HgramNotificationMedia.enforceAllowed(() -> false, denied));
         assertTrue(denied.isRecycled());
+    }
+
+    @Test
+    public void fallbackSkipsEmptyAndOversizedInlineThumbs() {
+        final TLRPC.TL_photoSize empty = new TLRPC.TL_photoSize();
+        empty.w = 1000;
+        empty.bytes = new byte[0];
+        empty.location = null;
+
+        final TLRPC.TL_photoSize oversized = new TLRPC.TL_photoSize();
+        oversized.w = 900;
+        oversized.bytes = new byte[HgramNotificationMedia.MAX_INLINE_THUMB_BYTES + 1];
+
+        final TLRPC.TL_photoSize valid = new TLRPC.TL_photoSize();
+        valid.w = 100;
+        valid.bytes = new byte[]{1, 2, 3};
+
+        assertSame(valid, HgramNotificationMedia.chooseFallbackPreviewSize(
+                Arrays.asList(empty, oversized, valid)));
+        assertNull(HgramNotificationMedia.chooseFallbackPreviewSize(
+                Arrays.asList(empty, oversized)));
+
+        assertFalse(HgramNotificationMedia.isInlineThumbAllowed(null));
+        assertFalse(HgramNotificationMedia.isInlineThumbAllowed(new byte[0]));
+        assertTrue(HgramNotificationMedia.isInlineThumbAllowed(new byte[]{1}));
+        assertFalse(HgramNotificationMedia.isInlineThumbAllowed(
+                new byte[HgramNotificationMedia.MAX_INLINE_THUMB_BYTES + 1]));
+
+        // Same rejection at load time: empty and broken inline bytes never yield a bitmap.
+        assertNull(HgramNotificationMedia.loadSourceForTest(new HgramNotificationMedia.Source(
+                null, null, null, null, new byte[0], true)));
+        assertNull(HgramNotificationMedia.loadSourceForTest(new HgramNotificationMedia.Source(
+                null, null, null, null, new byte[]{9, 9, 9}, true)));
+    }
+
+    @Test
+    public void strippedJpegIsSelectedAndDecoded() {
+        final Bitmap bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888);
+        final ByteArrayOutputStream out = new ByteArrayOutputStream();
+        assertTrue(bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out));
+        final byte[] jpeg = out.toByteArray();
+        assertTrue(jpeg.length > 4);
+
+        final byte[] strippedBytes = new byte[jpeg.length - 4 + 3];
+        strippedBytes[0] = 0;
+        strippedBytes[1] = 1;
+        strippedBytes[2] = 1;
+        System.arraycopy(jpeg, 2, strippedBytes, 3, jpeg.length - 4);
+
+        final TLRPC.TL_message gif = documentMessage(2);
+        gif.media.document.thumbs = new ArrayList<>();
+        final TLRPC.TL_photoStrippedSize stripped = new TLRPC.TL_photoStrippedSize();
+        stripped.bytes = strippedBytes;
+        gif.media.document.thumbs.add(stripped);
+
+        final HgramNotificationMedia.Source source = HgramNotificationMedia.findSource(gif);
+        assertNotNull(source);
+        assertTrue(source.inlineStripped);
+        assertSame(stripped, source.photoSize);
+        assertNotNull(HgramNotificationMedia.loadSourceForTest(source));
+        bitmap.recycle();
+    }
+
+    @Test
+    public void smallDocumentThumbLocationIsSelected() {
+        final TLRPC.TL_photoSize small = new TLRPC.TL_photoSize();
+        small.location = new TLRPC.TL_fileLocationToBeDeprecated();
+        small.w = 64;
+        small.h = 64;
+        small.size = 32;
+
+        final TLRPC.TL_message gif = documentMessage(2);
+        gif.media.document.thumbs = new ArrayList<>();
+        gif.media.document.thumbs.add(small);
+
+        final HgramNotificationMedia.Source source = HgramNotificationMedia.findSource(gif);
+        assertNotNull(source);
+        assertSame(small, source.photoSize);
+        assertNull(source.inlineThumb);
     }
 
 }

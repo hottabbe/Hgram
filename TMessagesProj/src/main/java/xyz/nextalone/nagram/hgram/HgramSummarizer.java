@@ -303,12 +303,12 @@ public final class HgramSummarizer {
         if (message == null || message.messageOwner == null || !privateChat || isSecretChatMessage(message)) {
             return false;
         }
-        final String source = chain != null
-                ? chain.text
-                : (!TextUtils.isEmpty(message.messageOwner.message)
+        // SUMM-NOCHAIN-1: ✨ для цепочек отключена — chain-путь остаётся только для backend/тестов.
+        if (chain != null) return false;
+        final String source = !TextUtils.isEmpty(message.messageOwner.message)
                 ? message.messageOwner.message
-                : (message.caption != null ? message.caption.toString() : null));
-        return chain != null ? isEligibleChain(chain) : isEligibleText(source);
+                : (message.caption != null ? message.caption.toString() : null);
+        return isEligibleText(source);
     }
 
     public static boolean acceptsModel(boolean inputKnown, boolean inputHasText,
@@ -326,11 +326,6 @@ public final class HgramSummarizer {
             if (id.contains(part)) return true;
         }
         return false;
-    }
-
-    public static boolean isEligibleChain(HgramShortMessageMerger.Chain chain) {
-        if (!isEnabledHere() || chain == null) return false;
-        return !TextUtils.isEmpty(chain.text);
     }
 
     public static boolean isEligibleText(String text) {
@@ -391,6 +386,7 @@ public final class HgramSummarizer {
         return Character.UnicodeScript.of(display.codePointAt(0)) == Character.UnicodeScript.LATIN;
     }
 
+    // chain-путь сохранён для backend/тестов, но UI ✨ у цепочек отключён (SUMM-NOCHAIN-1).
     public static String buildRequestText(MessageObject message, HgramShortMessageMerger.Chain chain) {
         final StringBuilder out = new StringBuilder();
         if (chain != null) {

@@ -1,12 +1,8 @@
 name: Release Build
+# Upstream-пайплайн Nagram: собирает нативные библиотеки и APK на раннере и пытается
+# публиковать в каналы Nagram. Мы собираем релизы локально и публикуем вручную,
+# поэтому автозапуск по push отключён — только ручной запуск.
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - '**.md'
-      - '.github/**'
-      - '!.github/workflows/release.yml'
   workflow_dispatch:
     inputs:
       upload:
@@ -87,6 +83,14 @@ jobs:
       - name: Checkout Library
         run: |
           git submodule update --init
+      - name: Patch media3 Kotlin plugin
+        # AGP 9 сам регистрирует расширение `kotlin`, а media3 дополнительно делает
+        # `apply plugin: 'kotlin-android'` → "Cannot add extension with name 'kotlin'".
+        run: |
+          for f in $(grep -rl "apply plugin: 'kotlin-android'" TMessagesProj_Modules/media/libraries 2>/dev/null || true); do
+            sed -i "/apply plugin: 'kotlin-android'/d" "$f"
+            echo "patched $f"
+          done
       - name: Set up JDK 17
         uses: actions/setup-java@v6
         with:

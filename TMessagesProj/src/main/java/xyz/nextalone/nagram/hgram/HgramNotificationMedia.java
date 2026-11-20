@@ -315,26 +315,7 @@ public final class HgramNotificationMedia {
         TLRPC.PhotoSize best = null;
         for (int i = 0; i < sizes.size(); i++) {
             final TLRPC.PhotoSize size = sizes.get(i);
-            if (size == null || size.location == null && size.bytes == null) {
-                continue;
-            }
-            final int width = size.w > 0 ? size.w : size.h;
-            final int bestWidth = best == null ? -1 : (best.w > 0 ? best.w : best.h);
-            if (best == null || width > bestWidth) {
-                best = size;
-            }
-        }
-        return best;
-    }
-
-    private static TLRPC.PhotoSize findInlinePreviewSize(List<TLRPC.PhotoSize> sizes) {
-        if (sizes == null) {
-            return null;
-        }
-        TLRPC.PhotoSize best = null;
-        for (int i = 0; i < sizes.size(); i++) {
-            final TLRPC.PhotoSize size = sizes.get(i);
-            if (size == null || size.bytes == null || !isInlineThumbAllowed(size.bytes)) {
+            if (size == null || !isUsablePreviewSize(size)) {
                 continue;
             }
             final int width = size.w > 0 ? size.w : size.h;
@@ -347,7 +328,7 @@ public final class HgramNotificationMedia {
     }
 
     static boolean isInlineThumbAllowed(byte[] bytes) {
-        return bytes != null && bytes.length <= MAX_INLINE_THUMB_BYTES;
+        return bytes != null && bytes.length > 0 && bytes.length <= MAX_INLINE_THUMB_BYTES;
     }
 
     /** Pure album rule used by tests and by callers that only have message owners. */
@@ -829,7 +810,7 @@ public final class HgramNotificationMedia {
     }
 
     static boolean isUsablePreviewSize(TLRPC.PhotoSize size) {
-        return size != null && (size.location != null || size.bytes != null && size.bytes.length > 0);
+        return size != null && (size.location != null || isInlineThumbAllowed(size.bytes));
     }
 
     static Bitmap loadSourceForTest(Source source) {

@@ -137,24 +137,46 @@ public class HgramSummarizerTest {
     }
 
     @Test
-    public void buttonThresholdNineTenElevenAndChainAlways() {
+    public void buttonThresholdNineTenEleven() {
         HgramConfig.setSummarizerEnabled(true);
         HgramConfig.setSummarizerMinWords(10);
         assertFalse(HgramSummarizer.isEligibleText(words(9)));
         assertTrue(HgramSummarizer.isEligibleText(words(10)));
         assertTrue(HgramSummarizer.isEligibleText(words(11)));
 
-        Map<Integer, HgramShortMessageMerger.Chain> chains = HgramShortMessageMerger.build(Arrays.asList(
-                new HgramShortMessageMerger.Entry(1, 1000, 1, 7, "a", true),
-                new HgramShortMessageMerger.Entry(2, 1100, 1, 7, "b", true),
-                new HgramShortMessageMerger.Entry(3, 1200, 1, 7, "c", true)));
-        HgramConfig.setSummarizerMinWords(500);
-        assertFalse(HgramSummarizer.isEligibleText(words(10)));
-        assertTrue(HgramSummarizer.isEligibleChain(chains.get(1)));
-
         HgramConfig.setSummarizerEnabled(false);
         assertFalse(HgramSummarizer.isEligibleText(words(100)));
-        assertFalse(HgramSummarizer.isEligibleChain(chains.get(1)));
+    }
+
+    @Test
+    public void chainIsNeverSummarizable() {
+        HgramConfig.setSummarizerEnabled(true);
+        HgramConfig.setSummarizerMinWords(50);
+        HgramShortMessageMerger.Chain chain = chainWith(91, "предыдущее сообщение");
+        assertNotNull(chain);
+
+        TLRPC.TL_message raw = new TLRPC.TL_message();
+        raw.id = 91;
+        raw.dialog_id = 777;
+        raw.message = words(60);
+        MessageObject msg = new MessageObject(1, raw, false, false);
+
+        assertFalse(HgramSummarizer.canSummarize(msg, chain));
+        assertFalse(HgramSummarizer.canSummarize(msg, chain, true));
+    }
+
+    @Test
+    public void singleMessageBelowThresholdStillHidden() {
+        HgramConfig.setSummarizerEnabled(true);
+        HgramConfig.setSummarizerMinWords(50);
+        assertFalse(HgramSummarizer.isEligibleText(words(49)));
+    }
+
+    @Test
+    public void singleMessageAtThresholdShown() {
+        HgramConfig.setSummarizerEnabled(true);
+        HgramConfig.setSummarizerMinWords(50);
+        assertTrue(HgramSummarizer.isEligibleText(words(50)));
     }
 
     @Test

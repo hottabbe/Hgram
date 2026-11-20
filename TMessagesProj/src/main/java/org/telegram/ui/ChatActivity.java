@@ -41834,20 +41834,6 @@ public class ChatActivity extends BaseFragment implements
             hideAds();
         }
 
-        private MessageObject findHgramChainTarget(MessageObject tapped, HgramShortMessageMerger.Chain chain) {
-            if (tapped == null || chain == null || chain.anchorId == 0 || chain.anchorId == tapped.getId()) {
-                return tapped;
-            }
-            for (int i = 0, size = messages.size(); i < size; i++) {
-                final MessageObject candidate = messages.get(i);
-                if (candidate != null && candidate.getId() == chain.anchorId
-                        && candidate.getDialogId() == tapped.getDialogId()) {
-                    return candidate;
-                }
-            }
-            return tapped;
-        }
-
         @Override
         public void didPressSummarize(ChatMessageCell cell, boolean byReply) {
             final MessageObject msg = cell.getMessageObject();
@@ -41863,55 +41849,34 @@ public class ChatActivity extends BaseFragment implements
             final boolean hgramPrivate = !byReply && TextUtils.isEmpty(searchingHashtag)
                     && DialogObject.isUserDialog(msg.getDialogId());
             if (hgramPrivate) {
-                final MessageObject target = findHgramChainTarget(msg, chain);
-                final int targetId = target.getId();
-                final int tappedId = msg.getId();
+                // SUMM-NOCHAIN-1: cell already carries the summarised message; no chain anchor lookup.
+                final int messageId = msg.getId();
                 final Runnable refresh = () -> {
-                    final View targetView = findCell(targetId, false);
-                    if (targetView instanceof ChatMessageCell) {
-                        forceUpdate((ChatMessageCell) targetView, true, true);
-                    }
-                    if (tappedId != targetId) {
-                        final View tappedView = findCell(tappedId, false);
-                        if (tappedView instanceof ChatMessageCell) {
-                            forceUpdate((ChatMessageCell) tappedView, true, true);
-                        }
+                    final View messageView = findCell(messageId, false);
+                    if (messageView instanceof ChatMessageCell) {
+                        forceUpdate((ChatMessageCell) messageView, true, true);
                     }
                 };
                 // An open summary is closed by origin: a process-local result needs no
                 // threshold, credentials, network or custom params write, while a real
                 // upstream summary in a DM is closed through the normal persisted path.
-                if (target.messageOwner.summarizedOpen && target.messageOwner.summaryText != null) {
-                    if (xyz.nextalone.nagram.hgram.HgramSummarizer.closeLocal(target, chain)) {   // only local marker
-                        target.updateTranslation(true);
+                if (msg.messageOwner.summarizedOpen && msg.messageOwner.summaryText != null) {
+                    if (xyz.nextalone.nagram.hgram.HgramSummarizer.closeLocal(msg, chain)) {   // only local marker
+                        msg.updateTranslation(true);
                         refresh.run();
                         return;
                     }
                     // real upstream summary in DM: close and persist
-                    target.messageOwner.summarizedOpen = false;
-                    target.updateTranslation(true);
-                    getMessagesStorage().updateMessageCustomParams(target.getDialogId(), target.messageOwner);
+                    msg.messageOwner.summarizedOpen = false;
+                    msg.updateTranslation(true);
+                    getMessagesStorage().updateMessageCustomParams(msg.getDialogId(), msg.messageOwner);
                     refresh.run();
                     return;
                 }
-                if (xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(target, chain, hgramPrivate)) {
-                    xyz.nextalone.nagram.hgram.HgramSummarizer.invalidateStaleSummary(target, chain);
-                    target.updateTranslation(true);
-                    if (chain != null && cell.isHgramShortCollapsed()) {
-                        if (target.messageOwner.summarizedOpen && target.messageOwner.summaryText != null) {
-                            cell.performHgramShortToggle();
-                            return;
-                        }
-                        final boolean hasSummary = target.messageOwner.summaryText != null;
-                        final boolean hasCredentials = !TextUtils.isEmpty(HgramConfig.getSummarizerKey())
-                                && !TextUtils.isEmpty(HgramConfig.getSummarizerModel());
-                        if (hasSummary || hasCredentials) {
-                            cell.performHgramShortToggle();
-                        }
-                        xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(target, chain, refresh);
-                        return;
-                    }
-                    xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(target, chain, refresh);
+                if (xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(msg, chain, hgramPrivate)) {
+                    xyz.nextalone.nagram.hgram.HgramSummarizer.invalidateStaleSummary(msg, chain);
+                    msg.updateTranslation(true);
+                    xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(msg, chain, refresh);
                     return;
                 }
             }
