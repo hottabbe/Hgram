@@ -20,6 +20,7 @@ import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import xyz.nextalone.nagram.hgram.HgramVoiceSummarizer
 
 object NetworkLogManager {
 
@@ -140,6 +141,12 @@ class NetworkRequestBuilder(
     private var contentType: ContentType? = null
 ) {
     private var onCompleteCallback: (suspend () -> Unit)? = null
+    private var beforeSendAction: (() -> Unit)? = null
+
+    fun beforeSend(block: () -> Unit): NetworkRequestBuilder {
+        beforeSendAction = block
+        return this
+    }
 
     fun url(url: String): NetworkRequestBuilder {
         this.url = url
@@ -227,6 +234,7 @@ class NetworkRequestBuilder(
                     when (method.uppercase()) {
                         "GET" -> get(url) {
                             applyHeadersAndParams()
+                            this@NetworkRequestBuilder.beforeSendAction?.invoke()
                         }
                         "POST" -> post(url) {
                             applyHeadersAndParams()
@@ -234,6 +242,7 @@ class NetworkRequestBuilder(
                                 binaryBody != null -> setBody(binaryBody!!)
                                 contentBody != null -> setBody(contentBody!!)
                             }
+                            this@NetworkRequestBuilder.beforeSendAction?.invoke()
                         }
                         "PUT" -> put(url) {
                             applyHeadersAndParams()
@@ -241,9 +250,11 @@ class NetworkRequestBuilder(
                                 binaryBody != null -> setBody(binaryBody!!)
                                 contentBody != null -> setBody(contentBody!!)
                             }
+                            this@NetworkRequestBuilder.beforeSendAction?.invoke()
                         }
                         "DELETE" -> delete(url) {
                             applyHeadersAndParams()
+                            this@NetworkRequestBuilder.beforeSendAction?.invoke()
                         }
                         "PATCH" -> patch(url) {
                             applyHeadersAndParams()
@@ -251,15 +262,19 @@ class NetworkRequestBuilder(
                                 binaryBody != null -> setBody(binaryBody!!)
                                 contentBody != null -> setBody(contentBody!!)
                             }
+                            this@NetworkRequestBuilder.beforeSendAction?.invoke()
                         }
                         "HEAD" -> head(url) {
                             applyHeadersAndParams()
+                            this@NetworkRequestBuilder.beforeSendAction?.invoke()
                         }
                         "OPTIONS" -> options(url) {
                             applyHeadersAndParams()
+                            this@NetworkRequestBuilder.beforeSendAction?.invoke()
                         }
                         else -> get(url) {
                             applyHeadersAndParams()
+                            this@NetworkRequestBuilder.beforeSendAction?.invoke()
                         }
                     }
                 }
@@ -300,6 +315,9 @@ class NetworkRequestBuilder(
                 )
             }
 
+        } catch (e: HgramVoiceSummarizer.TransportBlockedException) {
+            // Admission refusal is control flow, not a network error: keep it for the LLM path.
+            throw e
         } catch (e: Exception) {
             errorMsg = e.message ?: "Unknown error"
             responseTime = System.currentTimeMillis() - startTime

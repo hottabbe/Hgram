@@ -35,6 +35,9 @@ import xyz.nextalone.nagram.NaConfig;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Voice/round-video summary path: the request seams keep the network out, and the caption is
@@ -123,13 +126,12 @@ public class HgramVoiceSummarizerTest {
         HgramVoiceSummarizer.setVoiceSummaryEnabledForTests(true);
         HgramVoiceSummarizer.setRequestLauncherForTests(queuedRequests::add);
         HgramVoiceSummarizer.setRequestCompletionForTests((key, model, systemPrompt, userPrompt, permit) -> {
-            HgramVoiceSummarizer.authorizeAndSend(permit, () -> {
-                completionCalls++;
-                capturedKey = key;
-                capturedModel = model;
-                capturedSystemPrompt = systemPrompt;
-                capturedPrompt = userPrompt;
-            });
+            HgramVoiceSummarizer.newHandoff(permit).accept();
+            completionCalls++;
+            capturedKey = key;
+            capturedModel = model;
+            capturedSystemPrompt = systemPrompt;
+            capturedPrompt = userPrompt;
             return resultText;
         });
     }
@@ -427,25 +429,88 @@ public class HgramVoiceSummarizerTest {
 
         // The early worker check sees ALLOWED; then the prepared request reaches the real bridge.
         final boolean[] sent = {false};
-        HgramVoiceSummarizer.authorizeAndSend(
-                HgramVoiceSummarizer.newVoicePermit(message, generation), () -> {
-                    sent[0] = true;
-                });
+        HgramVoiceSummarizer.newHandoff(
+                HgramVoiceSummarizer.newVoicePermit(message, generation)).accept();
+        sent[0] = true;
         assertTrue(sent[0]);
 
         // The protection is published after the early assert but before the transport handoff.
         HgramVoiceSummarizer.updatePeerProtection(1, 777, userFull(true, false));
         sent[0] = false;
         try {
-            HgramVoiceSummarizer.authorizeAndSend(
-                    HgramVoiceSummarizer.newVoicePermit(message, generation), () -> {
-                    sent[0] = true;
-                });
+            HgramVoiceSummarizer.newHandoff(
+                    HgramVoiceSummarizer.newVoicePermit(message, generation)).accept();
+            sent[0] = true;
             org.junit.Assert.fail("transport must be blocked before the HTTP handoff");
         } catch (HgramVoiceSummarizer.TransportBlockedException expected) {
             // Silent refusal: no body, no toast, no log.
         }
         assertFalse(sent[0]);
+    }
+
+    @Test
+    public void blockedPublishedAfterHandoffAcceptedBeforeExecuteDoesNotSend() throws Exception {
+        NoHeavyMessagesController.userFull = userFull(false, false);
+        HgramVoiceSummarizer.updatePeerProtection(1, 777, userFull(false, false));
+        final MessageObject message = voiceMessage(239, words(60));
+        resultText = "не должно отправиться";
+        final CountDownLatch atTransport = new CountDownLatch(1);
+        final CountDownLatch releaseTransport = new CountDownLatch(1);
+        final AtomicInteger sends = new AtomicInteger();
+        HgramVoiceSummarizer.setRequestCompletionForTests((key, model, systemPrompt, userPrompt, permit) -> {
+            // Fake transport: hold after the worker's early check, before the HTTP handoff.
+            atTransport.countDown();
+            if (!releaseTransport.await(5, TimeUnit.SECONDS)) {
+                throw new AssertionError("transport latch timeout");
+            }
+            HgramVoiceSummarizer.newHandoff(permit).accept();
+            sends.incrementAndGet();
+            return resultText;
+        });
+
+        assertTrue(HgramVoiceSummarizer.toggle(message, () -> {
+        }));
+        ApplicationLoader.applicationHandler = new Handler(Looper.getMainLooper());
+        try {
+            final Thread worker = new Thread(queuedRequests.remove(0), "voice-transport-test");
+            worker.start();
+            assertTrue(atTransport.await(5, TimeUnit.SECONDS));
+
+            // Protection is published in the exact window between early check and accept().
+            HgramVoiceSummarizer.updatePeerProtection(1, 777, userFull(true, false));
+            releaseTransport.countDown();
+            worker.join(5000);
+            idleMainLooper();
+        } finally {
+            releaseTransport.countDown();
+            ApplicationLoader.applicationHandler = null;
+        }
+
+        assertEquals(0, sends.get());
+        assertFalse(HgramVoiceSummarizer.isInFlight(message));
+        assertFalse(HgramVoiceSummarizer.isShowing(message));
+        assertEquals(0, ShadowToast.shownToastCount());
+    }
+
+    @Test
+    public void secondHandoffAcceptDoesNotSendAgain() {
+        NoHeavyMessagesController.userFull = userFull(false, false);
+        HgramVoiceSummarizer.updatePeerProtection(1, 777, userFull(false, false));
+        final MessageObject message = voiceMessage(240, words(60));
+        final HgramVoiceSummarizer.TransportHandoff handoff = HgramVoiceSummarizer.newHandoff(
+                HgramVoiceSummarizer.newVoicePermit(message,
+                        HgramVoiceSummarizer.accountGeneration(1)));
+        final AtomicInteger sends = new AtomicInteger();
+        handoff.accept();
+        sends.incrementAndGet();
+        try {
+            handoff.accept();
+            sends.incrementAndGet();
+            org.junit.Assert.fail("second accept must be rejected");
+        } catch (HgramVoiceSummarizer.TransportBlockedException expected) {
+            // One-shot admission.
+        }
+        assertEquals(1, sends.get());
     }
 
     @Test
@@ -487,10 +552,9 @@ public class HgramVoiceSummarizerTest {
 
         final boolean[] sent = {false};
         try {
-            HgramVoiceSummarizer.authorizeAndSend(
-                    HgramVoiceSummarizer.newVoicePermit(message, generation), () -> {
-                    sent[0] = true;
-                });
+            HgramVoiceSummarizer.newHandoff(
+                    HgramVoiceSummarizer.newVoicePermit(message, generation)).accept();
+            sent[0] = true;
             org.junit.Assert.fail("cache publication must win before the handoff");
         } catch (HgramVoiceSummarizer.TransportBlockedException expected) {
             // Silent refusal.
@@ -514,11 +578,9 @@ public class HgramVoiceSummarizerTest {
         final MessageObject message = voiceMessage(235, words(60));
         final boolean[] sent = {false};
         try {
-            HgramVoiceSummarizer.authorizeAndSend(
-                    HgramVoiceSummarizer.newVoicePermit(message, staleGeneration),
-                    () -> {
-                        sent[0] = true;
-                    });
+            HgramVoiceSummarizer.newHandoff(
+                    HgramVoiceSummarizer.newVoicePermit(message, staleGeneration)).accept();
+            sent[0] = true;
             org.junit.Assert.fail("old generation must not authorize");
         } catch (HgramVoiceSummarizer.TransportBlockedException expected) {
             // Silent refusal.
@@ -533,8 +595,7 @@ public class HgramVoiceSummarizerTest {
         final MessageObject message = voiceMessage(236, words(60));
         resultText = "устаревший итог";
         HgramVoiceSummarizer.setRequestCompletionForTests((key, model, systemPrompt, userPrompt, permit) -> {
-            HgramVoiceSummarizer.authorizeAndSend(permit, () -> {
-            });
+            HgramVoiceSummarizer.newHandoff(permit).accept();
             HgramVoiceSummarizer.clearPeerProtection(1);
             return resultText;
         });
@@ -573,10 +634,9 @@ public class HgramVoiceSummarizerTest {
     private void assertHandoffBlocked(MessageObject message, int generation) {
         final boolean[] sent = {false};
         try {
-            HgramVoiceSummarizer.authorizeAndSend(
-                    HgramVoiceSummarizer.newVoicePermit(message, generation), () -> {
-                    sent[0] = true;
-                });
+            HgramVoiceSummarizer.newHandoff(
+                    HgramVoiceSummarizer.newVoicePermit(message, generation)).accept();
+            sent[0] = true;
             org.junit.Assert.fail("handoff must be blocked by the full protection gate");
         } catch (HgramVoiceSummarizer.TransportBlockedException expected) {
             // Silent refusal.
@@ -743,12 +803,9 @@ public class HgramVoiceSummarizerTest {
 
         final boolean[] sent = {false};
         try {
-            HgramVoiceSummarizer.authorizeAndSend(
-                    HgramVoiceSummarizer.newVoicePermit(message,
-                            HgramVoiceSummarizer.accountGeneration(1)),
-                    () -> {
-                        sent[0] = true;
-                    });
+            HgramVoiceSummarizer.newHandoff(HgramVoiceSummarizer.newVoicePermit(message,
+                    HgramVoiceSummarizer.accountGeneration(1))).accept();
+            sent[0] = true;
             org.junit.Assert.fail("disabled gate must block the transport bridge");
         } catch (HgramVoiceSummarizer.TransportBlockedException expected) {
             // Silent refusal.

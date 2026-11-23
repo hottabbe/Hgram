@@ -5,7 +5,7 @@
 (суммаризация сообщений, склейка коротких сообщений, анти-подглядывание, офлайн-расшифровка голосовых
 и другое) и развивает приватность и повседневные мелочи интерфейса.
 
-> **Актуальная версия:** 13.0.2 (сборка 1311) — 23 ноября 2026 г.
+> **Актуальная версия:** 13.0.2 (сборка 1312) — 23 ноября 2026 г.
 
 - Релизы и APK: <https://github.com/hottabbe/Hgram/releases>
 - Канал обновлений: <https://t.me/hgram_updates>
@@ -84,7 +84,8 @@ APK подписан ключом проекта, поэтому обновле�
 ### Распознавание текста на фото
 
 - Долгое нажатие на снимок в просмотрщике включает режим выделения: текст распознаётся на устройстве
-  и сразу выделяется целиком, работает системное «Копировать».
+  и подсвечивается прямо на фото. Слово или строку можно расширить или сузить маркерами, «Копировать»
+  работает без отдельного окна с текстом.
 - Языки — русский и английский. Движок и языковые модели не входят в APK: при первом использовании
   модели скачиваются по запросу (≈ 8 МБ), скачивание можно отменить и продолжить позже.
 - Настройка: **Hgram → Сообщения** — включение, статус моделей и кнопки «Скачать» / «Отменить» / «Удалить».
@@ -195,7 +196,7 @@ Hgram основан на работе других проектов:
 ## English summary
 
 Hgram is an unofficial open-source Telegram client for Android, forked from Nagram (which builds on
-Telegram for Android and NekoX). Current release: **13.0.2 (1311)**, 23 November 2026, arm64-v8a,
+Telegram for Android and NekoX). Current release: **13.0.2 (1312)**, 23 November 2026, arm64-v8a,
 Android 6.0+. Highlights: on-device photo text recognition (long-press a photo, models downloaded on
 demand), OpenRouter-powered message summarization with selectable models and pricing, merged
 short-message chains, anti-peek masking triggered by flipping the phone, a hidden space with a decoy

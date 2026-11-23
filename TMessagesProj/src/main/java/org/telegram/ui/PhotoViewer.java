@@ -369,6 +369,7 @@ import xyz.nextalone.nagram.hgram.HgramAlbumNavigator;
 import xyz.nextalone.nagram.hgram.HgramAntiPeek;
 import xyz.nextalone.nagram.helper.MessageHelper;
 import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramOcrCopy;
 import xyz.nextalone.nagram.hgram.HgramOcrDisplayText;
 import xyz.nextalone.nagram.hgram.HgramOcrDownloadCallback;
 import xyz.nextalone.nagram.hgram.HgramOcrDownloadSession;
@@ -377,6 +378,8 @@ import xyz.nextalone.nagram.hgram.HgramOcrLayout;
 import xyz.nextalone.nagram.hgram.HgramOcrModels;
 import xyz.nextalone.nagram.hgram.HgramOcrPhoto;
 import xyz.nextalone.nagram.hgram.HgramOcrProtection;
+import xyz.nextalone.nagram.hgram.HgramOcrSelection;
+import xyz.nextalone.nagram.hgram.HgramOcrSelectionGeometry;
 
 import me.vkryl.android.animator.BoolAnimator;
 import me.vkryl.android.animator.FactorAnimator;
@@ -2091,12 +2094,22 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private final Path ocrHintPath = new Path();
     private final Path ocrSelectedPath = new Path();
     private final Paint ocrHintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private HgramOcrSelection ocrSelection;
     private HgramOcrLayout.Line ocrSelectedLine;
     private HgramOcrLayout.Word ocrSelectedWord;
     private String ocrSelectedText;
+    private final RectF ocrCopyButtonRect = new RectF();
+    private final RectF ocrCopyLocalRect = new RectF();
+    private final float[] ocrCopyVisiblePolygon = new float[8];
+    private boolean ocrCopyVisibleValid;
+    private final float[] ocrMarkerAnchorScreen = new float[2];
+    private final float[] ocrMarkerFocusScreen = new float[2];
+    private int ocrDraggingMarker;
+    private boolean ocrCopyButtonPressed;
     private final Matrix ocrCanvasMatrix = new Matrix();
-    private final Matrix ocrCanvasInverse = new Matrix();
     private final float[] ocrCanvasMatrixValues = new float[9];
+    private final HgramOcrSelectionGeometry ocrSelectionGeometry = new HgramOcrSelectionGeometry();
+    private final float[] ocrSelectionMatrixValues = new float[9];
     private final float[] ocrTapPoint = new float[2];
     private boolean ocrMatrixValid;
     private boolean ocrHintPathDirty = true;
@@ -2109,7 +2122,6 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private float ocrSelectedTop;
     private float ocrSelectedRight;
     private float ocrSelectedBottom;
-    private TextView ocrActionModeHost;
     private AlertDialog ocrModelsDialog;
     private AlertDialog ocrModelsConfirmDialog;
     private Context ocrModelsDialogContext;
@@ -19466,6 +19478,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     private boolean onTouchEvent(MotionEvent ev) {
         lastX = ev.getX();
+        if (handleOcrSelectionTouch(ev)) {
+            return true;
+        }
         if (currentEditMode == EDIT_MODE_PAINT && animationStartTime != 0 && (ev.getActionMasked() == MotionEvent.ACTION_DOWN || ev.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN)) {
             if (ev.getPointerCount() >= 2) {
                 cancelMoveZoomAnimation();
@@ -20939,12 +20954,6 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     private void drawCenterImageInternal(Canvas canvas, float currentMirror, float alpha) {
         if (ocrLayout != null) {
-            // Hit-testing uses the real canvas transform (pan, zoom, rotate, animations), never manual math.
-            canvas.getMatrix(ocrCanvasMatrix);
-            ocrMatrixValid = ocrCanvasMatrix.invert(ocrCanvasInverse);
-            if (ocrMatrixValid) {
-                ocrCanvasInverse.getValues(ocrCanvasMatrixValues);
-            }
             ocrImageX = centerImage.getImageX();
             ocrImageY = centerImage.getImageY();
             ocrImageW = centerImage.getImageWidth();
@@ -21552,12 +21561,21 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         final String fullText = result.text;
         final HgramOcrLayout layout = result.layout;
-        if (layout != null && !layout.isEmpty()
-                && currentEditMode == EDIT_MODE_NONE && !isCurrentVideo
-                && layout.matchesAspect(centerImage.getBitmapWidth(), centerImage.getBitmapHeight())) {
+        final boolean aspect = layout != null && layout.matchesAspect(
+                centerImage.getBitmapWidth(), centerImage.getBitmapHeight());
+        final boolean boxes = HgramOcrDisplayText.shouldUseLayout(layout,
+                currentEditMode != EDIT_MODE_NONE, isCurrentVideo,
+                centerImage.getBitmapWidth(), centerImage.getBitmapHeight());
+        FileLog.d("HGRAM_OCR branch=" + (boxes ? "layout" : "panel")
+                + " layout=" + (layout != null)
+                + " empty=" + (layout == null || layout.isEmpty())
+                + " edit=" + (currentEditMode != EDIT_MODE_NONE)
+                + " video=" + isCurrentVideo
+                + " aspect=" + aspect);
+        if (boxes) {
             showOcrLayout(layout, fullText);
         } else {
-            // Boxes are unavailable or do not match the displayed bitmap: keep the text panel, not an error.
+            // Boxes are unavailable or do not match the displayed bitmap: honest text mode.
             showOcrOverlay(fullText);
         }
     }
@@ -21569,6 +21587,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         ocrLayout = layout;
         ocrFullText = fullText;
+        ocrSelection = new HgramOcrSelection(layout);
         ocrMatrixValid = false;
         ocrHintPathDirty = true;
         clearOcrSelection();
@@ -21576,9 +21595,19 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     private void clearOcrSelection() {
+        if (ocrSelection != null) {
+            ocrSelection.clear();
+        }
         ocrSelectedLine = null;
         ocrSelectedWord = null;
         ocrSelectedText = null;
+        ocrCopyButtonRect.setEmpty();
+        ocrCopyLocalRect.setEmpty();
+        ocrCopyVisibleValid = false;
+        ocrMarkerAnchorScreen[0] = ocrMarkerAnchorScreen[1] = 0f;
+        ocrMarkerFocusScreen[0] = ocrMarkerFocusScreen[1] = 0f;
+        ocrDraggingMarker = 0;
+        ocrCopyButtonPressed = false;
         ocrSelectedPathDirty = true;
     }
 
@@ -21610,8 +21639,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         if (ocrSelectedPathDirty) {
             ocrSelectedPath.rewind();
-            if (ocrSelectedLine != null || ocrSelectedWord != null) {
-                ocrSelectedPath.addRect(ocrSelectedLeft, ocrSelectedTop, ocrSelectedRight, ocrSelectedBottom, Path.Direction.CW);
+            if (ocrSelection != null && ocrSelection.hasSelection()) {
+                for (HgramOcrSelection.WordRef ref : ocrSelection.selectedWords()) {
+                    final HgramOcrLayout.Word word = ref.word;
+                    ocrSelectedPath.addRect(word.left, word.top, word.right, word.bottom, Path.Direction.CW);
+                }
             }
             ocrSelectedPathDirty = false;
         }
@@ -21637,46 +21669,185 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 canvas.translate(-0.5f, -0.5f);
             }
         }
+        // The exact matrix used for the highlight is also used for markers, Copy and hit-testing.
+        canvas.getMatrix(ocrCanvasMatrix);
+        ocrCanvasMatrix.getValues(ocrCanvasMatrixValues);
+        ocrMatrixValid = ocrSelectionGeometry.set(ocrCanvasMatrixValues);
         ocrHintPaint.setColor(Theme.getColor(Theme.key_chat_inTextSelectionHighlight, resourcesProvider));
         ocrHintPaint.setAlpha((int) (0x28 * frameAlpha));
         canvas.drawPath(ocrHintPath, ocrHintPaint);
-        if (ocrSelectedLine != null || ocrSelectedWord != null) {
+        if (ocrSelection != null && ocrSelection.hasSelection()) {
             ocrHintPaint.setAlpha((int) (0x66 * frameAlpha));
             canvas.drawPath(ocrSelectedPath, ocrHintPaint);
         }
+        drawOcrSelectionUi(canvas, frameAlpha);
         canvas.restore();
+    }
+
+    /** Markers and Copy in the same normalized canvas; sizes are divided by the screen scale. */
+    private void drawOcrSelectionUi(Canvas canvas, float frameAlpha) {
+        final HgramOcrSelection selection = ocrSelection;
+        if (selection == null || !selection.hasSelection() || !ocrMatrixValid) {
+            ocrCopyButtonRect.setEmpty();
+            return;
+        }
+        final HgramOcrSelection.WordRef anchorWord = selection.wordAt(selection.anchor());
+        final HgramOcrSelection.WordRef focusWord = selection.wordAt(selection.focus());
+        if (anchorWord == null || focusWord == null) return;
+        final boolean forward = selection.anchor() <= selection.focus();
+        final float sx = Math.max(0.0001f, ocrSelectionGeometry.screenScaleX());
+        final float sy = Math.max(0.0001f, ocrSelectionGeometry.screenScaleY());
+        final float anchorX = HgramOcrSelectionGeometry.clamp(
+                forward ? anchorWord.word.left : anchorWord.word.right, 0f, 1f);
+        final float focusX = HgramOcrSelectionGeometry.clamp(
+                forward ? focusWord.word.right : focusWord.word.left, 0f, 1f);
+        final float anchorY = HgramOcrSelectionGeometry.clamp(anchorWord.word.bottom, 0f, 1f);
+        final float focusY = HgramOcrSelectionGeometry.clamp(focusWord.word.bottom, 0f, 1f);
+        mapOcrNormalizedToScreen(anchorX, anchorY, ocrMarkerAnchorScreen);
+        mapOcrNormalizedToScreen(focusX, focusY, ocrMarkerFocusScreen);
+
+        final float radius = dp(6);
+        ocrHintPaint.setStyle(Paint.Style.FILL);
+        ocrHintPaint.setColor(Theme.getColor(Theme.key_chat_inTextSelectionHighlight, resourcesProvider));
+        ocrHintPaint.setAlpha((int) (0xFF * frameAlpha));
+        drawOcrMarker(canvas, anchorX, anchorY, radius, sx, sy);
+        drawOcrMarker(canvas, focusX, focusY, radius, sx, sy);
+        ocrHintPaint.setStyle(Paint.Style.STROKE);
+        ocrHintPaint.setStrokeWidth(1.5f);
+        ocrHintPaint.setColor(0xFFFFFFFF);
+        drawOcrMarker(canvas, anchorX, anchorY, radius, sx, sy);
+        drawOcrMarker(canvas, focusX, focusY, radius, sx, sy);
+        ocrHintPaint.setStyle(Paint.Style.FILL);
+
+        if (isOcrCopyProtected()) {
+            ocrCopyButtonRect.setEmpty();
+            ocrCopyLocalRect.setEmpty();
+            return;
+        }
+        float minX = 1f, minY = 1f, maxX = 0f, maxY = 0f;
+        for (HgramOcrSelection.WordRef ref : selection.selectedWords()) {
+            minX = Math.min(minX, ref.word.left);
+            minY = Math.min(minY, ref.word.top);
+            maxX = Math.max(maxX, ref.word.right);
+            maxY = Math.max(maxY, ref.word.bottom);
+        }
+        final float padH = dp(10);
+        ocrHintPaint.setTextSize(dp(14));
+        final String copy = activityContext != null
+                ? activityContext.getString(android.R.string.copy) : "Copy";
+        final float widthPx = ocrHintPaint.measureText(copy) + padH * 2;
+        final float heightPx = dp(28);
+        final float width = widthPx / sx;
+        final float height = heightPx / sy;
+        final int viewWidth = containerView != null ? containerView.getWidth() : getContainerViewWidth();
+        final int viewHeight = containerView != null ? containerView.getHeight() : getContainerViewHeight();
+        final float[] corner = new float[2];
+        final float[] viewport = ocrCopyVisiblePolygon;
+        float visLeft = 0f, visTop = 0f, visRight = 1f, visBottom = 1f;
+        ocrCopyVisibleValid = true;
+        final float[] screenX = {0f, viewWidth, viewWidth, 0f};
+        final float[] screenY = {0f, 0f, viewHeight, viewHeight};
+        for (int i = 0; i < 4; i++) {
+            if (!ocrSelectionGeometry.mapScreenToNormalized(screenX[i], screenY[i], corner)) {
+                ocrCopyVisibleValid = false;
+                break;
+            }
+            viewport[i * 2] = corner[0];
+            viewport[i * 2 + 1] = corner[1];
+            visLeft = Math.min(visLeft, corner[0]);
+            visTop = Math.min(visTop, corner[1]);
+            visRight = Math.max(visRight, corner[0]);
+            visBottom = Math.max(visBottom, corner[1]);
+        }
+        visLeft = Math.max(0f, visLeft);
+        visTop = Math.max(0f, visTop);
+        visRight = Math.min(1f, visRight);
+        visBottom = Math.min(1f, visBottom);
+        float left = (minX + maxX - width) / 2f;
+        float top = minY - height - dp(8) / sy;
+        left = visRight - visLeft >= width
+                ? HgramOcrSelectionGeometry.clamp(left, visLeft, visRight - width) : visLeft;
+        top = visBottom - visTop >= height
+                ? HgramOcrSelectionGeometry.clamp(top, visTop, visBottom - height) : visTop;
+        final float localRight = Math.min(visRight, left + width);
+        final float localBottom = Math.min(visBottom, top + height);
+        ocrCopyLocalRect.set(left, top, localRight, localBottom);
+        final float[] p = ocrTapPoint;
+        ocrCopyButtonRect.set(Float.MAX_VALUE, Float.MAX_VALUE, -Float.MAX_VALUE, -Float.MAX_VALUE);
+        addOcrScreenPoint(p, left, top);
+        addOcrScreenPoint(p, localRight, top);
+        addOcrScreenPoint(p, left, localBottom);
+        addOcrScreenPoint(p, localRight, localBottom);
+        canvas.save();
+        canvas.translate(left, top);
+        canvas.scale(1f / sx, 1f / sy);
+        ocrHintPaint.setColor(Theme.getColor(Theme.key_chat_serviceBackground, resourcesProvider));
+        ocrHintPaint.setAlpha((int) (0xF0 * frameAlpha));
+        canvas.drawRoundRect(0f, 0f, widthPx, heightPx, dp(8), dp(8), ocrHintPaint);
+        ocrHintPaint.setColor(0xFFFFFFFF);
+        ocrHintPaint.setAlpha((int) (0xFF * frameAlpha));
+        canvas.drawText(copy, padH, heightPx / 2f - (ocrHintPaint.ascent() + ocrHintPaint.descent()) / 2f, ocrHintPaint);
+        canvas.restore();
+    }
+
+    private void drawOcrMarker(Canvas canvas, float nx, float ny, float radius,
+                               float sx, float sy) {
+        canvas.save();
+        canvas.translate(nx, ny);
+        canvas.scale(1f / sx, 1f / sy);
+        canvas.drawCircle(0f, 0f, radius, ocrHintPaint);
+        canvas.restore();
+    }
+
+    private void mapOcrNormalizedToScreen(float nx, float ny, float[] out) {
+        if (!ocrSelectionGeometry.mapNormalizedToScreen(nx, ny, out)) {
+            out[0] = out[1] = 0f;
+        }
+    }
+
+    /** Normalized corners may arrive mirrored/rotated; the screen rect must stay ordered. */
+    private void addOcrScreenPoint(float[] point, float nx, float ny) {
+        mapOcrNormalizedToScreen(nx, ny, point);
+        ocrCopyButtonRect.left = Math.min(ocrCopyButtonRect.left, point[0]);
+        ocrCopyButtonRect.top = Math.min(ocrCopyButtonRect.top, point[1]);
+        ocrCopyButtonRect.right = Math.max(ocrCopyButtonRect.right, point[0]);
+        ocrCopyButtonRect.bottom = Math.max(ocrCopyButtonRect.bottom, point[1]);
+    }
+
+    private boolean isOcrCopyHit(float x, float y) {
+        if (ocrSelection == null || !ocrSelection.hasSelection() || isOcrCopyProtected()
+                || ocrCopyLocalRect.isEmpty() || !ocrMatrixValid || !ocrCopyVisibleValid) {
+            return false;
+        }
+        if (!ocrSelectionGeometry.mapScreenToNormalized(x, y, ocrTapPoint)) {
+            return false;
+        }
+        return HgramOcrSelectionGeometry.copyHit(
+                ocrCopyLocalRect.left, ocrCopyLocalRect.top,
+                ocrCopyLocalRect.right, ocrCopyLocalRect.bottom,
+                ocrCopyVisiblePolygon, ocrTapPoint[0], ocrTapPoint[1]);
     }
 
     private void handleOcrTap(float x, float y) {
         final HgramOcrLayout layout = ocrLayout;
-        if (layout == null) {
+        if (layout == null || ocrSelection == null) {
+            return;
+        }
+        if (isOcrCopyHit(x, y)) {
+            copyOcrText(ocrSelection.text());
             return;
         }
         HgramOcrLayout.Word word = null;
         HgramOcrLayout.Line line = null;
-        if (ocrMatrixValid && ocrImageW > 0f && ocrImageH > 0f) {
-            ocrTapPoint[0] = x;
-            ocrTapPoint[1] = y;
-            ocrCanvasInverse.mapPoints(ocrTapPoint);
-            float nx = (ocrTapPoint[0] - ocrImageX) / ocrImageW;
-            float ny = (ocrTapPoint[1] - ocrImageY) / ocrImageH;
+        if (ocrMatrixValid && ocrSelectionGeometry.mapScreenToNormalized(x, y, ocrTapPoint)) {
+            final float nx = ocrTapPoint[0];
+            final float ny = ocrTapPoint[1];
             if (nx >= -0.02f && nx <= 1.02f && ny >= -0.02f && ny <= 1.02f) {
                 final float padPx = dp(3);
-                final float localPerScreenX = (float) Math.hypot(ocrCanvasMatrixValues[Matrix.MSCALE_X], ocrCanvasMatrixValues[Matrix.MSKEW_Y]);
-                final float localPerScreenY = (float) Math.hypot(ocrCanvasMatrixValues[Matrix.MSKEW_X], ocrCanvasMatrixValues[Matrix.MSCALE_Y]);
-                float padX = padPx * localPerScreenX / ocrImageW;
-                float padY = padPx * localPerScreenY / ocrImageH;
-                if (layout.space == HgramOcrLayout.SPACE_RAW) {
-                    final int orientation = centerImage.getOrientation();
-                    final float[] raw = HgramOcrLayout.unmapPoint(nx, ny, orientation, centerImage.getInvert());
-                    nx = raw[0];
-                    ny = raw[1];
-                    if (orientation % 180 != 0) {
-                        final float tmp = padX;
-                        padX = padY;
-                        padY = tmp;
-                    }
-                }
+                final float scaleX = Math.max(0.0001f, ocrSelectionGeometry.screenScaleX());
+                final float scaleY = Math.max(0.0001f, ocrSelectionGeometry.screenScaleY());
+                final float padX = padPx / scaleX;
+                final float padY = padPx / scaleY;
                 word = layout.hitWord(nx, ny, padX, padY);
                 if (word == null) {
                     line = layout.hitLine(nx, ny, padX, padY);
@@ -21685,7 +21856,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
 
         if (word == null && line == null) {
-            if (ocrSelectedWord != null || ocrSelectedLine != null) {
+            if (ocrSelection.hasSelection()) {
                 clearOcrSelection();
                 finishOcrActionMode();
                 if (containerView != null) {
@@ -21697,7 +21868,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return;
         }
 
-        final boolean sameSelection = word != null ? word == ocrSelectedWord : line == ocrSelectedLine;
+        final int wordIndex = word != null ? ocrSelection.indexOf(word) : -1;
+        final boolean sameSelection = wordIndex >= 0
+                ? ocrSelection.anchor() == wordIndex && ocrSelection.focus() == wordIndex
+                : line != null && ocrSelection.firstIndexOfLine(line) >= 0
+                        && ocrSelection.anchor() == ocrSelection.firstIndexOfLine(line)
+                        && ocrSelection.focus() == ocrSelection.lastIndexOfLine(line);
         if (sameSelection) {
             clearOcrSelection();
             finishOcrActionMode();
@@ -21707,22 +21883,131 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return;
         }
 
-        clearOcrSelection();
+        finishOcrActionMode();
         if (word != null) {
+            ocrSelection.selectWord(word);
             ocrSelectedWord = word;
-            setOcrSelection(word.left, word.top, word.right, word.bottom, word.text);
+            ocrSelectedLine = null;
         } else {
+            ocrSelection.selectLine(line);
             ocrSelectedLine = line;
-            setOcrSelection(line.left, line.top, line.right, line.bottom, line.text);
+            ocrSelectedWord = null;
         }
+        ocrSelectedText = ocrSelection.text();
+        ocrSelectedPathDirty = true;
         if (containerView != null) {
             containerView.invalidate();
         }
-        if (!isOcrCopyProtected()) {
-            startOcrCopyActionModeForSelection(ocrSelectedText);
+    }
+
+    /** Handles marker/button touches before pan/zoom; returns true only inside our targets. */
+    private boolean handleOcrSelectionTouch(MotionEvent ev) {
+        final HgramOcrSelection selection = ocrSelection;
+        if (ocrLayout == null || selection == null || !selection.hasSelection()) {
+            return false;
+        }
+        final float x = ev.getX();
+        final float y = ev.getY();
+        final int action = ev.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            ocrDraggingMarker = 0;
+            if (isOcrCopyHit(x, y)) {
+                ocrCopyButtonPressed = true;
+                // A marker/Copy touch must never reach handleOcrTap() and clear the selection.
+                discardTap = true;
+                return true;
+            }
+            final float anchorDistance = distance(x, y, ocrMarkerAnchorScreen);
+            final float focusDistance = distance(x, y, ocrMarkerFocusScreen);
+            final float radius = dp(24);
+            final boolean anchorHit = anchorDistance <= radius && isOcrMarkerHit(x, y, ocrMarkerAnchorScreen);
+            final boolean focusHit = focusDistance <= radius && isOcrMarkerHit(x, y, ocrMarkerFocusScreen);
+            if (anchorHit || focusHit) {
+                // Nearest marker wins; ties and a fully overlapping short word choose focus.
+                ocrDraggingMarker = focusHit && (!anchorHit
+                        || HgramOcrSelectionGeometry.nearestMarker(anchorDistance, focusDistance) == 2)
+                        ? 2 : 1;
+                discardTap = true;
+                return true;
+            }
+            return false;
+        }
+        if (ocrCopyButtonPressed) {
+            if (action == MotionEvent.ACTION_UP) {
+                if (isOcrCopyHit(x, y)) {
+                    copyOcrText(selection.text());
+                }
+                ocrCopyButtonPressed = false;
+            } else if (action == MotionEvent.ACTION_CANCEL) {
+                ocrCopyButtonPressed = false;
+            }
+            return true;
+        }
+        if (ocrDraggingMarker == 0) {
+            return false;
+        }
+        if (action == MotionEvent.ACTION_MOVE) {
+            updateOcrSelectionDrag(x, y, ocrDraggingMarker == 1);
+            return true;
+        }
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            ocrDraggingMarker = 0;
+            return true;
+        }
+        return false;
+    }
+
+    private static float distance(float x, float y, float[] point) {
+        final float dx = x - point[0];
+        final float dy = y - point[1];
+        return (float) Math.sqrt(dx * dx + dy * dy);
+    }
+
+    /** A clipped marker is hittable only on its visible part inside the image. */
+    private boolean isOcrMarkerHit(float x, float y, float[] marker) {
+        if (distance(x, y, marker) > dp(24)) {
+            return false;
+        }
+        if (!ocrSelectionGeometry.mapScreenToNormalized(x, y, ocrTapPoint)) {
+            return false;
+        }
+        return ocrTapPoint[0] >= 0f && ocrTapPoint[0] <= 1f
+                && ocrTapPoint[1] >= 0f && ocrTapPoint[1] <= 1f;
+    }
+
+    private void updateOcrSelectionDrag(float x, float y, boolean anchorSide) {
+        final HgramOcrLayout layout = ocrLayout;
+        final HgramOcrSelection selection = ocrSelection;
+        if (layout == null || selection == null || !ocrMatrixValid
+                || !ocrSelectionGeometry.mapScreenToNormalized(x, y, ocrTapPoint)) {
+            return;
+        }
+        final float nx = ocrTapPoint[0];
+        final float ny = ocrTapPoint[1];
+        final float padPx = dp(6);
+        final float padX = padPx / Math.max(0.0001f, ocrSelectionGeometry.screenScaleX());
+        final float padY = padPx / Math.max(0.0001f, ocrSelectionGeometry.screenScaleY());
+        final HgramOcrLayout.Word word = layout.hitWord(nx, ny, padX, padY);
+        if (word != null) {
+            if (anchorSide) {
+                selection.extendAnchorTo(word);
+            } else {
+                selection.extendTo(word);
+            }
         } else {
-            // Protected media: highlight/selection stay available, Copy does not.
-            finishOcrActionMode();
+            final HgramOcrLayout.Line line = layout.hitLine(nx, ny, padX, padY);
+            if (line != null) {
+                if (anchorSide) {
+                    selection.extendAnchorToNearest(line, nx);
+                } else {
+                    selection.extendToNearest(line, nx);
+                }
+            }
+        }
+        ocrSelectedText = selection.text();
+        ocrSelectedPathDirty = true;
+        if (containerView != null) {
+            containerView.invalidate();
         }
     }
 
@@ -22235,113 +22520,21 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
     }
 
-    private void startOcrCopyActionModeForSelection(final String text) {
-        finishOcrActionMode();
-        if (text == null || text.isEmpty() || isOcrCopyProtected()) {
+    private void copyOcrText(String text) {
+        final Context context = activityContext;
+        if (context == null) {
             return;
         }
-        final ActionMode.Callback callback = new ActionMode.Callback() {
-            @Override
-            public boolean onCreateActionMode(ActionMode mode, Menu menu) {
-                menu.add(Menu.NONE, android.R.id.copy, 0, android.R.string.copy)
-                        .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
-                return true;
-            }
-
-            @Override
-            public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
-                return false;
-            }
-
-            @Override
-            public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
-                if (item.getItemId() == android.R.id.copy) {
-                    // The policy may change while the menu is open: recheck at the moment of copy.
-                    if (!isOcrCopyProtected()) {
-                        copyOcrText(ocrSelectedText);
-                    }
-                    mode.finish();
-                    return true;
-                }
-                return false;
-            }
-
-            @Override
-            public void onDestroyActionMode(ActionMode mode) {
-                // Keep the selection: switching word/line finishes the old mode before starting a new one.
-                if (ocrActionMode == mode) {
-                    ocrActionMode = null;
-                }
-            }
-        };
-        ActionMode mode = null;
-        if (containerView != null) {
+        // Layout-branch Copy is clipboard-only: no share Intent, ShareAlert or ActionMode.
+        HgramOcrCopy.copy(text, value -> {
             try {
-                mode = containerView.startActionMode(callback, ActionMode.TYPE_FLOATING);
+                final ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+                if (clipboard != null) {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("OCR", value));
+                }
             } catch (Throwable ignored) {
-                mode = null;
-            }
-        }
-        if (mode != null) {
-            ocrActionMode = mode;
-            return;
-        }
-        startOcrCopyActionModeWithHost(callback, text);
-    }
-
-    private void startOcrCopyActionModeWithHost(final ActionMode.Callback callback, final String text) {
-        if (containerView == null || activityContext == null) {
-            showOcrOverlay(HgramOcrDisplayText.panelText(ocrFullText, text));
-            return;
-        }
-        final TextView host = new TextView(activityContext);
-        host.setText(text);
-        host.setAlpha(0f);
-        host.setTextIsSelectable(true);
-        try {
-            containerView.addView(host, new FrameLayout.LayoutParams(1, 1));
-        } catch (Throwable ignored) {
-            showOcrOverlay(HgramOcrDisplayText.panelText(ocrFullText, text));
-            return;
-        }
-        ocrActionModeHost = host;
-        host.post(() -> {
-            if (ocrActionModeHost != host) {
-                return;
-            }
-            host.requestFocus();
-            ActionMode mode = null;
-            try {
-                mode = host.startActionMode(callback, ActionMode.TYPE_FLOATING);
-            } catch (Throwable ignored) {
-                mode = null;
-            }
-            if (mode != null) {
-                ocrActionMode = mode;
-                return;
-            }
-            ocrActionModeHost = null;
-            if (containerView != null) {
-                containerView.removeView(host);
-            }
-            if (ocrLayout != null && ocrSelectedText != null && ocrSelectedText.equals(text)) {
-                // Neither the window nor the host accepted ActionMode: fall back to the full text panel.
-                showOcrOverlay(HgramOcrDisplayText.panelText(ocrFullText, text));
             }
         });
-    }
-
-    private void copyOcrText(String text) {
-        if (text == null || text.isEmpty() || activityContext == null) {
-            return;
-        }
-        try {
-            final ClipboardManager clipboard = (ClipboardManager) activityContext.getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard != null) {
-                clipboard.setPrimaryClip(ClipData.newPlainText("OCR", text));
-            }
-        } catch (Throwable ignored) {
-        }
     }
 
     private void finishOcrActionMode() {
@@ -22352,12 +22545,6 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 mode.finish();
             } catch (Throwable ignored) {
             }
-        }
-        if (ocrActionModeHost != null) {
-            if (containerView != null) {
-                containerView.removeView(ocrActionModeHost);
-            }
-            ocrActionModeHost = null;
         }
     }
 

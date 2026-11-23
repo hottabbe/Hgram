@@ -20,17 +20,19 @@ set(CMAKE_JOB_POOL_LINK nagram_link)
 set(CMAKE_CXX_FLAGS "-DANDROID")
 set(CMAKE_C_FLAGS "-w -std=c11 -DANDROID -D_LARGEFILE_SOURCE=1 -Wno-error=implicit-function-declaration")
 set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections -fvisibility=hidden -flto=full")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden -flto=full")
+add_compile_options(
+        $<$<COMPILE_LANGUAGE:C,CXX>:-ffunction-sections>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-fdata-sections>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-fvisibility=hidden>
+        $<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-flto=full>)
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -flto=full -Wl,--gc-sections -Wl,--icf=safe -Wl,-Bsymbolic")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O0 -g")
+    add_compile_options(-O0 -g)
 else()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Os -DNDEBUG")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -Os -DNDEBUG")
-    set(LINKER_FLAGS "${LINKER_FLAGS} -Wl,-exclude-libs,ALL -Wl,--gc-sections -Wl,--strip-all")
+    # Optimization level comes from the build type (-O2 for RelWithDebInfo); no -O3/-Os soup here.
+    add_compile_options(-DNDEBUG -g1)
 endif()
 
 if (${ANDROID_ABI} STREQUAL "armeabi-v7a" OR ${ANDROID_ABI} STREQUAL "arm64-v8a")
@@ -146,8 +148,8 @@ add_library(tgnet STATIC
         tgnet/ProxyCheckInfo.cpp
         tgnet/Handshake.cpp
         tgnet/Config.cpp)
-target_compile_options(tgnet PUBLIC
-        -Wall -frtti -finline-functions -ffast-math -Oz)
+target_compile_options(tgnet PRIVATE
+        -Wall -frtti -finline-functions -ffast-math -O2)
 set_target_properties(tgnet PROPERTIES
         ANDROID_ARM_MODE arm)
 target_compile_definitions(tgnet PUBLIC
@@ -176,7 +178,7 @@ add_library(wallet_engine_cpp STATIC
 # Any new source that includes wallet_engine.hpp must also opt into C++20.
 target_compile_features(wallet_engine_cpp PRIVATE cxx_std_20)
 # Keep unused bindings discardable even when voip resets CMAKE_CXX_FLAGS below.
-target_compile_options(wallet_engine_cpp PRIVATE -ffunction-sections -fdata-sections)
+target_compile_options(wallet_engine_cpp PRIVATE -ffunction-sections -fdata-sections -Os)
 target_include_directories(wallet_engine_cpp PUBLIC ${WALLET_ENGINE_INCLUDE_DIR})
 target_link_libraries(wallet_engine_cpp PUBLIC wallet_engine dl m)
 
@@ -184,13 +186,14 @@ target_link_libraries(wallet_engine_cpp PUBLIC wallet_engine dl m)
 # An object library keeps its JNI entry points in the existing tmessages .so.
 add_library(wallet_engine_jni OBJECT wallet/WalletEngineBridge.cpp wallet/GramWalletAdapter.cpp)
 target_compile_features(wallet_engine_jni PRIVATE cxx_std_20)
+target_compile_options(wallet_engine_jni PRIVATE -Os)
 set_target_properties(wallet_engine_jni PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(wallet_engine_jni PRIVATE wallet_engine_cpp)
 
 #sqlite
 add_library(sqlite STATIC
         sqlite/sqlite3.c)
-target_compile_options(sqlite PUBLIC
+target_compile_options(sqlite PRIVATE
         -fno-strict-aliasing -Oz)
 set_target_properties(sqlite PROPERTIES
         ANDROID_ARM_MODE arm)
@@ -222,6 +225,7 @@ add_library(breakpad STATIC
         third_party/breakpad/src/common/linux/memory_mapped_file.cc
         third_party/breakpad/src/common/linux/safe_readlink.cc)
 set_target_properties(breakpad PROPERTIES ANDROID_ARM_MODE arm)
+target_compile_options(breakpad PRIVATE -Oz)
 set_property(SOURCE third_party/breakpad/src/common/android/breakpad_getcontext.S PROPERTY LANGUAGE C)
 target_include_directories(breakpad PUBLIC
         third_party/breakpad/src/common/android/include
@@ -267,12 +271,12 @@ target_include_directories(${NATIVE_LIB} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/boost-regex/include"
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libprisma/libprisma")
 set_property(SOURCE ${PRISMA_BRIDGE_SOURCES} APPEND PROPERTY
-        COMPILE_OPTIONS -fexceptions -frtti)
+        COMPILE_OPTIONS -fexceptions -frtti -Os)
 set_property(SOURCE ${PRISMA_BRIDGE_SOURCES} APPEND PROPERTY
         COMPILE_DEFINITIONS BOOST_REGEX_STANDALONE)
 
-target_compile_options(${NATIVE_LIB} PUBLIC
-        -ffast-math -Oz -funroll-loops -ffast-math -fno-strict-aliasing -fno-math-errno)
+target_compile_options(${NATIVE_LIB} PRIVATE
+        -ffast-math -O2 -fno-strict-aliasing -fno-math-errno)
 
 target_compile_definitions(${NATIVE_LIB} PUBLIC
         BSD=1 NULL=0 SOCKLEN_T=socklen_t ANDROID_NDK DISABLE_IMPORTGL AVOID_TABLES ANDROID_TILE_BASED_DECODE __STDC_CONSTANT_MACROS ANDROID_ARMV6_IDCT OPUS_BUILD FIXED_POINT USE_ALLOCA restrict= __EMX__ LOCALE_NOT_USED HAVE_LRINT HAVE_LRINTF)

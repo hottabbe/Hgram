@@ -2124,8 +2124,15 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         private void updateHgramClipTop(float headerBottom) {
             final float listTop = hgramYInParent(parentPage, hgramYInParent(this, 0));
             final float scale = parentPage.getScaleY() * getScaleY();
-            final int next = xyz.nextalone.nagram.hgram.HgramDialogsClip.clipTop(
+            final int computed = xyz.nextalone.nagram.hgram.HgramDialogsClip.clipTop(
                     scale > 0 ? (headerBottom - listTop) / scale : 0, 0, getHeight());
+            final int paddingTop = getPaddingTop();
+            final int next = xyz.nextalone.nagram.hgram.HgramDialogsClip.clampToPadding(
+                    computed, paddingTop);
+            if (computed > paddingTop && BuildVars.LOGS_ENABLED) {
+                FileLog.d("HgramClip clamped computed=" + computed + " padding=" + paddingTop
+                        + " clip=" + next);
+            }
             if (hgramClipCache.commit(next)) {
                 invalidate();
             }

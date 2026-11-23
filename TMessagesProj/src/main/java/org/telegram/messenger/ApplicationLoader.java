@@ -236,13 +236,25 @@ public class ApplicationLoader extends Application {
         } catch (Exception e) {
             FileLog.e(e);
         }
-        try {
-            LocaleController.getInstance(); //TODO improve
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
         SharedPrefsHelper.init(applicationContext);
+        startLocaleWarmup();
         UserConfig.getInstance(0).loadConfig();
+        final Thread localeThread = localeWarmupThread;
+        if (localeThread != null) {
+            try {
+                localeThread.join(1500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                FileLog.e(e);
+            }
+            if (localeThread.isAlive() || localeInitError != null) {
+                try {
+                    LocaleController.getInstance();
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
+            }
+        }
 
         try {
             connectivityManager = (ConnectivityManager) ApplicationLoader.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -382,6 +394,46 @@ public class ApplicationLoader extends Application {
         return processName != null && processName.endsWith(":stt");
     }
 
+    private static volatile Thread localeWarmupThread;
+    private static volatile Throwable localeInitError;
+
+    /** Starts Locale initialization once, early enough to overlap native/app startup. */
+    private static synchronized void startLocaleWarmup() {
+        if (localeWarmupThread != null) {
+            return;
+        }
+        localeInitError = null;
+        final Thread thread = new Thread(() -> {
+            final long localeStart = SystemClock.elapsedRealtime();
+            try {
+                LocaleController.getInstance();
+            } catch (Throwable e) {
+                localeInitError = e;
+                FileLog.e(e);
+            } finally {
+                if (BuildVars.LOGS_ENABLED) {
+                    FileLog.d("HgramLocaleInit took " + (SystemClock.elapsedRealtime() - localeStart) + " ms");
+                }
+            }
+        }, "HgramLocaleInit");
+        thread.setDaemon(true);
+        thread.setPriority(Thread.NORM_PRIORITY);
+        localeWarmupThread = thread;
+        thread.start();
+    }
+
+    /** Starts Android's asynchronous SharedPreferences load before the first value is read. */
+    private static void preloadSharedPreferences() {
+        final String[] names = {"mainconfig", "langconfig", "userconfing", "hgram_settings"};
+        for (String name : names) {
+            try {
+                applicationContext.getSharedPreferences(name, Context.MODE_PRIVATE);
+            } catch (Throwable e) {
+                FileLog.e(e);
+            }
+        }
+    }
+
     @Override
     public void onCreate() {
         applicationLoaderInstance = this;
@@ -428,6 +480,7 @@ public class ApplicationLoader extends Application {
             return;
         }
 
+        preloadSharedPreferences();
         NativeLoader.initNativeLibs(ApplicationLoader.applicationContext);
 
         try {
@@ -472,6 +525,7 @@ public class ApplicationLoader extends Application {
         }
 
         applicationHandler = new Handler(applicationContext.getMainLooper());
+        startLocaleWarmup();
 
         LauncherIconController.tryFixLauncherIconIfNeeded();
         ProxyRotationController.init();

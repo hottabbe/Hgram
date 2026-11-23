@@ -599,6 +599,11 @@ public class LocaleController {
         return localInstance;
     }
 
+    /** The same file as MessagesController.mainPreferences for account 0, without constructing it. */
+    private static SharedPreferences getGlobalMainPreferences() {
+        return ApplicationLoader.applicationContext.getSharedPreferences("mainconfig", Context.MODE_PRIVATE);
+    }
+
     public LocaleController() {
         addRules(new String[]{"bem", "brx", "da", "de", "el", "en", "eo", "es", "et", "fi", "fo", "gl", "he", "iw", "it", "nb",
                 "nl", "nn", "no", "sv", "af", "bg", "bn", "ca", "eu", "fur", "fy", "gu", "ha", "is", "ku",
@@ -772,7 +777,7 @@ public class LocaleController {
 
         try {
             try {
-                SharedPreferences preferences = MessagesController.getGlobalMainSettings();
+                SharedPreferences preferences = getGlobalMainPreferences();
                 String lang = preferences.getString("language", null);
                 if (lang != null) {
                     currentInfo = getLanguageFromDict(lang);
@@ -962,11 +967,11 @@ public class LocaleController {
 
     public void checkForcePatchLangpack(int currentAccount, Runnable ifDone) {
         String lng = LocaleController.getCurrentLanguageName();
-        boolean shouldPatch = MessagesController.getInstance(currentAccount).checkResetLangpack > 0 && !MessagesController.getGlobalMainSettings().getBoolean("langpack_patched" + lng, false) && !patching;
+        boolean shouldPatch = MessagesController.getInstance(currentAccount).checkResetLangpack > 0 && !getGlobalMainPreferences().getBoolean("langpack_patched" + lng, false) && !patching;
         if (shouldPatch) {
             patching = true;
             reloadCurrentRemoteLocale(currentAccount, null, true, () -> AndroidUtilities.runOnUIThread(() -> {
-                MessagesController.getGlobalMainSettings().edit().putBoolean("langpack_patched" + lng, true).apply();
+                getGlobalMainPreferences().edit().putBoolean("langpack_patched" + lng, true).apply();
                 if (ifDone != null) {
                     ifDone.run();
                 }
@@ -1400,7 +1405,7 @@ public class LocaleController {
             if (override) {
                 languageOverride = localeInfo.shortName;
 
-                SharedPreferences preferences = MessagesController.getGlobalMainSettings();
+                SharedPreferences preferences = getGlobalMainPreferences();
                 SharedPreferences.Editor editor = preferences.edit();
                 editor.putString("language", localeInfo.getKey());
                 editor.apply();
@@ -3175,7 +3180,7 @@ public class LocaleController {
                         }
                         languageOverride = localeInfo.shortName;
 
-                        SharedPreferences preferences = MessagesController.getGlobalMainSettings();
+                        SharedPreferences preferences = getGlobalMainPreferences();
                         SharedPreferences.Editor editor = preferences.edit();
                         editor.putString("language", localeInfo.getKey());
                         editor.apply();
@@ -4275,7 +4280,7 @@ public class LocaleController {
         if (mustBeCount <= 0) {
             return false;
         }
-        boolean alreadyPatched = MessagesController.getGlobalMainSettings().getBoolean("lngpack_patched_" + lng, false);
+        boolean alreadyPatched = getGlobalMainPreferences().getBoolean("lngpack_patched_" + lng, false);
         if (alreadyPatched) {
             return false;
         }
@@ -4356,7 +4361,7 @@ public class LocaleController {
         if (BuildVars.LOGS_ENABLED) {
             FileLog.d("set as patched " + lng + " langpack");
         }
-        MessagesController.getGlobalMainSettings().edit().putBoolean("lngpack_patched_" + lng, true).apply();
+        getGlobalMainPreferences().edit().putBoolean("lngpack_patched_" + lng, true).apply();
     }
 
     public static String getTimeZoneName(String timeZoneId, boolean full) {

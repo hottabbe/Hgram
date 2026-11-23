@@ -57,7 +57,16 @@
 
 # Use -keep to explicitly keep any other classes shrinking would remove
 #-dontoptimize
-#-dontobfuscate
+-dontobfuscate
+
+# R8-GUARD-1: keep reflection/JNI/DI-sensitive application surface unchanged.
+-keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*
+-keep class org.telegram.ui.** { *; }
+-keep class xyz.nextalone.** { *; }
+-keep class tw.nekomimi.** { *; }
+-keep class com.exteragram.** { *; }
+-keep class com.google.gson.** { *; }
+-keep class io.objectbox.** { *; }
 
 -keep class org.openintents.openpgp.** { *; }
 

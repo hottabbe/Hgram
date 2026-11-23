@@ -95,7 +95,8 @@ public final class HgramVoiceSummarizer {
             task -> new Thread(task, "HgramVoiceSummarizer").start();
     private static final RequestCompletion LIVE_COMPLETION =
             (key, model, systemPrompt, userPrompt, permit) ->
-                    LLMTranslator.INSTANCE.completeBlocking(key, model, systemPrompt, userPrompt, permit);
+                    LLMTranslator.INSTANCE.completeBlocking(key, model, systemPrompt, userPrompt,
+                            permit == null ? null : newHandoff(permit));
     private static volatile RequestLauncher requestLauncher = THREAD_LAUNCHER;
     private static volatile RequestCompletion requestCompletion = LIVE_COMPLETION;
 
@@ -216,66 +217,37 @@ public final class HgramVoiceSummarizer {
     }
 
     /**
-     * Production transport bridge: check the complete voice protection and epoch, mark the permit
-     * as handed off under the publication lock, then run the prepared blocking HTTP request after
-     * the lock is released. A block is silent.
+     * One-shot gate consumed by the transport immediately before the HTTP request is accepted.
+     * The permit is bound to a specific voice operation; accept() is the linearization point.
      */
-    public static void authorizeAndSend(VoicePermit permit, Runnable handoff) {
-        if (handoff == null) return;
-        authorizeAndRun(permit, () -> {
-            handoff.run();
-            return null;
-        });
-    }
+    public static final class TransportHandoff {
+        private final VoicePermit permit;
 
-    /** Same boundary for a request that returns the transport response. */
-    public static <T> T authorizeAndSendResult(VoicePermit permit, java.util.function.Supplier<T> handoff) {
-        if (handoff == null) return null;
-        return authorizeAndRun(permit, handoff::get);
-    }
+        TransportHandoff(VoicePermit permit) {
+            this.permit = permit;
+        }
 
-    /**
-     * The handoff is a thread start performed under the publication lock: once the sender thread
-     * exists, the request is considered handed to the transport and a later publication no longer
-     * promises to revoke bytes. The caller waits outside the lock, so HTTP never runs while it is
-     * held and no unconditional body can follow a publication that won the lock.
-     */
-    private static <T> T authorizeAndRun(VoicePermit permit, java.util.concurrent.Callable<T> handoff) {
-        if (permit == null) {
+        /**
+         * Called by LLMTranslator directly before execute(). The lock covers the complete privacy
+         * predicate and the handoff flag only; blocking HTTP runs after accept() returns.
+         */
+        public void accept() {
+            if (permit == null) return;
+            AUTHORIZATION_LOCK.lock();
             try {
-                return handoff.call();
-            } catch (RuntimeException | Error e) {
-                throw e;
-            } catch (Exception e) {
-                throw new RuntimeException(e);
+                if (!voiceSummaryEnabled || permit.handedOff
+                        || !isProtectionClear(permit.message, permit.generation)) {
+                    throw new TransportBlockedException();
+                }
+                permit.handedOff = true;
+            } finally {
+                AUTHORIZATION_LOCK.unlock();
             }
         }
-        if (!voiceSummaryEnabled) {
-            throw new TransportBlockedException();
-        }
-        final java.util.concurrent.FutureTask<T> task;
-        AUTHORIZATION_LOCK.lock();
-        try {
-            if (permit.handedOff || !isProtectionClear(permit.message, permit.generation)) {
-                throw new TransportBlockedException();
-            }
-            permit.handedOff = true;
-            task = new java.util.concurrent.FutureTask<>(handoff);
-            new Thread(task, "HgramVoiceTransport").start();
-        } finally {
-            AUTHORIZATION_LOCK.unlock();
-        }
-        try {
-            return task.get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new TransportBlockedException();
-        } catch (java.util.concurrent.ExecutionException e) {
-            final Throwable cause = e.getCause();
-            if (cause instanceof RuntimeException) throw (RuntimeException) cause;
-            if (cause instanceof Error) throw (Error) cause;
-            throw new RuntimeException(cause);
-        }
+    }
+
+    public static TransportHandoff newHandoff(VoicePermit permit) {
+        return new TransportHandoff(permit);
     }
 
     /**
@@ -315,7 +287,7 @@ public final class HgramVoiceSummarizer {
 
     /** Silent control-flow exception: no message, no cause, nothing to log. */
     public static final class TransportBlockedException extends RuntimeException {
-        TransportBlockedException() {
+        public TransportBlockedException() {
             super(null, null, false, false);
         }
     }

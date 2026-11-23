@@ -2078,9 +2078,14 @@ public class ImageLoader {
 
         int memoryClass = ((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).getMemoryClass();
         int maxSize;
-        if (canForce8888 = memoryClass >= 192) {
-            maxSize = 30;
+        if (memoryClass >= 256) {
+            canForce8888 = true;
+            maxSize = 48;
+        } else if (memoryClass >= 192) {
+            canForce8888 = true;
+            maxSize = 36;
         } else {
+            canForce8888 = false;
             maxSize = 15;
         }
         int cacheSize = DEBUG_MODE ? 1 : Math.min(maxSize, memoryClass / 7) * 1024 * 1024;

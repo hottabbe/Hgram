@@ -565,13 +565,13 @@ object LLMTranslator : Translator {
     }
 
     /**
-     * Voice summaries pass an explicit permit. The prepared request is authorized and handed off
-     * under the privacy barrier immediately before execute(); plain text callers pass null and
-     * keep the previous path without any voice check.
+     * Voice summaries pass an explicit handoff. It is consumed immediately before execute(), so a
+     * protection published before the transport accepts the request cancels it. Plain text callers
+     * pass null and keep the previous path without any voice check.
      */
     fun completeBlocking(
         apiKey: String, model: String, systemPrompt: String, userPrompt: String,
-        permit: HgramVoiceSummarizer.VoicePermit?
+        handoff: HgramVoiceSummarizer.TransportHandoff?
     ): String {
         return runBlocking {
             val body = buildOpenAIChatRequestBody(model, systemPrompt, userPrompt, 0.3)
@@ -583,9 +583,10 @@ object LLMTranslator : Translator {
                 header("X-Hgram-Redact-Body", "1")
                 setBody(body.toString())
             }
-            val response = HgramVoiceSummarizer.authorizeAndSendResult(permit) {
-                request.execute()
+            if (handoff != null) {
+                request.beforeSend { handoff.accept() }
             }
+            val response = request.execute()
             checkSummarizeResponseStatus(HttpStatusCode(response.statusCode, ""))
             val choices = Json.parseToJsonElement(response.body).jsonObject["choices"]?.jsonArray
             if (choices.isNullOrEmpty()) throw Exception("OpenRouter returned no choices")

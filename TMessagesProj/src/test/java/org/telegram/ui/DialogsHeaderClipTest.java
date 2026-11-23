@@ -215,6 +215,9 @@ public class DialogsHeaderClipTest {
             ReflectionHelpers.setField(activity, "animatingForward", true);
             first = new CountingList(context, activity, firstPage);
             second = new CountingList(context, activity, secondPage);
+            // Real list carries the header height as padding; keep the synthetic geometry above it.
+            first.setPadding(0, 200, 0, 0);
+            second.setPadding(0, 200, 0, 0);
             firstPage.listView = first;
             secondPage.listView = second;
             firstPage.addView(first);

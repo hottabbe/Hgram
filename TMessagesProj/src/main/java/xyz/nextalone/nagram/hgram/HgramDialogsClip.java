@@ -21,6 +21,15 @@ public final class HgramDialogsClip {
         return Math.min(local, listHeight);
     }
 
+    /**
+     * The clip may never cut into the list padding: a stale header bottom above the list would
+     * otherwise hide the first rows and look like an empty gap under the tab strip.
+     */
+    public static int clampToPadding(int computed, int paddingTop) {
+        final int safePadding = Math.max(0, paddingTop);
+        return Math.max(0, Math.min(computed, safePadding));
+    }
+
     /** A DOWN below the clip must reach the panel, not the list. */
     public static boolean acceptsDown(float y, int clipTop) {
         return y >= clipTop;
