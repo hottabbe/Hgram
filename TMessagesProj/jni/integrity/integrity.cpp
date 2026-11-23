@@ -4,7 +4,7 @@
 #include "read_cert.h"
 #include "SHA1.h"
 
-static const char *SIGN = "3A0F57FE06485D0B90D0ACD990E3A30328E3988D";
+static const char *SIGN = "53F3430666539F9961CB226361136E54B409186A";
 
 extern "C" {
 

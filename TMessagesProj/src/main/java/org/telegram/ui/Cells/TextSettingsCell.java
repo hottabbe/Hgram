@@ -51,6 +51,10 @@ public class TextSettingsCell extends FrameLayout {
     private boolean canDisable;
     private boolean drawLoading;
     private int padding;
+    private int valueTextColor;
+    private TextView valueActionTextView;
+    private boolean valueActionLayout;
+    private boolean valueEllipsizeToHalf;
 
     private boolean incrementLoadingProgress;
     private float loadingProgress;
@@ -74,9 +78,23 @@ public class TextSettingsCell extends FrameLayout {
     }
 
     public TextSettingsCell(Context context, int padding, Theme.ResourcesProvider resourcesProvider) {
+        this(context, padding,
+                Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider),
+                Theme.getColor(Theme.key_windowBackgroundWhiteValueText, resourcesProvider),
+                Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon, resourcesProvider),
+                resourcesProvider);
+    }
+
+    /** Package-private constructor with explicit colors so unit tests do not init the Theme. */
+    TextSettingsCell(Context context, int padding, int textColor, int valueTextColor, int iconColor) {
+        this(context, padding, textColor, valueTextColor, iconColor, null);
+    }
+
+    private TextSettingsCell(Context context, int padding, int textColor, int valueTextColor, int iconColor, Theme.ResourcesProvider resourcesProvider) {
         super(context);
         this.resourcesProvider = resourcesProvider;
         this.padding = padding;
+        this.valueTextColor = valueTextColor;
 
         textView = new TextView(context);
         textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
@@ -85,26 +103,26 @@ public class TextSettingsCell extends FrameLayout {
         textView.setSingleLine(true);
         textView.setEllipsize(TextUtils.TruncateAt.END);
         textView.setGravity((LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT) | Gravity.CENTER_VERTICAL);
-        textView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider));
+        textView.setTextColor(textColor);
         addView(textView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT, (LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT) | Gravity.TOP, padding, 0, padding, 0));
 
         valueTextView = new AnimatedTextView(context, true, true, !LocaleController.isRTL);
         valueTextView.setAnimationProperties(.55f, 0, 320, CubicBezierInterpolator.EASE_OUT_QUINT);
         valueTextView.setTextSize(AndroidUtilities.dp(16));
         valueTextView.setGravity((LocaleController.isRTL ? Gravity.LEFT : Gravity.RIGHT) | Gravity.CENTER_VERTICAL);
-        valueTextView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteValueText, resourcesProvider));
+        valueTextView.setTextColor(valueTextColor);
         addView(valueTextView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT, (LocaleController.isRTL ? Gravity.LEFT : Gravity.RIGHT) | Gravity.TOP, padding - 4, 0, padding - 4, 0));
 
         imageView = new RLottieImageView(context);
         imageView.setScaleType(ImageView.ScaleType.CENTER);
-        imageView.setColorFilter(new PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon, resourcesProvider), PorterDuff.Mode.MULTIPLY));
+        imageView.setColorFilter(new PorterDuffColorFilter(iconColor, PorterDuff.Mode.MULTIPLY));
         imageView.setVisibility(GONE);
         addView(imageView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, (LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT) | Gravity.CENTER_VERTICAL, 16, 0, 16, 0));
 
         valueImageView = new ImageView(context);
         valueImageView.setScaleType(ImageView.ScaleType.CENTER);
         valueImageView.setVisibility(INVISIBLE);
-        valueImageView.setColorFilter(new PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon, resourcesProvider), PorterDuff.Mode.SRC_IN));
+        valueImageView.setColorFilter(new PorterDuffColorFilter(iconColor, PorterDuff.Mode.SRC_IN));
         addView(valueImageView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, (LocaleController.isRTL ? Gravity.LEFT : Gravity.RIGHT) | Gravity.CENTER_VERTICAL, padding, 0, padding, 0));
     }
 
@@ -141,26 +159,130 @@ public class TextSettingsCell extends FrameLayout {
             valueBackupImageView.measure(MeasureSpec.makeMeasureSpec(valueBackupImageView.getLayoutParams().height, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(valueBackupImageView.getLayoutParams().width, MeasureSpec.EXACTLY));
             if (betterLayout) width -= valueBackupImageView.getMeasuredWidth() + AndroidUtilities.dp(8);
         }
-        if (valueTextView.getVisibility() == VISIBLE) {
+        if (valueActionLayout) {
+            width = measureValueActionLayout(availableWidth);
+        } else if (valueTextView.getVisibility() == VISIBLE) {
             valueTextView.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST), MeasureSpec.makeMeasureSpec(getMeasuredHeight(), MeasureSpec.EXACTLY));
+            final int valueWidth = valueEllipsizeToHalf
+                    ? Math.min(valueTextView.getMeasuredWidth(), width)
+                    : valueTextView.getMeasuredWidth();
             if (betterLayout) {
-                width -= valueTextView.getMeasuredWidth() + AndroidUtilities.dp(8);
+                width -= valueWidth + AndroidUtilities.dp(8);
             } else {
-                width = availableWidth - valueTextView.getMeasuredWidth() - AndroidUtilities.dp(8);
+                width = availableWidth - valueWidth - AndroidUtilities.dp(8);
             }
 
             if (valueImageView.getVisibility() == VISIBLE) {
                 MarginLayoutParams params = (MarginLayoutParams) valueImageView.getLayoutParams();
                 if (LocaleController.isRTL) {
-                    params.leftMargin = AndroidUtilities.dp(padding + 4) + valueTextView.getMeasuredWidth();
+                    params.leftMargin = AndroidUtilities.dp(padding + 4) + valueWidth;
                 } else {
-                    params.rightMargin = AndroidUtilities.dp(padding + 4) + valueTextView.getMeasuredWidth();
+                    params.rightMargin = AndroidUtilities.dp(padding + 4) + valueWidth;
                 }
             }
         } else {
             width = availableWidth;
         }
+        // A negative width turns into a huge EXACTLY spec and lets the title run over the value.
+        width = Math.max(0, Math.min(width, availableWidth));
         textView.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(getMeasuredHeight(), MeasureSpec.EXACTLY));
+    }
+
+    private void ensureValueActionView() {
+        if (valueActionTextView != null) {
+            return;
+        }
+        valueActionTextView = new TextView(getContext());
+        valueActionTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 16);
+        valueActionTextView.setLines(1);
+        valueActionTextView.setMaxLines(1);
+        valueActionTextView.setSingleLine(true);
+        valueActionTextView.setEllipsize(TextUtils.TruncateAt.END);
+        valueActionTextView.setGravity((LocaleController.isRTL ? Gravity.LEFT : Gravity.RIGHT) | Gravity.CENTER_VERTICAL);
+        valueActionTextView.setTextColor(valueTextColor);
+        addView(valueActionTextView, LayoutHelper.createFrame(LayoutHelper.WRAP_CONTENT, LayoutHelper.MATCH_PARENT,
+                (LocaleController.isRTL ? Gravity.LEFT : Gravity.RIGHT) | Gravity.TOP, padding - 4, 0, padding, 0));
+    }
+
+    private int measureValueAction(int maxWidth) {
+        if (valueActionTextView == null || valueActionTextView.getVisibility() != VISIBLE) {
+            return 0;
+        }
+        final int height = MeasureSpec.makeMeasureSpec(getMeasuredHeight(), MeasureSpec.EXACTLY);
+        if (maxWidth <= 0) {
+            valueActionTextView.measure(MeasureSpec.makeMeasureSpec(0, MeasureSpec.EXACTLY), height);
+            return 0;
+        }
+        int textSize = 16;
+        valueActionTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, textSize);
+        int naturalWidth = (int) Math.ceil(valueActionTextView.getPaint().measureText(valueActionTextView.getText().toString()));
+        while (naturalWidth > maxWidth && textSize > 10) {
+            textSize--;
+            valueActionTextView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, textSize);
+            naturalWidth = (int) Math.ceil(valueActionTextView.getPaint().measureText(valueActionTextView.getText().toString()));
+        }
+        valueActionTextView.measure(MeasureSpec.makeMeasureSpec(maxWidth, MeasureSpec.AT_MOST), height);
+        return valueActionTextView.getMeasuredWidth();
+    }
+
+    /**
+     * Layout for the OCR-models row: the status may be ellipsized, while the action on the
+     * right always keeps its own space. The title is never allowed to collapse below zero.
+     */
+    private int measureValueActionLayout(int availableWidth) {
+        final int gap = AndroidUtilities.dp(8);
+        final int statusMin = Math.min(AndroidUtilities.dp(16), Math.max(0, availableWidth / 4));
+        int titleMin = Math.min(AndroidUtilities.dp(48), Math.max(0, availableWidth / 2));
+        int actionMax = Math.max(0, availableWidth - titleMin - statusMin - gap * 2);
+        int actionWidth = measureValueAction(actionMax);
+        if (actionWidth >= actionMax && titleMin > AndroidUtilities.dp(32)) {
+            titleMin = Math.min(AndroidUtilities.dp(32), Math.max(0, availableWidth / 2));
+            actionMax = Math.max(0, availableWidth - titleMin - statusMin - gap * 2);
+            actionWidth = measureValueAction(actionMax);
+        }
+
+        int statusWidth = 0;
+        if (valueTextView.getVisibility() == VISIBLE) {
+            int statusLimit = Math.min(availableWidth / 2, Math.max(0, availableWidth - actionWidth - titleMin - gap * 2));
+            statusLimit = Math.max(1, statusLimit);
+            valueTextView.setAdaptWidth(true);
+            valueTextView.measure(MeasureSpec.makeMeasureSpec(statusLimit, MeasureSpec.AT_MOST),
+                    MeasureSpec.makeMeasureSpec(getMeasuredHeight(), MeasureSpec.EXACTLY));
+            statusWidth = valueTextView.getMeasuredWidth();
+            if (statusWidth > statusLimit) {
+                valueTextView.setAdaptWidth(false);
+                valueTextView.measure(MeasureSpec.makeMeasureSpec(statusLimit, MeasureSpec.AT_MOST),
+                        MeasureSpec.makeMeasureSpec(getMeasuredHeight(), MeasureSpec.EXACTLY));
+                statusWidth = Math.min(valueTextView.getMeasuredWidth(), statusLimit);
+            }
+        }
+
+        final MarginLayoutParams valueParams = (MarginLayoutParams) valueTextView.getLayoutParams();
+        if (LocaleController.isRTL) {
+            valueParams.leftMargin = AndroidUtilities.dp(padding) + actionWidth + gap;
+            valueParams.rightMargin = AndroidUtilities.dp(padding);
+        } else {
+            valueParams.leftMargin = AndroidUtilities.dp(padding - 4);
+            valueParams.rightMargin = AndroidUtilities.dp(padding) + actionWidth + gap;
+        }
+
+        final int titleWidth = availableWidth - actionWidth - statusWidth - gap * 2;
+        return Math.max(0, Math.min(titleWidth, availableWidth));
+    }
+
+    private void resetValueActionLayout() {
+        valueActionLayout = false;
+        valueEllipsizeToHalf = false;
+        valueTextView.setAdaptWidth(true);
+        valueTextView.setRelayoutOnBoundsChange(false);
+        if (valueActionTextView != null) {
+            valueActionTextView.setVisibility(GONE);
+        }
+        final MarginLayoutParams params = (MarginLayoutParams) valueTextView.getLayoutParams();
+        if (params != null) {
+            params.leftMargin = AndroidUtilities.dp(padding - 4);
+            params.rightMargin = AndroidUtilities.dp(padding);
+        }
     }
 
     @Override
@@ -188,10 +310,15 @@ public class TextSettingsCell extends FrameLayout {
     }
 
     public void setTextValueColor(int color) {
+        valueTextColor = color;
         valueTextView.setTextColor(color);
+        if (valueActionTextView != null) {
+            valueActionTextView.setTextColor(color);
+        }
     }
 
     public void setText(CharSequence text, boolean divider) {
+        resetValueActionLayout();
         textView.setText(text);
         valueTextView.setVisibility(INVISIBLE);
         valueImageView.setVisibility(INVISIBLE);
@@ -204,6 +331,7 @@ public class TextSettingsCell extends FrameLayout {
     }
 
     public void setTextAndValue(CharSequence text, CharSequence value, boolean animated, boolean divider) {
+        resetValueActionLayout();
         textView.setText(text);
         valueImageView.setVisibility(INVISIBLE);
         if (value != null) {
@@ -217,7 +345,47 @@ public class TextSettingsCell extends FrameLayout {
         requestLayout();
     }
 
+    /**
+     * Opt-in for a value that must stay inside its half of the row. Only the OCR-models row
+     * uses this; every other cell keeps the previous geometry.
+     */
+    public void setValueEllipsizeToHalf(boolean enabled) {
+        valueEllipsizeToHalf = enabled;
+        if (!valueActionLayout) {
+            valueTextView.setAdaptWidth(!enabled);
+            valueTextView.setRelayoutOnBoundsChange(enabled);
+        }
+        requestLayout();
+    }
+
+    /**
+     * Value split into an ellipsized status and a fully readable action on the right. Used by
+     * the OCR-models row so a long action is not silently cut together with the status.
+     */
+    public void setTextAndValueAction(CharSequence text, CharSequence value, CharSequence action, boolean divider) {
+        resetValueActionLayout();
+        ensureValueActionView();
+        valueActionLayout = true;
+        valueEllipsizeToHalf = true;
+        valueTextView.setAdaptWidth(false);
+        valueTextView.setRelayoutOnBoundsChange(true);
+        textView.setText(text);
+        valueImageView.setVisibility(INVISIBLE);
+        valueTextView.setText(value != null ? value : "", false);
+        valueTextView.setVisibility(VISIBLE);
+        valueActionTextView.setText(action != null ? action : "");
+        valueActionTextView.setVisibility(VISIBLE);
+        needDivider = divider;
+        setWillNotDraw(!divider);
+        requestLayout();
+    }
+
+    public TextView getValueActionTextView() {
+        return valueActionTextView;
+    }
+
     public void setTextAndIcon(CharSequence text, int resId, boolean divider) {
+        resetValueActionLayout();
         textView.setText(text);
         valueTextView.setVisibility(INVISIBLE);
         if (resId != 0) {
@@ -373,7 +541,12 @@ public class TextSettingsCell extends FrameLayout {
     @Override
     public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
         super.onInitializeAccessibilityNodeInfo(info);
-        info.setText(textView.getText() + (valueTextView != null && valueTextView.getVisibility() == View.VISIBLE ? "\n" + valueTextView.getText() : ""));
+        String text = textView.getText()
+                + (valueTextView != null && valueTextView.getVisibility() == View.VISIBLE ? "\n" + valueTextView.getText() : "");
+        if (valueActionTextView != null && valueActionTextView.getVisibility() == View.VISIBLE) {
+            text += "\n" + valueActionTextView.getText();
+        }
+        info.setText(text);
         info.setEnabled(isEnabled());
     }
 

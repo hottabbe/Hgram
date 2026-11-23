@@ -14,6 +14,7 @@ import tw.nekomimi.nekogram.transtale.Translator
 import xyz.nextalone.nagram.NaConfig
 import xyz.nextalone.nagram.hgram.HgramSummarizer
 import xyz.nextalone.nagram.hgram.HgramSummarizerModel
+import xyz.nextalone.nagram.hgram.HgramVoiceSummarizer
 import xyz.nextalone.nagram.network.NetworkRequestBuilder
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
@@ -560,16 +561,31 @@ object LLMTranslator : Translator {
 
     /** OpenRouter text completion for the local Hgram summarizer (no translation prompt). */
     fun completeBlocking(apiKey: String, model: String, systemPrompt: String, userPrompt: String): String {
+        return completeBlocking(apiKey, model, systemPrompt, userPrompt, null)
+    }
+
+    /**
+     * Voice summaries pass an explicit permit. The prepared request is authorized and handed off
+     * under the privacy barrier immediately before execute(); plain text callers pass null and
+     * keep the previous path without any voice check.
+     */
+    fun completeBlocking(
+        apiKey: String, model: String, systemPrompt: String, userPrompt: String,
+        permit: HgramVoiceSummarizer.VoicePermit?
+    ): String {
         return runBlocking {
             val body = buildOpenAIChatRequestBody(model, systemPrompt, userPrompt, 0.3)
-            val response = NetworkRequestBuilder.post("https://openrouter.ai/api/v1/chat/completions") {
+            val request = NetworkRequestBuilder.post("https://openrouter.ai/api/v1/chat/completions") {
                 header("Authorization", "Bearer $apiKey")
                 header("Content-Type", "application/json")
                 header("HTTP-Referer", "https://t.me/hgram_updates")
                 header("X-Title", "Hgram")
                 header("X-Hgram-Redact-Body", "1")
                 setBody(body.toString())
-            }.execute()
+            }
+            val response = HgramVoiceSummarizer.authorizeAndSendResult(permit) {
+                request.execute()
+            }
             checkSummarizeResponseStatus(HttpStatusCode(response.statusCode, ""))
             val choices = Json.parseToJsonElement(response.body).jsonObject["choices"]?.jsonArray
             if (choices.isNullOrEmpty()) throw Exception("OpenRouter returned no choices")

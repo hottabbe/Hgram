@@ -55,7 +55,7 @@ public class ChangeNameActivity extends BaseFragment {
     @Override
     public View createView(Context context) {
         actionBar.setItemsBackgroundColor(Theme.getColor(Theme.key_avatar_actionBarSelectorBlue, resourcesProvider), false);
-        actionBar.setItemsColor(Theme.getColor(Theme.key_actionBarDefaultIcon, resourcesProvider), false);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
         actionBar.setBackButtonImage(R.drawable.ic_ab_back);
         actionBar.setAllowOverlayTitle(true);
         actionBar.setTitle(LocaleController.getString(R.string.EditName));

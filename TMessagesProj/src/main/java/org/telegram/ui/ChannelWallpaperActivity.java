@@ -338,7 +338,7 @@ public class ChannelWallpaperActivity extends BaseFragment {
     public void updateColors() {
         actionBar.setBackgroundColor(getThemedColor(Theme.key_actionBarDefault));
         actionBar.setTitleColor(getThemedColor(Theme.key_actionBarDefaultTitle));
-        actionBar.setItemsColor(getThemedColor(Theme.key_actionBarDefaultIcon), false);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
         actionBar.setItemsBackgroundColor(getThemedColor(Theme.key_actionBarDefaultSelector), false);
         listView.setBackgroundColor(getThemedColor(Theme.key_windowBackgroundGray));
         adapter.notifyDataSetChanged();

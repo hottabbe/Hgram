@@ -5424,7 +5424,7 @@ private RectF hgramDuplicateBounds;
                 invalidate();
                 if (action == MotionEvent.ACTION_UP) {
                     final boolean hit = isInHgramSummarizeButton(event.getX(), event.getY());
-                    if (hit && delegate != null) {
+                    if (hit && delegate != null && !isHgramSummarizeLoading()) {
                         playSoundEffect(SoundEffectConstants.CLICK);
                         delegate.didPressSummarize(this, false);
                     }
@@ -5544,7 +5544,7 @@ private RectF hgramDuplicateBounds;
                         && isInHgramSummarizeButton(hgramSumTapX, hgramSumTapY);
                 if (hgramSumAction == MotionEvent.ACTION_UP) {
                     summarizeButtonPressed = false;
-                    if (hit) {
+                    if (hit && !isHgramSummarizeLoading()) {
                         playSoundEffect(SoundEffectConstants.CLICK);
                         if (delegate != null) {
                             delegate.didPressSummarize(this, false);
@@ -5979,9 +5979,11 @@ private RectF hgramDuplicateBounds;
                     invalidate();
                 } else if (summarizeButtonPressed) {
                     if (event.getAction() == MotionEvent.ACTION_UP) {
-                        playSoundEffect(SoundEffectConstants.CLICK);
-                        if (delegate != null) {
-                            delegate.didPressSummarize(this, false);
+                        if (!isHgramSummarizeLoading()) {
+                            playSoundEffect(SoundEffectConstants.CLICK);
+                            if (delegate != null) {
+                                delegate.didPressSummarize(this, false);
+                            }
                         }
                         sideButtonPressed = false;
                         summarizeButtonPressed = false;
@@ -11273,7 +11275,7 @@ private RectF hgramDuplicateBounds;
             if ((currentPosition == null || currentMessageObject.isMusic() || currentMessageObject.type == MessageObject.TYPE_PAID_MEDIA || currentMessageObject.isDocument()) && !messageObject.isSponsored() && !messageObject.isAnyKindOfSticker() && addedCaptionHeight == 0 && !messageObject.isExpiredStory() && !messageObject.isUnsupported()) {
                 int addCaptionLayoutWidth = 0;
                 int width = backgroundWidth;
-                if ((currentMessageObject.type == MessageObject.TYPE_VOICE || isRoundVideo) && messageObject.isVoiceTranscriptionOpen() && messageObject.getFactCheck() == null) {
+                if ((currentMessageObject.type == MessageObject.TYPE_VOICE || isRoundVideo) && (messageObject.isVoiceTranscriptionOpen() || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.hasCaption(messageObject)) && messageObject.getFactCheck() == null) {
                     if (AndroidUtilities.isTablet()) {
                         width = AndroidUtilities.getMinTabletSide() - dp(50 + (isSideMenued ? ChatActivity.SIDE_MENU_WIDTH : drawAvatar ? 52 : 0));
                     } else {
@@ -11284,9 +11286,9 @@ private RectF hgramDuplicateBounds;
                     width -= dp(24);
                 }
                 int widthForCaption = width - dp(31 + (currentMessageObject.type != MessageObject.TYPE_ROUND_VIDEO ? 14 : 0)) - getExtraTextX() * 2;
-                if (!messageObject.isRestrictedMessage && captionLayout == null && (messageObject.caption != null || messageObject.isVoiceTranscriptionOpen())) {
-                    currentCaption = messageObject.isVoiceTranscriptionOpen() ? messageObject.getVoiceTranscription() : messageObject.caption;
-                    if (currentCaption != null && !TextUtils.isEmpty(messageObject.messageOwner.voiceTranscription) && currentMessageObject.isVoiceTranscriptionOpen() && !currentMessageObject.messageOwner.voiceTranscriptionFinal) {
+                if (!messageObject.isRestrictedMessage && captionLayout == null && (messageObject.caption != null || messageObject.isVoiceTranscriptionOpen() || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.hasCaption(messageObject))) {
+                    currentCaption = xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.hasCaption(messageObject) ? xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.getCaption(messageObject) : (messageObject.isVoiceTranscriptionOpen() ? messageObject.getVoiceTranscription() : messageObject.caption);
+                    if (currentCaption != null && !(TextUtils.isEmpty(messageObject.messageOwner.voiceTranscription) || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.hasCaption(messageObject)) && currentMessageObject.isVoiceTranscriptionOpen() && !currentMessageObject.messageOwner.voiceTranscriptionFinal) {
                         currentCaption += " ";
                         if (!(currentCaption instanceof Spannable)) {
                             currentCaption = new SpannableString(currentCaption);
@@ -11314,7 +11316,7 @@ private RectF hgramDuplicateBounds;
                 }
                 if (captionLayout != null || currentMessageObject.type == MessageObject.TYPE_VOICE || currentMessageObject.type == MessageObject.TYPE_ROUND_VIDEO) {
                     try {
-                        if (messageObject.isVoiceTranscriptionOpen() && captionLayout != null) {
+                        if ((messageObject.isVoiceTranscriptionOpen() || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.hasCaption(messageObject)) && captionLayout != null) {
                             float startMaxWidth = backgroundWidth - dp(31) - dp(10) - getExtraTextX() * 2, maxWidth = startMaxWidth;
                             maxWidth = Math.max(maxWidth, captionLayout.textWidth);
                             backgroundWidth += maxWidth - startMaxWidth;
@@ -23154,12 +23156,22 @@ private RectF hgramDuplicateBounds;
         MessageObject m = currentMessageObject;
         if (m == null || m.messageOwner == null) return false;
         if (xyz.nextalone.nagram.hgram.HgramSummarizer.isSecretChatMessage(m)) return false;
+        // VOICE-SUMM-OFF-1: no voice/round-video ✨ at all while the release gate is off.
+        if (!xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isVoiceSummaryEnabled()
+                && (m.isVoice() || m.isRoundVideo())) {
+            return false;
+        }
+        // A process-local voice/round-video summary has no persisted flag; keep its ✨ visible.
+        if (xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isSummarizeButtonVisible(m)) return true;
         // A locally shown summary keeps its close button even when the eligibility threshold
         // no longer passes (e.g. the word limit was raised after it was generated).
         if (hgramSummaryAllowed && m.messageOwner.summarizedOpen && m.messageOwner.summaryText != null) {
             return true;
         }
         final boolean hgramPrivate = hgramSummaryAllowed && DialogObject.isUserDialog(m.getDialogId());
+        if (hgramPrivate && xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.canSummarize(m)) {
+            return true;
+        }
         if (hgramShortCollapsed) {
             return hgramPrivate && hgramShortChain != null
                     && xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(m, hgramShortChain, true);
@@ -23199,7 +23211,12 @@ private RectF hgramDuplicateBounds;
             summarizeIcon = new SummaryIcon(this);
         }
         final MessageObject msg = getMessageObject();
-        final boolean open = msg != null && msg.messageOwner != null && msg.messageOwner.summarizedOpen;
+        final boolean open = msg != null && ((msg.messageOwner != null && msg.messageOwner.summarizedOpen)
+                || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isShowing(msg));
+        final boolean loading = xyz.nextalone.nagram.hgram.HgramSummaryButtonState.isLoading(
+                drawSummarizeButton, xyz.nextalone.nagram.hgram.HgramSummarizer.isInFlight(msg)
+                        || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isInFlight(msg), open);
+        summarizeIcon.setLoading(loading);
         summarizeIcon.set(open);
         final float iconWidth = summarizeIcon.getIntrinsicWidth();
         final float iconHeight = summarizeIcon.getIntrinsicHeight();
@@ -23212,6 +23229,16 @@ private RectF hgramDuplicateBounds;
                 (int) (iconWidth / 2f), (int) (iconHeight / 2f));
         summarizeIcon.draw(canvas);
         canvas.restoreToCount(iconSave);
+        if (loading) {
+            // Keep the arc moving while the request is in flight; only a redraw, never a layout.
+            invalidate();
+        }
+    }
+
+    /** True while the ✨ button owns a request; taps are consumed without a second request. */
+    private boolean isHgramSummarizeLoading() {
+        return xyz.nextalone.nagram.hgram.HgramSummarizer.isInFlight(currentMessageObject)
+                || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isInFlight(currentMessageObject);
     }
 
     private void updateHgramSummarizeButtonBounds() {

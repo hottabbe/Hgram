@@ -152,7 +152,10 @@ public class MenuDrawable extends Drawable {
         float endXDiff;
         float startYDiff;
         float startXDiff;
-        int color1 = iconColor == 0 ? Theme.getColor(Theme.key_actionBarDefaultIcon) : iconColor;
+        int color1 = iconColor;
+        if (color1 == 0) {
+            color1 = Theme.getColor(Theme.key_actionBarDefaultIcon);
+        }
         int backColor1 = backColor == 0 ? Theme.getColor(Theme.key_actionBarDefault) : backColor;
 
         float diffUp = 0;
@@ -322,7 +325,12 @@ public class MenuDrawable extends Drawable {
     }
 
     public int getIconColor() {
-        return iconColor == 0 ? Theme.getColor(Theme.key_actionBarDefaultIcon) : iconColor;
+        return resolveIconColor(iconColor, Theme.getColor(Theme.key_actionBarDefaultIcon));
+    }
+
+    /** Zero means "not explicitly tinted"; draw() then resolves the live theme color. */
+    static int resolveIconColor(int storedColor, int themeColor) {
+        return storedColor == 0 ? themeColor : storedColor;
     }
 
     public void setBackColor(int backColor) {

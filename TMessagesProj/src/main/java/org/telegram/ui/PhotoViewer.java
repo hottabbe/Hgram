@@ -25,6 +25,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.Dialog;
 import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -364,12 +365,15 @@ import tw.nekomimi.nekogram.utils.AlertUtil;
 import tw.nekomimi.nekogram.utils.ProxyUtil;
 import tw.nekomimi.nekogram.utils.VibrateUtil;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.hgram.HgramAlbumNavigator;
 import xyz.nextalone.nagram.hgram.HgramAntiPeek;
 import xyz.nextalone.nagram.helper.MessageHelper;
 import xyz.nextalone.nagram.hgram.HgramConfig;
+import xyz.nextalone.nagram.hgram.HgramOcrDisplayText;
 import xyz.nextalone.nagram.hgram.HgramOcrDownloadCallback;
 import xyz.nextalone.nagram.hgram.HgramOcrDownloadSession;
 import xyz.nextalone.nagram.hgram.HgramOcrEngine;
+import xyz.nextalone.nagram.hgram.HgramOcrLayout;
 import xyz.nextalone.nagram.hgram.HgramOcrModels;
 import xyz.nextalone.nagram.hgram.HgramOcrPhoto;
 import xyz.nextalone.nagram.hgram.HgramOcrProtection;
@@ -2082,6 +2086,30 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private HgramOcrEngine.RequestToken ocrRequestToken;
     private boolean ocrRunning;
     private boolean ocrDestroyed;
+    private HgramOcrLayout ocrLayout;
+    private String ocrFullText;
+    private final Path ocrHintPath = new Path();
+    private final Path ocrSelectedPath = new Path();
+    private final Paint ocrHintPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private HgramOcrLayout.Line ocrSelectedLine;
+    private HgramOcrLayout.Word ocrSelectedWord;
+    private String ocrSelectedText;
+    private final Matrix ocrCanvasMatrix = new Matrix();
+    private final Matrix ocrCanvasInverse = new Matrix();
+    private final float[] ocrCanvasMatrixValues = new float[9];
+    private final float[] ocrTapPoint = new float[2];
+    private boolean ocrMatrixValid;
+    private boolean ocrHintPathDirty = true;
+    private boolean ocrSelectedPathDirty = true;
+    private float ocrImageX;
+    private float ocrImageY;
+    private float ocrImageW;
+    private float ocrImageH;
+    private float ocrSelectedLeft;
+    private float ocrSelectedTop;
+    private float ocrSelectedRight;
+    private float ocrSelectedBottom;
+    private TextView ocrActionModeHost;
     private AlertDialog ocrModelsDialog;
     private AlertDialog ocrModelsConfirmDialog;
     private Context ocrModelsDialogContext;
@@ -4870,7 +4898,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             dismissOcrModelsDialog();
         }
         dismissOcrModelsConfirmDialog();
-        if (ocrOverlay != null) {
+        if (isOcrVisible()) {
             dismissOcrOverlay();
         }
         touchSlop = ViewConfiguration.get(parentActivity).getScaledTouchSlop();
@@ -14857,13 +14885,70 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     private void setImages() {
         if (animationInProgress == 0) {
+            int forwardIndex = currentIndex + 1;
+            int backwardIndex = currentIndex - 1;
+            if (!imagesArr.isEmpty()) {
+                long[] groupedIds = getHgramGroupedIds();
+                forwardIndex = HgramAlbumNavigator.neighborIndex(imagesArr.size(), currentIndex,
+                        opennedFromMedia, groupedIds, HgramAlbumNavigator.DIRECTION_FORWARD);
+                backwardIndex = HgramAlbumNavigator.neighborIndex(imagesArr.size(), currentIndex,
+                        opennedFromMedia, groupedIds, HgramAlbumNavigator.DIRECTION_BACKWARD);
+            }
             setIndexToImage(centerImage, currentIndex, null);
             setIndexToPaintingOverlay(currentIndex, paintingOverlay);
-            setIndexToImage(rightImage, currentIndex + 1, rightCropTransform);
-            setIndexToPaintingOverlay(currentIndex + 1, rightPaintingOverlay);
-            setIndexToImage(leftImage, currentIndex - 1, leftCropTransform);
-            setIndexToPaintingOverlay(currentIndex - 1, leftPaintingOverlay);
+            setIndexToImage(rightImage, forwardIndex, rightCropTransform);
+            setIndexToPaintingOverlay(forwardIndex, rightPaintingOverlay);
+            setIndexToImage(leftImage, backwardIndex, leftCropTransform);
+            setIndexToPaintingOverlay(backwardIndex, leftPaintingOverlay);
         }
+    }
+
+    private long[] getHgramGroupedIds() {
+        int size = imagesArr.size();
+        long[] groupedIds = new long[size];
+        for (int i = 0; i < size; i++) {
+            MessageObject message = imagesArr.get(i);
+            groupedIds[i] = message != null ? message.getGroupId() : 0L;
+        }
+        return groupedIds;
+    }
+
+    private int getHgramNeighborIndex(int index, int direction) {
+        if (imagesArr.isEmpty()) {
+            return index + (direction > 0 ? 1 : -1);
+        }
+        return HgramAlbumNavigator.neighborIndex(imagesArr.size(), index, opennedFromMedia,
+                getHgramGroupedIds(), direction);
+    }
+
+    private boolean isHgramAlbumBoundary(int direction) {
+        if (opennedFromMedia) {
+            return false;
+        }
+        if (imagesArr.isEmpty() || currentIndex < 0 || currentIndex >= imagesArr.size()) {
+            return false;
+        }
+        MessageObject current = imagesArr.get(currentIndex);
+        if (current == null || current.getGroupId() == 0L) {
+            return false;
+        }
+        return HgramAlbumNavigator.neighborIndex(imagesArr.size(), currentIndex, opennedFromMedia,
+                getHgramGroupedIds(), direction) == HgramAlbumNavigator.CLOSE;
+    }
+
+    private boolean isHgramAlbumForwardStep(int previousIndex, int index) {
+        long previousGroupId = 0L;
+        long currentGroupId = 0L;
+        if (previousIndex >= 0 && previousIndex < imagesArr.size()) {
+            MessageObject previous = imagesArr.get(previousIndex);
+            previousGroupId = previous != null ? previous.getGroupId() : 0L;
+        }
+        if (index >= 0 && index < imagesArr.size()) {
+            MessageObject current = imagesArr.get(index);
+            currentGroupId = current != null ? current.getGroupId() : 0L;
+        }
+        return HgramAlbumNavigator.isForwardStep(opennedFromMedia, previousGroupId,
+                currentGroupId, previousIndex, index);
     }
 
     private void setIsAboutToSwitchToIndex(int index, boolean init, boolean animated) {
@@ -16063,8 +16148,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
         }
         currentFileNames[0] = getFileName(index);
-        currentFileNames[1] = getFileName(index + 1);
-        currentFileNames[2] = getFileName(index - 1);
+        currentFileNames[1] = getFileName(getHgramNeighborIndex(index, HgramAlbumNavigator.DIRECTION_FORWARD));
+        currentFileNames[2] = getFileName(getHgramNeighborIndex(index, HgramAlbumNavigator.DIRECTION_BACKWARD));
         placeProvider.willSwitchFromPhoto(currentMessageObject, getFileLocation(currentFileLocation), currentIndex);
         lastPhotoSetTime = SystemClock.elapsedRealtime();
 
@@ -16385,7 +16470,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
         } else {
             checkProgress(0, true, false);
-            if (prevIndex > currentIndex) {
+            if (!isHgramAlbumForwardStep(prevIndex, currentIndex)) {
                 ImageReceiver temp = rightImage;
                 rightImage = centerImage;
                 centerImage = leftImage;
@@ -16417,16 +16502,16 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 fullscreenButton[0].setTranslationY(tmp.getTranslationY());
 
                 leftCropState = null;
-                setIndexToPaintingOverlay(currentIndex - 1, leftPaintingOverlay);
+                setIndexToPaintingOverlay(getHgramNeighborIndex(currentIndex, HgramAlbumNavigator.DIRECTION_BACKWARD), leftPaintingOverlay);
                 setIndexToPaintingOverlay(currentIndex, paintingOverlay);
-                setIndexToPaintingOverlay(currentIndex + 1, rightPaintingOverlay);
-                setIndexToImage(leftImage, currentIndex - 1, leftCropTransform);
+                setIndexToPaintingOverlay(getHgramNeighborIndex(currentIndex, HgramAlbumNavigator.DIRECTION_FORWARD), rightPaintingOverlay);
+                setIndexToImage(leftImage, getHgramNeighborIndex(currentIndex, HgramAlbumNavigator.DIRECTION_BACKWARD), leftCropTransform);
                 resetIndexForDeferredImageLoading();
                 updateAccessibilityOverlayVisibility();
 
                 checkProgress(1, true, false);
                 checkProgress(2, true, false);
-            } else if (prevIndex < currentIndex) {
+            } else if (prevIndex != currentIndex) {
                 ImageReceiver temp = leftImage;
                 leftImage = centerImage;
                 centerImage = rightImage;
@@ -16458,10 +16543,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 fullscreenButton[0].setTranslationY(tmp.getTranslationY());
 
                 rightCropState = null;
-                setIndexToPaintingOverlay(currentIndex - 1, leftPaintingOverlay);
+                setIndexToPaintingOverlay(getHgramNeighborIndex(currentIndex, HgramAlbumNavigator.DIRECTION_BACKWARD), leftPaintingOverlay);
                 setIndexToPaintingOverlay(currentIndex, paintingOverlay);
-                setIndexToPaintingOverlay(currentIndex + 1, rightPaintingOverlay);
-                setIndexToImage(rightImage, currentIndex + 1, rightCropTransform);
+                setIndexToPaintingOverlay(getHgramNeighborIndex(currentIndex, HgramAlbumNavigator.DIRECTION_FORWARD), rightPaintingOverlay);
+                setIndexToImage(rightImage, getHgramNeighborIndex(currentIndex, HgramAlbumNavigator.DIRECTION_FORWARD), rightCropTransform);
                 resetIndexForDeferredImageLoading();
                 updateAccessibilityOverlayVisibility();
 
@@ -19610,7 +19695,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                         moveStartX = ev.getX();
                         moveStartY = ev.getY();
                         updateMinMax(scale);
-                        if (translationX < minX && (currentEditMode != EDIT_MODE_NONE || !rightImage.hasImageSet()) || translationX > maxX && (currentEditMode != EDIT_MODE_NONE || !leftImage.hasImageSet())) {
+                        if (translationX < minX && (currentEditMode != EDIT_MODE_NONE || (!rightImage.hasImageSet() && !isHgramAlbumBoundary(HgramAlbumNavigator.DIRECTION_FORWARD))) || translationX > maxX && (currentEditMode != EDIT_MODE_NONE || (!leftImage.hasImageSet() && !isHgramAlbumBoundary(HgramAlbumNavigator.DIRECTION_BACKWARD)))) {
                             moveDx /= 3.0f;
                         }
                         if (maxY == 0 && minY == 0 && currentEditMode == EDIT_MODE_NONE && sendPhotoType != SELECT_TYPE_AVATAR && sendPhotoType != SELECT_TYPE_STICKER) {
@@ -19738,11 +19823,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                 }
 
                 if (currentEditMode == EDIT_MODE_NONE && sendPhotoType != SELECT_TYPE_AVATAR && sendPhotoType != SELECT_TYPE_STICKER) {
-                    if ((translationX < minX - getContainerViewWidth() / 3 || velocity < -dp(650)) && rightImage.hasImageSet()) {
+                    if ((translationX < minX - getContainerViewWidth() / 3 || velocity < -dp(650)) && (rightImage.hasImageSet() || isHgramAlbumBoundary(HgramAlbumNavigator.DIRECTION_FORWARD))) {
                         goToNext();
                         return true;
                     }
-                    if ((translationX > maxX + getContainerViewWidth() / 3 || velocity > dp(650)) && leftImage.hasImageSet()) {
+                    if ((translationX > maxX + getContainerViewWidth() / 3 || velocity > dp(650)) && (leftImage.hasImageSet() || isHgramAlbumBoundary(HgramAlbumNavigator.DIRECTION_BACKWARD))) {
                         goToPrev();
                         return true;
                     }
@@ -19874,6 +19959,24 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     private void switchToNextIndex(int add, boolean init) {
+        int targetIndex;
+        if (imagesArr.isEmpty()) {
+            targetIndex = currentIndex + add;
+        } else {
+            boolean neighborLoaded = add > 0 ? rightImage.hasImageSet() : leftImage.hasImageSet();
+            targetIndex = HgramAlbumNavigator.resolveMove(imagesArr.size(), currentIndex,
+                    opennedFromMedia, getHgramGroupedIds(), add, neighborLoaded);
+            if (targetIndex == HgramAlbumNavigator.CLOSE) {
+                if (isHgramAlbumBoundary(add)) {
+                    closePhoto(false, false);
+                    return;
+                }
+                targetIndex = currentIndex + add;
+            }
+            if (targetIndex == HgramAlbumNavigator.NO_MOVE) {
+                return;
+            }
+        }
         if (currentMessageObject != null) {
             releasePlayer(false);
             FileLoader.getInstance(currentAccount).cancelLoadFile(currentMessageObject.getDocument());
@@ -19888,14 +19991,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             groupedPhotosListView.setAnimateBackground(true);
         }
         playerAutoStarted = false;
-        setImageIndex(currentIndex + add, init, true);
+        setImageIndex(targetIndex, init, true);
         if (shouldMessageObjectAutoPlayed(currentMessageObject) || shouldIndexAutoPlayed(currentIndex)) {
             playerAutoStarted = true;
             onActionClick(true);
             checkProgress(0, false, true);
         }
         checkFullscreenButton();
-
         try {
             CastSync.check(CastSync.TYPE_PHOTOVIEWER);
             if (ChromecastController.getInstance().isCasting()) {
@@ -20836,6 +20938,20 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     private void drawCenterImageInternal(Canvas canvas, float currentMirror, float alpha) {
+        if (ocrLayout != null) {
+            // Hit-testing uses the real canvas transform (pan, zoom, rotate, animations), never manual math.
+            canvas.getMatrix(ocrCanvasMatrix);
+            ocrMatrixValid = ocrCanvasMatrix.invert(ocrCanvasInverse);
+            if (ocrMatrixValid) {
+                ocrCanvasInverse.getValues(ocrCanvasMatrixValues);
+            }
+            ocrImageX = centerImage.getImageX();
+            ocrImageY = centerImage.getImageY();
+            ocrImageW = centerImage.getImageWidth();
+            ocrImageH = centerImage.getImageHeight();
+        } else {
+            ocrMatrixValid = false;
+        }
         boolean mirror = false;
         if (!imagesArrLocals.isEmpty()) {
             if (currentEditMode == EDIT_MODE_CROP || sendPhotoType == SELECT_TYPE_AVATAR) {
@@ -20863,6 +20979,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             stickerMakerView.drawOutline(canvas, false, containerView, switchingToMode != -1);
             centerImage.setAlpha(alpha);
             centerImage.draw(canvas);
+            if (ocrLayout != null && currentEditMode == EDIT_MODE_NONE && !isCurrentVideo && !isCaptionOpen()) {
+                drawOcrHint(canvas, alpha);
+            }
             stickerMakerView.drawOutline(canvas, true, containerView, switchingToMode != -1);
             stickerMakerView.drawSegmentBorderPath(canvas, centerImage, centerImageTransform, containerView);
             centerImageTransformLocked = true;
@@ -21228,7 +21347,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             final Context context = currentOcrContext();
             if (context == null || !HgramOcrModels.isReady(context)) {
                 showOcrModelsDownloadDialog();
-            } else if (!ocrRunning && ocrOverlay == null) {
+            } else if (!ocrRunning && !isOcrVisible()) {
                 runOcrForCurrentPhoto();
             }
             return;
@@ -21350,7 +21469,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     private void runOcrForCurrentPhoto() {
-        if (containerView == null || ocrDestroyed || ocrRunning || ocrOverlay != null
+        if (containerView == null || ocrDestroyed || ocrRunning || isOcrVisible()
                 || !HgramConfig.isOcrLongPressEnabled()) {
             return;
         }
@@ -21424,7 +21543,187 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             showOcrToast(R.string.HgramOcrEmpty);
             return;
         }
-        showOcrOverlay(result.text);
+        showOcrResult(result);
+    }
+
+    private void showOcrResult(HgramOcrEngine.Result result) {
+        if (result == null) {
+            return;
+        }
+        final String fullText = result.text;
+        final HgramOcrLayout layout = result.layout;
+        if (layout != null && !layout.isEmpty()
+                && currentEditMode == EDIT_MODE_NONE && !isCurrentVideo
+                && layout.matchesAspect(centerImage.getBitmapWidth(), centerImage.getBitmapHeight())) {
+            showOcrLayout(layout, fullText);
+        } else {
+            // Boxes are unavailable or do not match the displayed bitmap: keep the text panel, not an error.
+            showOcrOverlay(fullText);
+        }
+    }
+
+    private void showOcrLayout(HgramOcrLayout layout, String fullText) {
+        dismissOcrOverlay();
+        if (containerView == null) {
+            return;
+        }
+        ocrLayout = layout;
+        ocrFullText = fullText;
+        ocrMatrixValid = false;
+        ocrHintPathDirty = true;
+        clearOcrSelection();
+        containerView.invalidate();
+    }
+
+    private void clearOcrSelection() {
+        ocrSelectedLine = null;
+        ocrSelectedWord = null;
+        ocrSelectedText = null;
+        ocrSelectedPathDirty = true;
+    }
+
+    private void setOcrSelection(float left, float top, float right, float bottom, String text) {
+        ocrSelectedLeft = left;
+        ocrSelectedTop = top;
+        ocrSelectedRight = right;
+        ocrSelectedBottom = bottom;
+        ocrSelectedText = text;
+        ocrSelectedPathDirty = true;
+    }
+
+    private void drawOcrHint(Canvas canvas, float alpha) {
+        final HgramOcrLayout layout = ocrLayout;
+        if (layout == null || layout.isEmpty()) {
+            return;
+        }
+        final float frameAlpha = Utilities.clamp01(alpha);
+        if (frameAlpha <= 0f) {
+            return;
+        }
+        if (ocrHintPathDirty) {
+            ocrHintPath.rewind();
+            for (int i = 0, n = layout.lines.size(); i < n; i++) {
+                final HgramOcrLayout.Line line = layout.lines.get(i);
+                ocrHintPath.addRect(line.left, line.top, line.right, line.bottom, Path.Direction.CW);
+            }
+            ocrHintPathDirty = false;
+        }
+        if (ocrSelectedPathDirty) {
+            ocrSelectedPath.rewind();
+            if (ocrSelectedLine != null || ocrSelectedWord != null) {
+                ocrSelectedPath.addRect(ocrSelectedLeft, ocrSelectedTop, ocrSelectedRight, ocrSelectedBottom, Path.Direction.CW);
+            }
+            ocrSelectedPathDirty = false;
+        }
+
+        canvas.save();
+        canvas.translate(ocrImageX, ocrImageY);
+        canvas.scale(ocrImageW, ocrImageH);
+        canvas.clipRect(0f, 0f, 1f, 1f);
+        if (layout.space == HgramOcrLayout.SPACE_RAW) {
+            // Raw OCR space: apply the display orientation exactly once (same mapping as HgramOcrLayout.mapPoint).
+            final int orientation = centerImage.getOrientation();
+            final int invert = centerImage.getInvert();
+            if (orientation != 0 || invert != 0) {
+                canvas.translate(0.5f, 0.5f);
+                if (invert == 1) {
+                    canvas.scale(-1f, 1f);
+                } else if (invert == 2) {
+                    canvas.scale(1f, -1f);
+                }
+                if (orientation != 0) {
+                    canvas.rotate(orientation);
+                }
+                canvas.translate(-0.5f, -0.5f);
+            }
+        }
+        ocrHintPaint.setColor(Theme.getColor(Theme.key_chat_inTextSelectionHighlight, resourcesProvider));
+        ocrHintPaint.setAlpha((int) (0x28 * frameAlpha));
+        canvas.drawPath(ocrHintPath, ocrHintPaint);
+        if (ocrSelectedLine != null || ocrSelectedWord != null) {
+            ocrHintPaint.setAlpha((int) (0x66 * frameAlpha));
+            canvas.drawPath(ocrSelectedPath, ocrHintPaint);
+        }
+        canvas.restore();
+    }
+
+    private void handleOcrTap(float x, float y) {
+        final HgramOcrLayout layout = ocrLayout;
+        if (layout == null) {
+            return;
+        }
+        HgramOcrLayout.Word word = null;
+        HgramOcrLayout.Line line = null;
+        if (ocrMatrixValid && ocrImageW > 0f && ocrImageH > 0f) {
+            ocrTapPoint[0] = x;
+            ocrTapPoint[1] = y;
+            ocrCanvasInverse.mapPoints(ocrTapPoint);
+            float nx = (ocrTapPoint[0] - ocrImageX) / ocrImageW;
+            float ny = (ocrTapPoint[1] - ocrImageY) / ocrImageH;
+            if (nx >= -0.02f && nx <= 1.02f && ny >= -0.02f && ny <= 1.02f) {
+                final float padPx = dp(3);
+                final float localPerScreenX = (float) Math.hypot(ocrCanvasMatrixValues[Matrix.MSCALE_X], ocrCanvasMatrixValues[Matrix.MSKEW_Y]);
+                final float localPerScreenY = (float) Math.hypot(ocrCanvasMatrixValues[Matrix.MSKEW_X], ocrCanvasMatrixValues[Matrix.MSCALE_Y]);
+                float padX = padPx * localPerScreenX / ocrImageW;
+                float padY = padPx * localPerScreenY / ocrImageH;
+                if (layout.space == HgramOcrLayout.SPACE_RAW) {
+                    final int orientation = centerImage.getOrientation();
+                    final float[] raw = HgramOcrLayout.unmapPoint(nx, ny, orientation, centerImage.getInvert());
+                    nx = raw[0];
+                    ny = raw[1];
+                    if (orientation % 180 != 0) {
+                        final float tmp = padX;
+                        padX = padY;
+                        padY = tmp;
+                    }
+                }
+                word = layout.hitWord(nx, ny, padX, padY);
+                if (word == null) {
+                    line = layout.hitLine(nx, ny, padX, padY);
+                }
+            }
+        }
+
+        if (word == null && line == null) {
+            if (ocrSelectedWord != null || ocrSelectedLine != null) {
+                clearOcrSelection();
+                finishOcrActionMode();
+                if (containerView != null) {
+                    containerView.invalidate();
+                }
+            } else {
+                dismissOcrOverlay();
+            }
+            return;
+        }
+
+        final boolean sameSelection = word != null ? word == ocrSelectedWord : line == ocrSelectedLine;
+        if (sameSelection) {
+            clearOcrSelection();
+            finishOcrActionMode();
+            if (containerView != null) {
+                containerView.invalidate();
+            }
+            return;
+        }
+
+        clearOcrSelection();
+        if (word != null) {
+            ocrSelectedWord = word;
+            setOcrSelection(word.left, word.top, word.right, word.bottom, word.text);
+        } else {
+            ocrSelectedLine = line;
+            setOcrSelection(line.left, line.top, line.right, line.bottom, line.text);
+        }
+        if (containerView != null) {
+            containerView.invalidate();
+        }
+        if (!isOcrCopyProtected()) {
+            startOcrCopyActionModeForSelection(ocrSelectedText);
+        } else {
+            // Protected media: highlight/selection stay available, Copy does not.
+            finishOcrActionMode();
+        }
     }
 
     private void showOcrToast(int resId) {
@@ -21490,7 +21789,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             return;
         }
         if (HgramOcrModels.isReady(context)) {
-            if (!ocrRunning && ocrOverlay == null) {
+            if (!ocrRunning && !isOcrVisible()) {
                 runOcrForCurrentPhoto();
             }
             return;
@@ -21518,7 +21817,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     return;
                 }
                 if (ready) {
-                    if (!ocrRunning && ocrOverlay == null) {
+                    if (!ocrRunning && !isOcrVisible()) {
                         runOcrForCurrentPhoto();
                     }
                     return;
@@ -21731,7 +22030,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             Toast.makeText(context, LocaleController.getString(success
                     ? R.string.HgramOcrModelsReady : R.string.HgramOcrDownloadFailed), Toast.LENGTH_SHORT).show();
         }
-        if (success && maybeRunOcr && !ocrDestroyed && !ocrRunning && ocrOverlay == null
+        if (success && maybeRunOcr && !ocrDestroyed && !ocrRunning && !isOcrVisible()
                 && isVisible() && HgramConfig.isOcrLongPressEnabled()
                 && ocrDownloadSession.isCurrent(generation, photoKey)
                 && photoKey.equals(currentOcrPhotoKey())) {
@@ -21828,6 +22127,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (containerView == null || activityContext == null) {
             return;
         }
+        ocrFullText = text;
         final FrameLayout overlay = new FrameLayout(activityContext);
         overlay.setOnClickListener(v -> dismissOcrOverlay());
 
@@ -21935,6 +22235,115 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
     }
 
+    private void startOcrCopyActionModeForSelection(final String text) {
+        finishOcrActionMode();
+        if (text == null || text.isEmpty() || isOcrCopyProtected()) {
+            return;
+        }
+        final ActionMode.Callback callback = new ActionMode.Callback() {
+            @Override
+            public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                menu.add(Menu.NONE, android.R.id.copy, 0, android.R.string.copy)
+                        .setShowAsAction(MenuItem.SHOW_AS_ACTION_IF_ROOM);
+                return true;
+            }
+
+            @Override
+            public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                return false;
+            }
+
+            @Override
+            public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                if (item.getItemId() == android.R.id.copy) {
+                    // The policy may change while the menu is open: recheck at the moment of copy.
+                    if (!isOcrCopyProtected()) {
+                        copyOcrText(ocrSelectedText);
+                    }
+                    mode.finish();
+                    return true;
+                }
+                return false;
+            }
+
+            @Override
+            public void onDestroyActionMode(ActionMode mode) {
+                // Keep the selection: switching word/line finishes the old mode before starting a new one.
+                if (ocrActionMode == mode) {
+                    ocrActionMode = null;
+                }
+            }
+        };
+        ActionMode mode = null;
+        if (containerView != null) {
+            try {
+                mode = containerView.startActionMode(callback, ActionMode.TYPE_FLOATING);
+            } catch (Throwable ignored) {
+                mode = null;
+            }
+        }
+        if (mode != null) {
+            ocrActionMode = mode;
+            return;
+        }
+        startOcrCopyActionModeWithHost(callback, text);
+    }
+
+    private void startOcrCopyActionModeWithHost(final ActionMode.Callback callback, final String text) {
+        if (containerView == null || activityContext == null) {
+            showOcrOverlay(HgramOcrDisplayText.panelText(ocrFullText, text));
+            return;
+        }
+        final TextView host = new TextView(activityContext);
+        host.setText(text);
+        host.setAlpha(0f);
+        host.setTextIsSelectable(true);
+        try {
+            containerView.addView(host, new FrameLayout.LayoutParams(1, 1));
+        } catch (Throwable ignored) {
+            showOcrOverlay(HgramOcrDisplayText.panelText(ocrFullText, text));
+            return;
+        }
+        ocrActionModeHost = host;
+        host.post(() -> {
+            if (ocrActionModeHost != host) {
+                return;
+            }
+            host.requestFocus();
+            ActionMode mode = null;
+            try {
+                mode = host.startActionMode(callback, ActionMode.TYPE_FLOATING);
+            } catch (Throwable ignored) {
+                mode = null;
+            }
+            if (mode != null) {
+                ocrActionMode = mode;
+                return;
+            }
+            ocrActionModeHost = null;
+            if (containerView != null) {
+                containerView.removeView(host);
+            }
+            if (ocrLayout != null && ocrSelectedText != null && ocrSelectedText.equals(text)) {
+                // Neither the window nor the host accepted ActionMode: fall back to the full text panel.
+                showOcrOverlay(HgramOcrDisplayText.panelText(ocrFullText, text));
+            }
+        });
+    }
+
+    private void copyOcrText(String text) {
+        if (text == null || text.isEmpty() || activityContext == null) {
+            return;
+        }
+        try {
+            final ClipboardManager clipboard = (ClipboardManager) activityContext.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null) {
+                clipboard.setPrimaryClip(ClipData.newPlainText("OCR", text));
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void finishOcrActionMode() {
         final ActionMode mode = ocrActionMode;
         ocrActionMode = null;
@@ -21944,11 +22353,21 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             } catch (Throwable ignored) {
             }
         }
+        if (ocrActionModeHost != null) {
+            if (containerView != null) {
+                containerView.removeView(ocrActionModeHost);
+            }
+            ocrActionModeHost = null;
+        }
+    }
+
+    private boolean isOcrVisible() {
+        return ocrOverlay != null || ocrLayout != null;
     }
 
     /** Dismisses the OCR overlay and cancels pending recognition. Returns true if an overlay was shown. */
     public boolean dismissOcrOverlay() {
-        final boolean hadOverlay = ocrOverlay != null;
+        final boolean hadOverlay = isOcrVisible();
         final HgramOcrEngine.RequestToken token = ocrRequestToken;
         ocrRequestToken = null;
         ocrRunning = false;
@@ -21978,6 +22397,17 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             }
             ocrOverlay = null;
         }
+        ocrLayout = null;
+        ocrFullText = null;
+        clearOcrSelection();
+        ocrHintPath.rewind();
+        ocrSelectedPath.rewind();
+        ocrHintPathDirty = true;
+        ocrSelectedPathDirty = true;
+        ocrMatrixValid = false;
+        if (containerView != null) {
+            containerView.invalidate();
+        }
         return hadOverlay;
     }
 
@@ -22000,18 +22430,22 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (discardTap) {
             return false;
         }
+        if (ocrLayout != null) {
+            handleOcrTap(e.getX(), e.getY());
+            return true;
+        }
         float x = e.getX();
         float y = e.getY();
         if (checkImageView.getVisibility() != View.VISIBLE) {
             if (SharedConfig.nextMediaTap && sendPhotoType != SELECT_TYPE_STICKER && y > ActionBar.getCurrentActionBarHeight() + AndroidUtilities.statusBarHeight + dp(40)) {
                 int side = NekoConfig.disablePhotoSideAction.Bool() ? 0 : Math.min(135, containerView.getMeasuredWidth() / 8);
                 if (x < side) {
-                    if (leftImage.hasImageSet()) {
+                    if (leftImage.hasImageSet() || isHgramAlbumBoundary(HgramAlbumNavigator.DIRECTION_BACKWARD)) {
                         switchToNextIndex(-1, true);
                         return true;
                     }
                 } else if (x > containerView.getMeasuredWidth() - side) {
-                    if (rightImage.hasImageSet()) {
+                    if (rightImage.hasImageSet() || isHgramAlbumBoundary(HgramAlbumNavigator.DIRECTION_FORWARD)) {
                         switchToNextIndex(1, true);
                         return true;
                     }

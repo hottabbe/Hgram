@@ -70,6 +70,8 @@ APK подписан ключом проекта, поэтому обновле�
   Картинка берётся только из кеша — в сеть за превью приложение не ходит.
 - Группировка повторных уведомлений от одного отправителя, выбор стиля превью (системный или свой),
   стабильные каналы уведомлений.
+- Сообщение из push сразу появляется в чате и списке — ещё до полной синхронизации, затем заменяется
+  настоящим без дубля.
 - Кнопки «Слушать» и «Текст» прямо в уведомлении голосового сообщения.
 
 ### Голосовые сообщения и расшифровка
@@ -193,7 +195,7 @@ Hgram основан на работе других проектов:
 ## English summary
 
 Hgram is an unofficial open-source Telegram client for Android, forked from Nagram (which builds on
-Telegram for Android and NekoX). Current release: **13.0.2 (1310)**, 20 November 2026, arm64-v8a,
+Telegram for Android and NekoX). Current release: **13.0.2 (1311)**, 23 November 2026, arm64-v8a,
 Android 6.0+. Highlights: on-device photo text recognition (long-press a photo, models downloaded on
 demand), OpenRouter-powered message summarization with selectable models and pricing, merged
 short-message chains, anti-peek masking triggered by flipping the phone, a hidden space with a decoy

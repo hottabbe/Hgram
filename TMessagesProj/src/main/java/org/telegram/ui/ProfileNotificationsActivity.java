@@ -275,7 +275,7 @@ public class ProfileNotificationsActivity extends BaseFragment implements Notifi
     @Override
     public View createView(final Context context) {
         actionBar.setItemsBackgroundColor(Theme.getColor(Theme.key_avatar_actionBarSelectorBlue, resourcesProvider), false);
-        actionBar.setItemsColor(Theme.getColor(Theme.key_actionBarDefaultIcon, resourcesProvider), false);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
         actionBar.setBackButtonImage(R.drawable.ic_ab_back);
 
         String key = NotificationsController.getSharedPrefKey(dialogId, topicId);

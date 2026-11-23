@@ -176,6 +176,69 @@ class HgramOcrModelsTest {
     }
 
     @Test
+    fun overlongCancellationRaceDoesNotAdvancePart() {
+        HgramOcrModels.postRunner = { it.run() }
+        val content = ByteArray(200_000) { (it * 23 % 251).toByte() }
+        val spec = model("rus", content)
+        val root = temporary.newFolder("overlong-cancel-root")
+        val models = File(root, HgramOcrModels.MODELS_DIR)
+        assertTrue(models.mkdirs())
+        val target = File(models, spec.fileName)
+        val part = File(models, spec.fileName + ".part")
+        val prefix = 30_000
+        write(part, content.copyOfRange(0, prefix))
+        val remainder = spec.size.toInt() - prefix
+        val jobRef = AtomicLong()
+        val reading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val overlongBody = content + ByteArray(10_000) { 7 }
+        val connection = FakeConnection(
+            spec.url,
+            overlongBody,
+            HttpURLConnection.HTTP_PARTIAL,
+            headers = mapOf(
+                "Content-Range" to "bytes $prefix-${spec.size - 1}/${spec.size}",
+                "Content-Length" to remainder.toString(),
+            ),
+            reading = reading,
+            release = release,
+            afterBytesAt = remainder,
+            afterBytes = { HgramOcrModels.cancel(jobRef.get()) },
+        )
+        HgramOcrModels.connectionFactory = HgramOcrModels.ConnectionFactory { connection }
+        val done = CountDownLatch(1)
+        val jobId = HgramOcrModels.download(root, listOf(spec), null) { _, _ -> done.countDown() }
+        assertTrue(jobId > 0)
+        jobRef.set(jobId)
+        assertTrue(reading.await(5, TimeUnit.SECONDS))
+        release.countDown()
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+
+        assertEquals("overlong/racing cancellation must keep the old prefix",
+            prefix.toLong(), part.length())
+        assertArrayEquals(content.copyOfRange(0, prefix), part.readBytes())
+        assertFalse(File(models, spec.fileName + ".attempt").exists())
+        assertFalse(File(models, spec.fileName + ".merged").exists())
+        assertFalse(target.exists())
+
+        val next = FakeConnection(
+            spec.url,
+            content,
+            HttpURLConnection.HTTP_PARTIAL,
+            headers = mapOf(
+                "Content-Range" to "bytes $prefix-${spec.size - 1}/${spec.size}",
+                "Content-Length" to remainder.toString(),
+            ),
+        )
+        HgramOcrModels.connectionFactory = HgramOcrModels.ConnectionFactory { next }
+        val done2 = CountDownLatch(1)
+        assertTrue(HgramOcrModels.download(root, listOf(spec), null) { _, _ -> done2.countDown() } > 0)
+        assertTrue(done2.await(5, TimeUnit.SECONDS))
+        assertEquals("bytes=$prefix-", next.requestProperties["Range"])
+        assertArrayEquals(content, target.readBytes())
+    }
+
+    @Test
     fun invalidContentRangeDoesNotCorruptRetainedPart() {
         val content = ByteArray(100_000) { (it * 31 % 251).toByte() }
         val spec = model("rus", content)
@@ -535,6 +598,8 @@ class HgramOcrModelsTest {
         private val pauseAfter: Int? = null,
         private val paused: CountDownLatch? = null,
         private val resume: CountDownLatch? = null,
+        private val afterBytesAt: Int? = null,
+        private val afterBytes: Runnable? = null,
     ) : HttpURLConnection(URL(url)) {
 
         val requestProperties = LinkedHashMap<String, String>()
@@ -605,17 +670,24 @@ class HgramOcrModelsTest {
             val pauseAt = pauseAfter
             val pauseLatch = paused
             val resumeLatch = resume
-            val paced: InputStream = if (pauseAt == null || pauseLatch == null || resumeLatch == null) {
+            val hookAt = afterBytesAt
+            val hook = afterBytes
+            val paced: InputStream = if ((pauseAt == null || pauseLatch == null || resumeLatch == null)
+                && hookAt == null
+            ) {
                 limited
             } else {
                 object : InputStream() {
                     private var count = 0
                     private var isPaused = false
+                    private var hookFired = false
 
                     override fun read(): Int = read(ByteArray(1), 0, 1)
 
                     override fun read(b: ByteArray, off: Int, len: Int): Int {
-                        if (!isPaused && count >= pauseAt) {
+                        if (pauseAt != null && pauseLatch != null && resumeLatch != null &&
+                            !isPaused && count >= pauseAt
+                        ) {
                             isPaused = true
                             pauseLatch.countDown()
                             try {
@@ -625,10 +697,18 @@ class HgramOcrModelsTest {
                                 return -1
                             }
                         }
-                        val allowed = if (count < pauseAt) minOf(len, pauseAt - count) else len
+                        val allowed = if (pauseAt != null && count < pauseAt) {
+                            minOf(len, pauseAt - count)
+                        } else {
+                            len
+                        }
                         val read = limited.read(b, off, allowed)
                         if (read > 0) {
                             count += read
+                            if (!hookFired && hookAt != null && count >= hookAt) {
+                                hookFired = true
+                                hook?.run()
+                            }
                         }
                         return read
                     }

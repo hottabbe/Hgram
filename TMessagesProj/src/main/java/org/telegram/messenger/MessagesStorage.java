@@ -120,7 +120,7 @@ public class MessagesStorage extends BaseController {
     private static final Object lockObject = new Object();
     private static boolean hgramSttSingletonLogged;
 
-    public final static int LAST_DB_VERSION = 179;
+    public final static int LAST_DB_VERSION = 180;
     private boolean databaseMigrationInProgress;
     public boolean showClearDatabaseAlert;
 
@@ -129,7 +129,12 @@ public class MessagesStorage extends BaseController {
     public static final int FORUM_TYPE_DIRECT = 1 << 2;
     public static final int FORUM_TYPE_BOT = 1 << 3;
 
+    /** Result of {@code SQLitePreparedStatement#step()} for a completed non-SELECT statement. */
+    private static final int SQLITE_DONE = 1;
+
     private final LongSparseIntArray dialogIsForumTyped = new LongSparseIntArray();
+    private final PushPlaceholderRegistry pushPlaceholderRegistry = new PushPlaceholderRegistry();
+    private volatile boolean pushPendingLoaded;
 
 
     public static MessagesStorage getInstance(int num) {
@@ -420,6 +425,7 @@ public class MessagesStorage extends BaseController {
         });
         loadDialogFilters();
         loadUnreadMessages();
+        loadPushPending();
         loadPendingTasks();
         try {
             openSync.countDown();
@@ -530,6 +536,7 @@ public class MessagesStorage extends BaseController {
             "emoji_keywords_info_v2",
             "wallpapers2",
             "unread_push_messages",
+            "push_pending_messages",
             "polls_v2",
             "reactions",
             "reaction_mentions",
@@ -686,6 +693,9 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE TABLE unread_push_messages(uid INTEGER, mid INTEGER, random INTEGER, date INTEGER, data BLOB, fm TEXT, name TEXT, uname TEXT, flags INTEGER, topicId INTEGER, is_reaction INTEGER, PRIMARY KEY(uid, mid))").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS unread_push_messages_idx_date ON unread_push_messages(date);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS unread_push_messages_idx_random ON unread_push_messages(random);").stepThis().dispose();
+
+        database.executeFast(PushPlaceholderStore.CREATE_TABLE_SQL).stepThis().dispose();
+        database.executeFast(PushPlaceholderStore.CREATE_INDEX_SQL).stepThis().dispose();
 
         database.executeFast("CREATE TABLE polls_v2(mid INTEGER, uid INTEGER, id INTEGER, PRIMARY KEY (mid, uid));").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS polls_id_v2 ON polls_v2(id);").stepThis().dispose();
@@ -855,6 +865,8 @@ public class MessagesStorage extends BaseController {
         dialogFilters.clear();
         dialogFiltersMap.clear();
         unknownDialogsIds.clear();
+        pushPlaceholderRegistry.clear();
+        pushPendingLoaded = false;
 
         lastSavedSeq = 0;
         lastSavedPts = 0;
@@ -1428,6 +1440,432 @@ public class MessagesStorage extends BaseController {
                 checkSQLException(e);
             }
         });
+    }
+
+    public PushPlaceholderRegistry getPushPlaceholderRegistry() {
+        return pushPlaceholderRegistry;
+    }
+
+    public boolean isPushPendingLoaded() {
+        return pushPendingLoaded;
+    }
+
+    public void loadPushPending() {
+        loadPushPending(null);
+    }
+
+    public void loadPushPending(Runnable callback) {
+        Runnable task = () -> {
+            SQLiteCursor cursor = null;
+            try {
+                // Keep clear+restore atomic for a UI consume() that may race with startup.
+                synchronized (pushPlaceholderRegistry) {
+                    pushPlaceholderRegistry.clear();
+                    cursor = database.queryFinalized(PushPlaceholderStore.SELECT_PENDING_SQL);
+                    while (cursor.next()) {
+                        // mark() also grants the one-shot UI replacement right, so an open chat can
+                        // replace the restored preview when the real message with the same id arrives.
+                        pushPlaceholderRegistry.mark(cursor.longValue(0), cursor.intValue(1));
+                    }
+                }
+            } catch (Exception e) {
+                checkSQLException(e);
+            } finally {
+                if (cursor != null) {
+                    cursor.dispose();
+                }
+                pushPendingLoaded = true;
+                if (callback != null) {
+                    AndroidUtilities.runOnUIThread(callback);
+                }
+            }
+        };
+        // openDatabase() calls this from the storage thread; run inline so openSync is released only
+        // after the durable index is ready for the UI.
+        if (Thread.currentThread() == storageQueue) {
+            task.run();
+        } else {
+            storageQueue.postRunnable(task);
+        }
+    }
+
+    /**
+     * Inserts a push preview only when {@code (dialogId, message.id)} is absent and still unread.
+     *
+     * The canonical read barrier is {@code dialogs.inbox_max}, queried on the storage queue right
+     * before the insert (no clamp and no in-memory cache): a message at or below it is rejected
+     * without writing anything. The message row and the durable pending row are then written in
+     * one transaction; {@link PushPlaceholderRegistry} is marked and the callback receives true
+     * only after that transaction commits.
+     */
+    public void putPushPlaceholder(TLRPC.Message placeholder, Utilities.Callback<Boolean> callback) {
+        if (placeholder == null) {
+            if (callback != null) {
+                AndroidUtilities.runOnUIThread(() -> callback.run(false));
+            }
+            return;
+        }
+        final long dialogId = placeholder.dialog_id != 0 ? placeholder.dialog_id : MessageObject.getDialogId(placeholder);
+        final int mid = placeholder.id;
+        final int date = placeholder.date;
+        final long topicId = placeholder.reply_to == null ? 0
+                : (placeholder.reply_to.reply_to_top_id != 0
+                ? placeholder.reply_to.reply_to_top_id
+                : placeholder.reply_to.reply_to_msg_id);
+        final int payloadHash = PushPlaceholderStore.payloadHash(placeholder.message, date);
+        storageQueue.postRunnable(() -> {
+            boolean inserted = false;
+            try {
+                if (dialogId != 0 && mid > 0
+                        && !PushPlaceholderStore.isAlreadyRead(getPushPlaceholderInboxMax(dialogId), mid)) {
+                    final boolean[] stored = new boolean[1];
+                    PushPlaceholderStore.insertIfAbsent(
+                            this::pushPlaceholderMessageRowExists,
+                            dialogId,
+                            mid,
+                            () -> stored[0] = storePushPlaceholderAtomic(placeholder, dialogId, mid, date, topicId, payloadHash));
+                    inserted = stored[0];
+                }
+            } catch (Exception e) {
+                checkSQLException(e);
+            }
+            final boolean result = inserted;
+            if (callback != null) {
+                AndroidUtilities.runOnUIThread(() -> callback.run(result));
+            }
+        });
+    }
+
+    /**
+     * Canonical {@code dialogs.inbox_max} lookup. Missing row means "no read information" (0);
+     * an unreadable row fails closed so an already read message cannot be resurrected.
+     */
+    private int getPushPlaceholderInboxMax(long dialogId) {
+        SQLiteCursor cursor = null;
+        try {
+            cursor = database.queryFinalized(PushPlaceholderStore.SELECT_INBOX_MAX_SQL, dialogId);
+            return cursor.next() ? cursor.intValue(0) : 0;
+        } catch (Exception e) {
+            checkSQLException(e);
+            return Integer.MAX_VALUE;
+        } finally {
+            if (cursor != null) {
+                cursor.dispose();
+            }
+        }
+    }
+
+    private boolean pushPlaceholderMessageRowExists(long dialogId, int mid) {
+        SQLiteCursor cursor = null;
+        try {
+            cursor = database.queryFinalized(PushPlaceholderStore.SELECT_MESSAGE_ROW_SQL, dialogId, mid);
+            return cursor.next();
+        } catch (Exception e) {
+            checkSQLException(e);
+            // Fail closed: an unreadable row is treated as existing so a full message can never
+            // be overwritten by a push preview.
+            return true;
+        } finally {
+            if (cursor != null) {
+                cursor.dispose();
+            }
+        }
+    }
+
+    /**
+     * Postcondition SELECT for the placeholder transaction. Errors are thrown on purpose so the
+     * caller rolls back instead of committing a preview whose row cannot be verified.
+     */
+    private boolean pushPlaceholderMessageRowWritten(long dialogId, int mid) throws SQLiteException {
+        SQLiteCursor cursor = null;
+        try {
+            cursor = database.queryFinalized(PushPlaceholderStore.SELECT_MESSAGE_ROW_SQL, dialogId, mid);
+            return cursor.next();
+        } finally {
+            if (cursor != null) {
+                cursor.dispose();
+            }
+        }
+    }
+
+    private boolean pushPendingRowExists(long dialogId, int mid) throws SQLiteException {
+        SQLiteCursor cursor = null;
+        try {
+            cursor = database.queryFinalized(PushPlaceholderStore.SELECT_PENDING_ROW_SQL, dialogId, mid);
+            return cursor.next();
+        } finally {
+            if (cursor != null) {
+                cursor.dispose();
+            }
+        }
+    }
+
+    private boolean storePushPlaceholderAtomic(final TLRPC.Message placeholder, final long dialogId, final int mid,
+                                               final int date, final long topicId, final int payloadHash) {
+        return PushPlaceholderStore.storePlaceholder(new PushPlaceholderStore.PlaceholderTransaction() {
+            @Override
+            public void beginTransaction() throws SQLiteException {
+                database.beginTransactionChecked();
+            }
+
+            @Override
+            public void insertMessageRow() throws Exception {
+                storePushPlaceholderRowsStrict(placeholder, dialogId, topicId);
+            }
+
+            @Override
+            public void insertPendingRow() throws SQLiteException {
+                insertPushPendingRow(dialogId, mid, date, topicId, payloadHash);
+            }
+
+            @Override
+            public boolean messageRowExists() throws SQLiteException {
+                return pushPlaceholderMessageRowWritten(dialogId, mid);
+            }
+
+            @Override
+            public boolean pendingRowExists() throws SQLiteException {
+                return pushPendingRowExists(dialogId, mid);
+            }
+
+            @Override
+            public void commitTransaction() throws SQLiteException {
+                database.commitTransactionChecked();
+            }
+
+            @Override
+            public void rollbackTransaction() throws SQLiteException {
+                database.rollbackTransactionChecked();
+            }
+
+            @Override
+            public void onCommitted() {
+                // Published strictly after the commit: a rolled back preview is never in the index.
+                pushPlaceholderRegistry.mark(dialogId, mid);
+            }
+        });
+    }
+
+    /**
+     * Strict placeholder writer used instead of {@code putMessagesInternal(..., false, ...)}.
+     *
+     * Only the two rows a preview needs are written: {@code messages_v2} always and
+     * {@code messages_topics} for a forum topic. Every {@code step()} must return
+     * {@code SQLITE_DONE}; a BUSY/error result throws so {@link PushPlaceholderStore} rolls the
+     * whole transaction back. Dialogs, counters and UI notifications are deliberately untouched:
+     * nothing may be visible before the caller confirms the commit.
+     */
+    private void storePushPlaceholderRowsStrict(TLRPC.Message message, long dialogId, long topicId) throws Exception {
+        fixUnsupportedMedia(message);
+        MessageObject.normalizeFlags(message);
+        NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
+        SQLitePreparedStatement state = null;
+        SQLitePreparedStatement topicState = null;
+        try {
+            message.serializeToStream(data);
+            state = database.executeFast(PushPlaceholderStore.REPLACE_MESSAGE_V2_SQL);
+            bindAndStepPushPlaceholderRow(state, message, dialogId, topicId, false, data);
+            if (topicId != 0) {
+                topicState = database.executeFast(PushPlaceholderStore.REPLACE_MESSAGE_TOPIC_SQL);
+                bindAndStepPushPlaceholderRow(topicState, message, dialogId, topicId, true, data);
+            }
+        } finally {
+            if (state != null) {
+                state.dispose();
+            }
+            if (topicState != null) {
+                topicState.dispose();
+            }
+            data.reuse();
+        }
+    }
+
+    /** Mirrors the {@code messages_v2}/{@code messages_topics} binding of putMessagesInternal. */
+    private void bindAndStepPushPlaceholderRow(SQLitePreparedStatement statement, TLRPC.Message message,
+                                               long dialogId, long topicId, boolean topicRow,
+                                               NativeByteBuffer data) throws Exception {
+        int messageId = message.local_id != 0 ? message.local_id : message.id;
+        int pointer = 1;
+        statement.requery();
+        statement.bindInteger(pointer++, messageId);
+        statement.bindLong(pointer++, dialogId);
+        if (topicRow) {
+            statement.bindLong(pointer++, topicId);
+        }
+        statement.bindInteger(pointer++, MessageObject.getUnreadFlags(message));
+        statement.bindInteger(pointer++, message.send_state);
+        statement.bindInteger(pointer++, message.date);
+        statement.bindByteBuffer(pointer++, data);
+        statement.bindInteger(pointer++, (MessageObject.isOut(message) || message.from_scheduled ? 1 : 0));
+        statement.bindInteger(pointer++, message.ttl);
+        if ((message.flags & TLRPC.MESSAGE_FLAG_HAS_VIEWS) != 0) {
+            statement.bindInteger(pointer++, message.views);
+        } else {
+            statement.bindInteger(pointer++, getMessageMediaType(message));
+        }
+        NativeByteBuffer storyData = null;
+        if (message.replyStory != null) {
+            storyData = new NativeByteBuffer(message.replyStory.getObjectSize());
+            message.replyStory.serializeToStream(storyData);
+            statement.bindByteBuffer(pointer++, storyData);
+        } else {
+            statement.bindNull(pointer++);
+        }
+        int flags = 0;
+        if (message.stickerVerified == 0) {
+            flags |= 1;
+        } else if (message.stickerVerified == 2) {
+            flags |= 2;
+        }
+        statement.bindInteger(pointer++, flags);
+        statement.bindInteger(pointer++, message.mentioned ? 1 : 0);
+        statement.bindInteger(pointer++, message.forwards);
+        NativeByteBuffer repliesData = null;
+        if (message.replies != null) {
+            repliesData = new NativeByteBuffer(message.replies.getObjectSize());
+            message.replies.serializeToStream(repliesData);
+            statement.bindByteBuffer(pointer++, repliesData);
+        } else {
+            statement.bindNull(pointer++);
+        }
+        if (message.reply_to != null) {
+            statement.bindInteger(pointer++, message.reply_to.reply_to_top_id != 0 ? message.reply_to.reply_to_top_id : message.reply_to.reply_to_msg_id);
+        } else {
+            statement.bindInteger(pointer++, 0);
+        }
+        statement.bindLong(pointer++, MessageObject.getChannelId(message));
+        NativeByteBuffer customParams = MessageCustomParamsHelper.writeLocalParams(message);
+        if (customParams != null) {
+            statement.bindByteBuffer(pointer++, customParams);
+        } else {
+            statement.bindNull(pointer++);
+        }
+        if (!topicRow) {
+            if ((message.flags & 131072) != 0) {
+                statement.bindLong(pointer++, message.grouped_id);
+            } else {
+                statement.bindNull(pointer++);
+            }
+        }
+        if (message.reply_to != null) {
+            statement.bindInteger(pointer++, message.reply_to.story_id);
+        } else {
+            statement.bindInteger(pointer++, 0);
+        }
+        try {
+            int result = statement.step();
+            if (result != SQLITE_DONE) {
+                throw new SQLiteException("push placeholder " + (topicRow ? "messages_topics" : "messages_v2")
+                        + " write failed, step result " + result);
+            }
+        } finally {
+            if (repliesData != null) {
+                repliesData.reuse();
+            }
+            if (customParams != null) {
+                customParams.reuse();
+            }
+            if (storyData != null) {
+                storyData.reuse();
+            }
+        }
+    }
+
+    /**
+     * Writes the durable pending row. Must throw on failure: the caller rolls the whole placeholder
+     * transaction back instead of publishing a message without its pending marker.
+     */
+    private void insertPushPendingRow(long dialogId, int mid, int date, long topicId, int payloadHash) throws SQLiteException {
+        SQLitePreparedStatement state = null;
+        try {
+            state = database.executeFast(PushPlaceholderStore.INSERT_PENDING_SQL);
+            state.requery();
+            state.bindLong(1, dialogId);
+            state.bindInteger(2, mid);
+            state.bindInteger(3, date);
+            state.bindLong(4, topicId);
+            state.bindInteger(5, 0);
+            state.bindInteger(6, payloadHash);
+            int result = state.step();
+            if (result != SQLITE_DONE) {
+                throw new SQLiteException("push_pending_messages write failed, step result " + result);
+            }
+        } finally {
+            if (state != null) {
+                state.dispose();
+            }
+        }
+    }
+
+    private void deletePushPendingRow(long dialogId, int mid) {
+        SQLitePreparedStatement state = null;
+        boolean deleted = false;
+        try {
+            state = database.executeFast(PushPlaceholderStore.DELETE_PENDING_SQL);
+            state.bindLong(1, dialogId);
+            state.bindInteger(2, mid);
+            deleted = state.step() == SQLITE_DONE;
+        } catch (Exception e) {
+            checkSQLException(e);
+        } finally {
+            if (state != null) {
+                state.dispose();
+            }
+        }
+        if (deleted && !database.isInTransaction()) {
+            // Auto-committed standalone DELETE: the durable marker must not outlive its row.
+            // Inside an owner transaction the registry is acknowledged by that owner after commit.
+            // The one-shot UI replacement right is kept for the later consume().
+            pushPlaceholderRegistry.clear(dialogId, mid);
+        }
+    }
+
+    /**
+     * Checked pending-row delete for a real message write. It runs on the same connection and
+     * inside the same transaction as {@code messages_v2}/{@code messages_topics}; a non-DONE step
+     * throws so the caller rolls everything back and the pending marker survives.
+     */
+    private void deletePushPendingRowsStrict(ArrayList<long[]> keys) throws SQLiteException {
+        SQLitePreparedStatement state = null;
+        try {
+            state = database.executeFast(PushPlaceholderStore.DELETE_PENDING_SQL);
+            for (int a = 0; a < keys.size(); a++) {
+                long[] key = keys.get(a);
+                state.requery();
+                state.bindLong(1, key[0]);
+                state.bindInteger(2, (int) key[1]);
+                int result = state.step();
+                if (result != SQLITE_DONE) {
+                    throw new SQLiteException("push_pending_messages delete failed, step result " + result);
+                }
+            }
+        } finally {
+            if (state != null) {
+                state.dispose();
+            }
+        }
+    }
+
+    /** In-memory acknowledgement; must be called only after the owning transaction committed. */
+    private void clearPushPendingRegistry(ArrayList<long[]> keys) {
+        for (int a = 0; a < keys.size(); a++) {
+            long[] key = keys.get(a);
+            pushPlaceholderRegistry.clear(key[0], (int) key[1]);
+        }
+    }
+
+    private static void addPushPendingKey(ArrayList<long[]> keys, long dialogId, int mid) {
+        keys.add(new long[]{dialogId, mid});
+    }
+
+    /**
+     * Deletes the durable pending row and its durable registry marker in one storage runnable.
+     * The one-shot UI replacement right is kept: it is consumed exclusively by the UI path, so a
+     * real write that reaches storage before {@code updateInterfaceWithMessages} cannot hide the
+     * {@code replaceMessagesObjects} notification.
+     */
+    public void clearPushPendingForMessage(long dialogId, int mid) {
+        storageQueue.postRunnable(() -> deletePushPendingRow(dialogId, mid));
     }
 
     public void clearLocalDatabase() {
@@ -11916,6 +12354,7 @@ public class MessagesStorage extends BaseController {
         }
 
         boolean databaseInTransaction = false;
+        boolean normalTransaction = false;
         SQLitePreparedStatement state_messages = null;
         SQLitePreparedStatement state_messages_topic = null;
         SQLitePreparedStatement state_messages_tags = null;
@@ -12208,6 +12647,7 @@ public class MessagesStorage extends BaseController {
                 HashMap<TopicKey, ArrayList<Integer>> messagesMediaIdsMapTopics = new HashMap<>();
                 ArrayList<TLRPC.Message> createNewTopics = null;
                 ArrayList<TLRPC.Message> changedSavedMessages = null;
+                ArrayList<long[]> pushPendingToClear = null;
 
                 state_messages = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)");
                 state_messages_topic = database.executeFast("REPLACE INTO messages_topics VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
@@ -12619,6 +13059,7 @@ public class MessagesStorage extends BaseController {
                     }
                     fixUnsupportedMedia(message);
                     long topicId = MessageObject.getTopicId(currentAccount, message, getForumTypeFlags(message.dialog_id));
+                    boolean messageRowWritten = false;
 
                     state_messages.requery();
                     int messageId = message.id;
@@ -12760,7 +13201,14 @@ public class MessagesStorage extends BaseController {
                         } else {
                             statement.bindInteger(pointer++, 0);
                         }
-                        statement.step();
+                        int stepResult = statement.step();
+                        if (!isTopic && stepResult == SQLITE_DONE) {
+                            messageRowWritten = true;
+                        } else if (isTopic && threadMessageId != 0 && stepResult == SQLITE_DONE) {
+                            // This branch intentionally skips messages_v2; the topic row is the
+                            // real row for a thread message.
+                            messageRowWritten = true;
+                        }
 
                         if (repliesData != null) {
                             repliesData.reuse();
@@ -12781,6 +13229,21 @@ public class MessagesStorage extends BaseController {
                             bindMessageTags(state_messages_tags, message);
                             state_messages_tags.step();
                         }
+                    }
+
+                    if (messageRowWritten && PushPlaceholderStore.isRealMessageWrite(mode, scheduled, saved, quickReplies, welcomeMessages)
+                            && pushPlaceholderRegistry.hasPending(message.dialog_id, message.id)) {
+                        // Collected, not deleted: the checked DELETE runs once, after the loop and
+                        // before the commit, so a failed write cannot drop the pending marker and a
+                        // failed commit cannot clear the in-memory registry. No DELETE is issued for
+                        // ordinary messages that have no durable pending row.
+                        if (pushPendingToClear == null) {
+                            pushPendingToClear = new ArrayList<>();
+                        }
+                        // The first pending key activates rollback-on-failure for this normal
+                        // write, so a later step/DELETE/COMMIT error cannot publish or clear.
+                        normalTransaction = withTransaction;
+                        addPushPendingKey(pushPendingToClear, message.dialog_id, message.id);
                     }
 
                     if (message.random_id != 0) {
@@ -13253,9 +13716,27 @@ public class MessagesStorage extends BaseController {
                     state_randoms = null;
                 }
 
+                if (pushPendingToClear != null) {
+                    // The checked DELETE belongs to the same transaction as the rows above. A
+                    // failed DELETE/COMMIT rolls back and the durable marker stays set.
+                    deletePushPendingRowsStrict(pushPendingToClear);
+                }
                 if (withTransaction) {
-                    database.commitTransaction();
+                    if (pushPendingToClear != null) {
+                        database.commitTransactionChecked();
+                    } else {
+                        database.commitTransaction();
+                    }
                     databaseInTransaction = false;
+                    normalTransaction = false;
+                    if (pushPendingToClear != null) {
+                        // Only a confirmed COMMIT publishes the durable-marker removal.
+                        clearPushPendingRegistry(pushPendingToClear);
+                    }
+                } else if (pushPendingToClear != null && !database.isInTransaction()) {
+                    // No owning transaction: the DELETE above was auto-committed, so it is safe to
+                    // acknowledge it. An outer transaction is left to its owner.
+                    clearPushPendingRegistry(pushPendingToClear);
                 }
                 updateFiltersReadCounter(newMessagesCounts, newMentionsCounts, false);
                 loadGroupedMessagesForTopicUpdates(topicUpdatesInUi);
@@ -13277,6 +13758,14 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (Exception e) {
+            if (normalTransaction && database != null && database.isInTransaction()) {
+                try {
+                    database.rollbackTransactionChecked();
+                } catch (SQLiteException ignore) {
+                    // The original write/commit failure is what matters.
+                }
+                normalTransaction = false;
+            }
             checkSQLException(e);
         } finally {
             if (databaseInTransaction) {
@@ -16126,9 +16615,13 @@ public class MessagesStorage extends BaseController {
             SQLitePreparedStatement state_tasks = null;
             SQLitePreparedStatement state3 = null;
             SQLiteCursor cursor = null;
+            boolean historyTransaction = false;
+            boolean historyBranch = false;
+            ArrayList<long[]> pushPendingToClear = null;
             try {
                 final long selfId = getUserConfig().getClientUserId();
                 final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
+                final boolean saved = mode == ChatActivity.MODE_SAVED;
                 final boolean quickReplies = mode == ChatActivity.MODE_QUICK_REPLIES;
                 final boolean welcomeMessages = mode == ChatActivity.MODE_WELCOME_MESSAGES;
                 if (welcomeMessages) {
@@ -16237,6 +16730,7 @@ public class MessagesStorage extends BaseController {
                     database.commitTransaction();
                     broadcastScheduledMessagesChange(dialogId);
                 } else {
+                    historyBranch = true;
                     int mentionCountUpdate = Integer.MAX_VALUE;
                     boolean isTopic = threadMessageId != 0;
                     String holesTableName = isTopic ? "messages_holes_topics" : "messages_holes";
@@ -16247,7 +16741,8 @@ public class MessagesStorage extends BaseController {
                         }
                         return;
                     }
-                    database.beginTransaction();
+                    database.beginTransactionChecked();
+                    historyTransaction = true;
 
                     if (load_type == LOAD_BACKWARD) {
                         int minId = messages.messages.get(messages.messages.size() - 1).id;
@@ -16441,6 +16936,7 @@ public class MessagesStorage extends BaseController {
                         MessageObject.normalizeFlags(message);
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                         message.serializeToStream(data);
+                        boolean messageRowWritten = false;
 
                         for (int i = 0; i < 2; i++) {
                             boolean isTopicMessage = i == 1;
@@ -16533,7 +17029,10 @@ public class MessagesStorage extends BaseController {
                             } else {
                                 currentState.bindInteger(pointer++, 0);
                             }
-                            currentState.step();
+                            int stepResult = currentState.step();
+                            if (!isTopicMessage && stepResult == SQLITE_DONE) {
+                                messageRowWritten = true;
+                            }
 
                             if (i == 0 && state_messages_tags != null) {
                                 bindMessageTags(state_messages_tags, message);
@@ -16553,6 +17052,16 @@ public class MessagesStorage extends BaseController {
                                 message.flags &=~ 268435456;
                                 message.saved_peer_id = null;
                             }
+                        }
+
+                        if (messageRowWritten && PushPlaceholderStore.isRealMessageWrite(mode, scheduled, saved, quickReplies, welcomeMessages)
+                                && pushPlaceholderRegistry.hasPending(dialogId, message.id)) {
+                            // The checked DELETE below runs in this transaction; the registry is
+                            // acknowledged only after commitTransactionChecked() succeeds.
+                            if (pushPendingToClear == null) {
+                                pushPendingToClear = new ArrayList<>();
+                            }
+                            addPushPendingKey(pushPendingToClear, dialogId, message.id);
                         }
 
                         if (threadMessageId == 0 || load_type == -2) {
@@ -16682,7 +17191,15 @@ public class MessagesStorage extends BaseController {
                         updateDialogs = true;
                     }
 
-                    database.commitTransaction();
+                    if (pushPendingToClear != null) {
+                        deletePushPendingRowsStrict(pushPendingToClear);
+                    }
+                    database.commitTransactionChecked();
+                    historyTransaction = false;
+                    if (pushPendingToClear != null) {
+                        clearPushPendingRegistry(pushPendingToClear);
+                        pushPendingToClear = null;
+                    }
 
                     if (createDialog || updateDialogs) {
                         updateDialogsWithDeletedMessages(dialogId, channelId, new ArrayList<>(), null);
@@ -16698,9 +17215,16 @@ public class MessagesStorage extends BaseController {
                     onReactionsUpdate(reactionUpdates);
                 }
             } catch (Exception e) {
+                if (historyTransaction && database != null && database.isInTransaction()) {
+                    try {
+                        database.rollbackTransactionChecked();
+                    } catch (SQLiteException ignore) {
+                        // The write failure is the reason the history load is not published.
+                    }
+                }
                 checkSQLException(e);
             } finally {
-                if (database != null) {
+                if (database != null && !historyBranch) {
                     database.commitTransaction();
                 }
                 if (state_messages_topics != null) {

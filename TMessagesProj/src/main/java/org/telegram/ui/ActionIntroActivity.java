@@ -122,7 +122,7 @@ public class ActionIntroActivity extends BaseFragment implements LocationControl
             actionBar.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
 
             actionBar.setBackButtonImage(R.drawable.ic_ab_back);
-            actionBar.setItemsColor(Theme.getColor(Theme.key_actionBarDefaultIcon), false);
+            actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
             actionBar.setItemsBackgroundColor(Theme.getColor(Theme.key_actionBarDefaultSelector), false);
             actionBar.setCastShadows(false);
             actionBar.setAddToContainer(false);

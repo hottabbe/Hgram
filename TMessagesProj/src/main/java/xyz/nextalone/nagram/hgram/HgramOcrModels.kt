@@ -460,9 +460,12 @@ object HgramOcrModels {
         }
 
         var restartedFor416 = false
-        var attemptBase = 0L
+        var attemptBase = -1L
+        var attemptExpected = 0L
         while (true) {
             checkJob(jobId)
+            attemptBase = -1L
+            attemptExpected = 0L
             val connection = openConnection(jobId, spec.url, offset)
             try {
                 val response = connection.responseCode
@@ -490,6 +493,7 @@ object HgramOcrModels {
                             val expected = range[1] - range[0] + 1
                             validateContentLength(jobId, connection, expected)
                             attemptBase = offset
+                            attemptExpected = expected
                             readBody(jobId, connection, attempt, expected)
                             mergeAndInstall(
                                 spec, target, part, attempt, merged, offset, expected,
@@ -503,6 +507,7 @@ object HgramOcrModels {
                                 throw protocolFailure(jobId, "Invalid full Content-Length")
                             }
                             attemptBase = 0L
+                            attemptExpected = spec.size
                             readBody(jobId, connection, attempt, spec.size)
                             installAttempt(spec, target, part, attempt, progressBase, total, onProgress, jobId)
                             return true
@@ -517,6 +522,7 @@ object HgramOcrModels {
                                 throw protocolFailure(jobId, "Invalid full Content-Length")
                             }
                             attemptBase = 0L
+                            attemptExpected = spec.size
                             readBody(jobId, connection, attempt, spec.size)
                             installAttempt(spec, target, part, attempt, progressBase, total, onProgress, jobId)
                             return true
@@ -532,6 +538,7 @@ object HgramOcrModels {
                             }
                             validateContentLength(jobId, connection, spec.size)
                             attemptBase = 0L
+                            attemptExpected = spec.size
                             readBody(jobId, connection, attempt, spec.size)
                             installAttempt(spec, target, part, attempt, progressBase, total, onProgress, jobId)
                             return true
@@ -541,7 +548,7 @@ object HgramOcrModels {
                 }
             } catch (throwable: Throwable) {
                 if (!preserveResumable(spec, part, attempt, merged, attemptBase,
-                        throwable, jobId)
+                        attemptExpected, throwable)
                 ) {
                     deleteQuietly(attempt)
                     deleteQuietly(merged)
@@ -733,7 +740,7 @@ object HgramOcrModels {
                 output.close()
             } catch (ignored: Throwable) {
             }
-            throw e
+            throw TransportFailure("Cannot open body", e)
         }
         try {
             input.use { source ->
@@ -788,19 +795,20 @@ object HgramOcrModels {
         attempt: File,
         merged: File,
         baseOffset: Long,
+        expected: Long,
         throwable: Throwable,
-        jobId: Long,
     ): Boolean {
-        if (throwable !is CancellationException && throwable !is TransportFailure &&
-            !isCancelled(jobId)
-        ) {
+        // A validated response is required: an invalid/overlong transfer must never advance .part.
+        if (throwable !is CancellationException && throwable !is TransportFailure) {
             return false
         }
-        if (!attempt.isFile) {
+        if (!attempt.isFile || baseOffset < 0L || expected <= 0L) {
             return false
         }
         val attemptLength = attempt.length()
-        if (baseOffset < 0L || attemptLength <= 0L ||
+        // Exactly `expected` bytes are only accepted after readBody's overlong check; a cancel
+        // that lands in that window must not persist the rejected tail.
+        if (attemptLength <= 0L || attemptLength >= expected ||
             baseOffset + attemptLength > spec.size
         ) {
             return false

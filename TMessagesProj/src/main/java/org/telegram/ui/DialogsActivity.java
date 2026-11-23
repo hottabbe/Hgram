@@ -767,6 +767,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     private boolean searchIsShowed;
     private boolean searchWasFullyShowed;
     public boolean whiteActionBar;
+    private boolean searchActionBarColorOwned;
     private boolean searchFiltersWasShowed;
     private float progressToActionMode;
     private ValueAnimator actionBarColorAnimator;
@@ -3322,8 +3323,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         actionBar.setUseContainerForTitles();
         actionBar.setItemsBackgroundColor(getThemedColor(Theme.key_actionBarDefaultSelector), false);
         actionBar.setItemsBackgroundColor(getThemedColor(Theme.key_actionBarActionModeDefaultSelector), true);
-        actionBar.setItemsColor(getThemedColor(Theme.key_actionBarDefaultIcon), false);
-        actionBar.setItemsColor(getThemedColor(Theme.key_actionBarActionModeDefaultIcon), true);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarActionModeDefaultIcon, true);
         actionBar.createAdditionalSubTitleOverlayContainer();
         actionBar.getAdditionalSubTitleOverlayContainer().setTranslationX(dp(4));
         actionBar.getAdditionalSubTitleOverlayContainer().setTranslationY(-dp(3));
@@ -5689,7 +5690,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
         if (folderId != 0 || communityId != 0) {
             viewPages[0].listView.setGlowColor(getThemedColor(Theme.key_windowBackgroundWhite));
-            actionBar.setItemsColor(getThemedColor(Theme.key_actionBarDefaultArchivedIcon), false);
+            actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultArchivedIcon, false);
             actionBar.setItemsBackgroundColor(getThemedColor(Theme.key_actionBarDefaultArchivedSelector), false);
             actionBar.setSearchTextColor(getThemedColor(Theme.key_actionBarDefaultArchivedSearch), false);
             actionBar.setSearchTextColor(getThemedColor(Theme.key_actionBarDefaultArchivedSearchPlaceholder), true);
@@ -7960,6 +7961,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             whiteActionBar = !onlyDialogsAdapter || hasStories;
             if (whiteActionBar) {
                 searchFiltersWasShowed = true;
+                searchActionBarColorOwned = true;
             }
             if (searchTabsView == null && searchViewPager != null && !onlyDialogsAdapter && communityId == 0) {
                 searchTabsView = searchViewPager.createTabsView(false, ViewPagerFixed.SELECTOR_TYPE_BUBBLE_STYLE);
@@ -8198,7 +8200,15 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
 
     private void setSearchAnimationProgress(float progress, boolean full) {
         searchAnimationProgress = progress;
-        if (whiteActionBar && actionBar != null) {
+        if (progress <= 0f && !searchIsShowed && searchActionBarColorOwned && actionBar != null) {
+            actionBar.setItemsColorThemeKey(folderId != 0 || communityId != 0
+                    ? Theme.key_actionBarDefaultArchivedIcon : Theme.key_actionBarDefaultIcon, false);
+            actionBar.setItemsColorThemeKey(Theme.key_actionBarActionModeDefaultIcon, true);
+            actionBar.setItemsBackgroundColor(getThemedColor(folderId != 0 || communityId != 0
+                    ? Theme.key_actionBarDefaultArchivedSelector
+                    : Theme.key_actionBarDefaultSelector), false);
+            searchActionBarColorOwned = false;
+        } else if (progress > 0f && whiteActionBar && actionBar != null) {
             int color1 = (folderId != 0 || communityId != 0) ? getThemedColor(Theme.key_actionBarDefaultArchivedIcon) : getThemedColor(Theme.key_actionBarDefaultIcon);
             actionBar.setItemsColor(ColorUtils.blendARGB(color1, getThemedColor(Theme.key_actionBarActionModeDefaultIcon), searchAnimationProgress), false);
             actionBar.setItemsColor(ColorUtils.blendARGB(getThemedColor(Theme.key_actionBarActionModeDefaultIcon), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), searchAnimationProgress), true);

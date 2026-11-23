@@ -22397,6 +22397,9 @@ public class ChatActivity extends BaseFragment implements
                 }
             }
             if (messagesDict[loadIndex].indexOfKey(messageId) >= 0) {
+                // PUSH-CHAT-3: a restored push preview keeps this id, so the loaded server object is
+                // skipped here on purpose. MessagesController publishes one replaceMessagesObjects
+                // packet for it, which swaps the bubble in place and keeps the anchor.
                 continue;
             }
             if (obj.messageOwner instanceof TLRPC.TL_messageEmpty) {
@@ -41844,41 +41847,78 @@ public class ChatActivity extends BaseFragment implements
                 Toast.makeText(getContext(), LocaleController.getString(R.string.HgramSummarizerSecretChat), Toast.LENGTH_SHORT).show();
                 return;
             }
+            final int messageId = msg.getId();
+            final Runnable refresh = () -> {
+                final View messageView = findCell(messageId, false);
+                if (messageView instanceof ChatMessageCell) {
+                    forceUpdate((ChatMessageCell) messageView, true, true);
+                }
+            };
+            // SUMM-NOCHAIN-1: cell already carries the summarised message; no chain anchor lookup.
             final xyz.nextalone.nagram.hgram.HgramShortMessageMerger.Chain chain = cell.getHgramShortChain();
             // Hgram summary lives in private dialogs only; byReply is the upstream summary row.
             final boolean hgramPrivate = !byReply && TextUtils.isEmpty(searchingHashtag)
                     && DialogObject.isUserDialog(msg.getDialogId());
             if (hgramPrivate) {
-                // SUMM-NOCHAIN-1: cell already carries the summarised message; no chain anchor lookup.
-                final int messageId = msg.getId();
-                final Runnable refresh = () -> {
-                    final View messageView = findCell(messageId, false);
-                    if (messageView instanceof ChatMessageCell) {
-                        forceUpdate((ChatMessageCell) messageView, true, true);
-                    }
-                };
-                // An open summary is closed by origin: a process-local result needs no
-                // threshold, credentials, network or custom params write, while a real
-                // upstream summary in a DM is closed through the normal persisted path.
-                if (msg.messageOwner.summarizedOpen && msg.messageOwner.summaryText != null) {
-                    if (xyz.nextalone.nagram.hgram.HgramSummarizer.closeLocal(msg, chain)) {   // only local marker
+                final boolean voiceSummaryEnabled =
+                        xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isVoiceSummaryEnabled();
+                // VOICE-SUMM-2: one tap, one decision, text summary first. While a text summary is
+                // open the voice branch must not steal the tap just because the transcript became
+                // final (and thereby canSummarize() true) — the tap has to close the text summary.
+                final xyz.nextalone.nagram.hgram.HgramVoiceSummaryPriority.Action action =
+                        xyz.nextalone.nagram.hgram.HgramVoiceSummaryPriority.decide(
+                                msg.messageOwner.summarizedOpen && msg.messageOwner.summaryText != null,
+                                xyz.nextalone.nagram.hgram.HgramSummarizer.isInFlight(msg),
+                                voiceSummaryEnabled
+                                        && xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isShowing(msg),
+                                voiceSummaryEnabled
+                                        && xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isInFlight(msg),
+                                voiceSummaryEnabled
+                                        && xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.canSummarize(msg),
+                                xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(msg, chain, hgramPrivate));
+                switch (action) {
+                    case CLOSE_TEXT:
+                        // An open summary is closed by origin: a process-local result needs no
+                        // threshold, credentials, network or custom params write, while a real
+                        // upstream summary in a DM is closed through the normal persisted path.
+                        if (xyz.nextalone.nagram.hgram.HgramSummarizer.closeLocal(msg, chain)) {   // only local marker
+                            msg.updateTranslation(true);
+                            refresh.run();
+                            return;
+                        }
+                        // real upstream summary in DM: close and persist
+                        msg.messageOwner.summarizedOpen = false;
                         msg.updateTranslation(true);
+                        getMessagesStorage().updateMessageCustomParams(msg.getDialogId(), msg.messageOwner);
                         refresh.run();
                         return;
-                    }
-                    // real upstream summary in DM: close and persist
-                    msg.messageOwner.summarizedOpen = false;
-                    msg.updateTranslation(true);
-                    getMessagesStorage().updateMessageCustomParams(msg.getDialogId(), msg.messageOwner);
-                    refresh.run();
-                    return;
+                    case REFRESH_TEXT:
+                        // A request already in flight owns the button: a repeated tap only redraws
+                        // the loading look, it never starts a second request and never closes the bubble.
+                        refresh.run();
+                        return;
+                    case VOICE:
+                        // VOICE-SUMM-1: process-local transcript summary; no chain, no custom params.
+                        xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.toggle(msg, refresh);
+                        return;
+                    case TEXT:
+                        xyz.nextalone.nagram.hgram.HgramSummarizer.invalidateStaleSummary(msg, chain);
+                        msg.updateTranslation(true);
+                        // toggle() notifies this callback synchronously right after inFlight.add, so the
+                        // loading look is drawn in the same frame as the tap, before the network call.
+                        xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(msg, chain, refresh);
+                        return;
+                    case NONE:
+                    default:
+                        break;
                 }
-                if (xyz.nextalone.nagram.hgram.HgramSummarizer.canSummarize(msg, chain, hgramPrivate)) {
-                    xyz.nextalone.nagram.hgram.HgramSummarizer.invalidateStaleSummary(msg, chain);
-                    msg.updateTranslation(true);
-                    xyz.nextalone.nagram.hgram.HgramSummarizer.toggle(msg, chain, refresh);
-                    return;
-                }
+            } else if (xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isVoiceSummaryEnabled()
+                    && (xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.canSummarize(msg)
+                    || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isShowing(msg)
+                    || xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.isInFlight(msg))) {
+                // Reply-summary row / non-private tap: keep the voice toggle before TranslateController.
+                xyz.nextalone.nagram.hgram.HgramVoiceSummarizer.toggle(msg, refresh);
+                return;
             }
             if (!TranslateController.isSummarizable(msg)) {
                 return;
@@ -44975,7 +45015,6 @@ public class ChatActivity extends BaseFragment implements
             themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_TITLECOLOR, null, null, null, null, Theme.key_actionBarDefaultTitle));
             themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_SUBTITLECOLOR, null, null, null, null, Theme.key_actionBarDefaultSubtitle));
         } else {
-            themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_ITEMSCOLOR, null, null, null, null, Theme.key_actionBarActionModeDefaultIcon));
             themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_SELECTORCOLOR, null, null, null, null, Theme.key_actionBarActionModeDefaultSelector));
             themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_TITLECOLOR, null, null, null, null, Theme.key_actionBarActionModeDefaultIcon));
             themeDescriptions.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_SUBTITLECOLOR, null, null, null, null, Theme.key_actionBarActionModeDefaultIcon));

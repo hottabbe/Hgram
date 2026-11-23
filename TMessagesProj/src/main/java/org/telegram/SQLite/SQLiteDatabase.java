@@ -115,8 +115,65 @@ public class SQLiteDatabase {
         commitTransaction(sqliteHandle);
     }
 
+    /**
+     * Strict BEGIN used by the push placeholder path. Unlike {@link #beginTransaction()} it never
+     * silently commits a previous transaction: a nested begin is an error and the flag is set only
+     * after SQLite reported success, so a failed BEGIN leaves the connection outside a transaction.
+     */
+    public void beginTransactionChecked() throws SQLiteException {
+        checkOpened();
+        if (inTransaction) {
+            throw new SQLiteException("database already in transaction");
+        }
+        int errorCode = beginTransactionChecked(sqliteHandle);
+        if (errorCode != 0) {
+            throw new SQLiteException(errorCode, "BEGIN failed with error code " + errorCode);
+        }
+        inTransaction = true;
+    }
+
+    /**
+     * Strict COMMIT. On failure the flag stays set and the exception is rethrown without retrying:
+     * the caller owns the rollback decision and must not publish anything before a confirmed commit.
+     */
+    public void commitTransactionChecked() throws SQLiteException {
+        checkOpened();
+        if (!inTransaction) {
+            return;
+        }
+        int errorCode = commitTransactionChecked(sqliteHandle);
+        if (errorCode != 0) {
+            throw new SQLiteException(errorCode, "COMMIT failed with error code " + errorCode);
+        }
+        inTransaction = false;
+    }
+
+    /**
+     * Strict ROLLBACK. Never falls back to COMMIT; on failure the flag stays set and the exception
+     * is rethrown so the caller can report the still-open transaction.
+     */
+    public void rollbackTransactionChecked() throws SQLiteException {
+        checkOpened();
+        if (!inTransaction) {
+            return;
+        }
+        int errorCode = rollbackTransactionChecked(sqliteHandle);
+        if (errorCode != 0) {
+            throw new SQLiteException(errorCode, "ROLLBACK failed with error code " + errorCode);
+        }
+        inTransaction = false;
+    }
+
+    /** True while this connection owns an open transaction (checked or legacy). */
+    public boolean isInTransaction() {
+        return inTransaction;
+    }
+
 	native long opendb(String fileName, String tempDir) throws SQLiteException;
 	native void closedb(long sqliteHandle) throws SQLiteException;
     native void beginTransaction(long sqliteHandle);
     native void commitTransaction(long sqliteHandle);
+    native int beginTransactionChecked(long sqliteHandle);
+    native int commitTransactionChecked(long sqliteHandle);
+    native int rollbackTransactionChecked(long sqliteHandle);
 }

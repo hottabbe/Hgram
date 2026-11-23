@@ -1698,6 +1698,12 @@ public class DatabaseMigrationHelper {
             database.executeFast("PRAGMA user_version = 179").stepThis().dispose();
             version = 179;
         }
+        if (version == 179) {
+            for (String query : PushPlaceholderStore.MIGRATION_179_TO_180_SQL) {
+                database.executeFast(query).stepThis().dispose();
+            }
+            version = 180;
+        }
 
         return version;
     }

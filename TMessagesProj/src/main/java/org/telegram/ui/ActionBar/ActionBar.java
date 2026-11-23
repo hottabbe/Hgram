@@ -159,6 +159,13 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
     protected int itemsActionModeBackgroundColor;
     protected int itemsColor;
     protected int itemsActionModeColor;
+    enum ItemsColorSource { THEME, EXPLICIT }
+    private ItemsColorSource itemsColorSource = ItemsColorSource.THEME;
+    private ItemsColorSource itemsActionModeColorSource = ItemsColorSource.THEME;
+    private int itemsColorThemeKey = Theme.key_actionBarDefaultIcon;
+    private int itemsActionModeColorThemeKey = Theme.key_actionBarActionModeDefaultIcon;
+    private boolean sharedBackButtonActionModeVisible;
+    private int visibleBackButtonTint;
     private boolean isBackOverlayVisible;
     protected BaseFragment parentFragment;
     public ActionBarMenuOnItemClick actionBarMenuOnItemClick;
@@ -310,11 +317,10 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
             MenuDrawable menuDrawable = (MenuDrawable) drawable;
             menuDrawable.setBackColor(actionBarColor);
             menuDrawable.setIconColor(itemsColor);
-        } else if (drawable instanceof BitmapDrawable || drawable instanceof VectorDrawable) {
-            backButtonImageView.setColorFilter(new PorterDuffColorFilter(itemsColor, PorterDuff.Mode.SRC_IN));
         }
+        applyVisibleBackButtonTint();
         if (mAlwaysApplyColorFilterToBackButton) {
-            backButtonImageView.setColorFilter(new PorterDuffColorFilter(itemsColor, PorterDuff.Mode.SRC_IN));
+            applyVisibleBackButtonTint();
         }
 
         checkBackButtonLayerType();
@@ -484,7 +490,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
         }
         backButtonImageView.setVisibility(resource == 0 ? GONE : VISIBLE);
         backButtonImageView.setImageResource(resource);
-        backButtonImageView.setColorFilter(new PorterDuffColorFilter(itemsColor, PorterDuff.Mode.SRC_IN));
+        applyVisibleBackButtonTint();
         checkBackButtonLayerType();
     }
 
@@ -869,6 +875,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
             return;
         }
         actionModeVisible = true;
+        applyVisibleBackButtonTint();
         checkMenuItemsWidth();
         if (animated) {
             ArrayList<Animator> animators = new ArrayList<>();
@@ -1040,6 +1047,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
         }
         actionMode.hideAllPopupMenus();
         actionModeVisible = false;
+        applyVisibleBackButtonTint();
         checkMenuItemsWidth();
         ArrayList<Animator> animators = new ArrayList<>();
         animators.add(ObjectAnimator.ofFloat(actionMode, View.ALPHA, 0.0f));
@@ -1843,8 +1851,63 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
     }
 
     public void setItemsColor(int color, boolean isActionMode) {
+        setItemsColor(color, isActionMode, ItemsColorSource.EXPLICIT, isActionMode
+                ? itemsActionModeColorThemeKey : itemsColorThemeKey);
+    }
+
+    /** Standard theme-path setter: records the real key so live refresh keeps using it. */
+    public void setItemsColorThemeKey(int key, boolean isActionMode) {
+        setItemsColor(Theme.getColor(key, resourcesProvider), isActionMode,
+                ItemsColorSource.THEME, key);
+    }
+
+    /** ThemeDescription applies the interpolated frame color for the described key. */
+    void applyDescribedItemsColor(int key, int color, boolean isActionMode) {
+        final ItemsColorSource source = isActionMode
+                ? itemsActionModeColorSource : itemsColorSource;
+        final int current = isActionMode ? itemsActionModeColor : itemsColor;
+        if (!isThemeOwned(source, current)) {
+            return;
+        }
+        setItemsColor(color, isActionMode, ItemsColorSource.THEME, key);
+    }
+
+    static boolean shouldApplyActionModeBackTint(boolean isActionMode, boolean actionModeVisible) {
+        return isActionMode && actionModeVisible;
+    }
+
+    /** Visibility of the shared Profile QR selection mode; not an items-color override. */
+    public void setSharedBackButtonActionModeVisible(boolean visible) {
+        sharedBackButtonActionModeVisible = visible;
+        applyVisibleBackButtonTint();
+    }
+
+    private boolean isVisibleActionMode() {
+        return actionModeVisible || sharedBackButtonActionModeVisible;
+    }
+
+    /** One image-slot tint owner for vector/bitmap back buttons, driven by visible mode. */
+    private void applyVisibleBackButtonTint() {
+        if (backButtonImageView == null) {
+            return;
+        }
+        final Drawable drawable = backButtonImageView.getDrawable();
+        if (drawable instanceof BitmapDrawable || drawable instanceof VectorDrawable) {
+            final int color = isVisibleActionMode() ? itemsActionModeColor : itemsColor;
+            visibleBackButtonTint = color;
+            backButtonImageView.setColorFilter(new PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN));
+        }
+    }
+
+    int getVisibleBackButtonTintForTests() {
+        return visibleBackButtonTint;
+    }
+
+    private void setItemsColor(int color, boolean isActionMode, ItemsColorSource source, int themeKey) {
         if (isActionMode) {
             itemsActionModeColor = color;
+            itemsActionModeColorSource = source;
+            itemsActionModeColorThemeKey = themeKey;
             if (actionMode != null) {
                 actionMode.updateItemsColor();
             }
@@ -1852,32 +1915,30 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
                 Drawable drawable = backButtonImageView.getDrawable();
                 if (drawable instanceof BackDrawable) {
                     ((BackDrawable) drawable).setRotatedColor(color);
-                } else if (drawable instanceof BitmapDrawable || drawable instanceof VectorDrawable) {
-                    backButtonImageView.setColorFilter(new PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN));
                 }
             }
         } else {
             itemsColor = color;
-            if (backButtonImageView != null) {
-                if (itemsColor != 0) {
-                    Drawable drawable = backButtonImageView.getDrawable();
-                    if (drawable instanceof BackDrawable) {
-                        ((BackDrawable) drawable).setColor(color);
-                    } else if (drawable instanceof MenuDrawable) {
-                        ((MenuDrawable) drawable).setIconColor(color);
-                    } else if (drawable instanceof BitmapDrawable || drawable instanceof VectorDrawable) {
-                        backButtonImageView.setColorFilter(new PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN));
-                    }
+            itemsColorSource = source;
+            itemsColorThemeKey = themeKey;
+            if (backButtonImageView != null && itemsColor != 0) {
+                Drawable drawable = backButtonImageView.getDrawable();
+                if (drawable instanceof BackDrawable) {
+                    ((BackDrawable) drawable).setColor(color);
+                } else if (drawable instanceof MenuDrawable) {
+                    ((MenuDrawable) drawable).setIconColor(color);
                 }
             }
             if (menu != null) {
                 menu.updateItemsColor();
             }
         }
+        onItemsColorUpdated(color, isActionMode);
+        applyVisibleBackButtonTint();
+    }
 
-        if (backButtonImageView != null && mAlwaysApplyColorFilterToBackButton) {
-            backButtonImageView.setColorFilter(new PorterDuffColorFilter(itemsColor, PorterDuff.Mode.SRC_IN));
-        }
+    /** Profile overrides this to keep its TTL/QR in sync for theme-owned and explicit colors. */
+    protected void onItemsColorUpdated(int color, boolean isActionMode) {
     }
 
     public void setCastShadows(boolean value) {
@@ -2455,6 +2516,7 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
 
     @Override
     public void updateColors() {
+        refreshThemeItemsColors();
         adaptive_updateColor();
         if (glassDrawable != null) {
             glassDrawable.updateColors();
@@ -2468,6 +2530,39 @@ public class ActionBar extends FrameLayout implements FactorAnimator.Target, The
         if (additionalSubTitleOverlayContainer != null) {
             additionalSubTitleOverlayContainer.updateColors();
         }
+    }
+
+    /**
+     * Reapplies only theme-owned slots, each from the key that actually produced its tint.
+     * Explicit tints are never compared by value and never overwritten.
+     */
+    private void refreshThemeItemsColors() {
+        if (isThemeOwned(itemsColorSource, itemsColor)) {
+            final int color = Theme.getColor(itemsColorThemeKey, resourcesProvider);
+            if (color != itemsColor) {
+                setItemsColor(color, false, ItemsColorSource.THEME, itemsColorThemeKey);
+            }
+        }
+        if (isThemeOwned(itemsActionModeColorSource, itemsActionModeColor)) {
+            final int color = Theme.getColor(itemsActionModeColorThemeKey, resourcesProvider);
+            if (color != itemsActionModeColor) {
+                setItemsColor(color, true, ItemsColorSource.THEME,
+                        itemsActionModeColorThemeKey);
+            }
+        }
+    }
+
+    static boolean isThemeOwned(ItemsColorSource source, int current) {
+        return source == ItemsColorSource.THEME || current == 0;
+    }
+
+    static int resolveThemeItemsColor(int current, ItemsColorSource source, int newTheme) {
+        return source == ItemsColorSource.EXPLICIT && current != 0 ? current : newTheme;
+    }
+
+    /** Legacy pure helper retained for existing tests; source-aware refresh uses the overload. */
+    static int resolveThemeItemsColor(int current, int previousTheme, int newTheme) {
+        return current == 0 || current == previousTheme ? newTheme : current;
     }
 
     private ActionBarAnimatedSubtitleOverlayContainer additionalSubTitleOverlayContainer;

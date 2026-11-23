@@ -94,6 +94,28 @@ public final class HgramSummarizer {
     }
 
     private static final java.util.Set<RequestKey> inFlight = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+    /**
+     * Test seams for the background request path: production starts a named thread and calls the
+     * live LLM. Package-private so unit tests can hold a request open and count launches without
+     * touching the real network; the production path is exactly the two defaults below.
+     */
+    interface RequestLauncher {
+        void launch(Runnable task);
+    }
+
+    interface RequestCompletion {
+        String complete(String key, String model, String systemPrompt, String userPrompt) throws Throwable;
+    }
+
+    private static final RequestLauncher THREAD_LAUNCHER =
+            task -> new Thread(task, "HgramSummarizer").start();
+    private static final RequestCompletion LIVE_COMPLETION =
+            (key, model, systemPrompt, userPrompt) ->
+                    LLMTranslator.INSTANCE.completeBlocking(key, model, systemPrompt, userPrompt);
+    private static volatile RequestLauncher requestLauncher = THREAD_LAUNCHER;
+    private static volatile RequestCompletion requestCompletion = LIVE_COMPLETION;
+
     /** Messages whose summary was produced by this process; the only marker persistence skips. */
     private static final Set<SummaryKey> localSummaries = Collections.synchronizedSet(new HashSet<>());
     /** Access-order caches are capped so a long session cannot grow them without bound. */
@@ -442,6 +464,23 @@ public final class HgramSummarizer {
         return fingerprints.size();
     }
 
+    /** Test hook: holds background requests instead of starting them. */
+    static void setRequestLauncherForTests(RequestLauncher launcher) {
+        requestLauncher = launcher == null ? THREAD_LAUNCHER : launcher;
+    }
+
+    /** Test hook: answers requests without the network. */
+    static void setRequestCompletionForTests(RequestCompletion completion) {
+        requestCompletion = completion == null ? LIVE_COMPLETION : completion;
+    }
+
+    /** Test hook: restores the production seams and drops in-flight bookkeeping between tests. */
+    static void resetRequestHooksForTests() {
+        requestLauncher = THREAD_LAUNCHER;
+        requestCompletion = LIVE_COMPLETION;
+        inFlight.clear();
+    }
+
     private static SummaryKey summaryKey(TLRPC.Message owner) {
         return owner == null ? null : new SummaryKey(owner.dialog_id, owner.id);
     }
@@ -631,6 +670,9 @@ public final class HgramSummarizer {
             invalidateStaleSummary(message, chain);
         }
         if (isInFlight(message)) {
+            // A repeat tap must not start a second request or close the bubble. It still asks the
+            // UI to redraw, because the loading look is derived from inFlight, not from the view.
+            onUpdated.run();
             return true;
         }
         if (TextUtils.isEmpty(key)) {
@@ -643,38 +685,49 @@ public final class HgramSummarizer {
         }
         final RequestKey scopedKey = requestKey(message);
         if (!inFlight.add(scopedKey)) {
+            onUpdated.run();
             return true;
         }
-        // Capture the source before the network call: the cell may be rebound while we wait.
-        final String requestFingerprint = sourceFingerprint(message, chain);
         try {
+            // Tell the UI before any network work: the button must switch to its loading look in
+            // the same frame as the tap. inFlight is the single source of truth for that look.
+            onUpdated.run();
+            // Capture the source before the network call: the cell may be rebound while we wait.
+            final String requestFingerprint = sourceFingerprint(message, chain);
             final String userPrompt = buildRequestText(message, chain);
             final String systemPrompt = truncate(HgramConfig.getSummarizerSystemPrompt(), MAX_SYSTEM_PROMPT_CHARS);
-            new Thread(() -> {
+            requestLauncher.launch(() -> {
                 String result = null;
                 String errorKind = null;
                 try {
-                    result = LLMTranslator.INSTANCE.completeBlocking(key, model, systemPrompt, userPrompt);
+                    result = requestCompletion.complete(key, model, systemPrompt, userPrompt);
                 } catch (Throwable t) {
                     errorKind = classifyError(t);
                 }
                 final String finalResult = result;
                 final String finalErrorKind = errorKind;
                 AndroidUtilities.runOnUIThread(() -> {
+                    // Drop inFlight first: the redraw below must already see the idle/done state,
+                    // otherwise an error would leave the spinner on screen for another frame.
+                    inFlight.remove(scopedKey);
                     try {
                         if (TextUtils.isEmpty(finalResult)) {
                             toast(errorMessage(finalErrorKind));
                         } else {
                             applyIfFresh(message, finalResult, chain, requestFingerprint);
                         }
-                        onUpdated.run();
                     } finally {
-                        inFlight.remove(scopedKey);
+                        onUpdated.run();
                     }
                 });
-            }, "HgramSummarizer").start();
+            });
         } catch (Throwable t) {
             inFlight.remove(scopedKey);
+            try {
+                onUpdated.run();
+            } catch (Throwable ignored) {
+                // The caller's redraw failed; the request is already out of inFlight.
+            }
             return false;
         }
         return true;

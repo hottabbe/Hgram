@@ -1525,7 +1525,7 @@ public class PushListenerController {
                                     messageOwner.flags |= 256;
                                     if (chat_from_group_id != 0) {
                                         messageOwner.from_id = new TLRPC.TL_peerChat();
-                                        messageOwner.from_id.chat_id = chat_id;
+                                        messageOwner.from_id.chat_id = chat_from_group_id;
                                     } else if (chat_from_broadcast_id != 0) {
                                         messageOwner.from_id = new TLRPC.TL_peerChannel();
                                         messageOwner.from_id.channel_id = chat_from_broadcast_id;
@@ -1551,6 +1551,9 @@ public class PushListenerController {
                                     messageObject.isLiveStoryPush = loc_key.equals("STORY_LIVE");
                                     messageObject.isStoryMentionPush = loc_key.equals("MESSAGE_STORY_MENTION");
                                     messageObject.isStoryPushHidden = loc_key.equals("STORY_HIDDEN_AUTHOR");
+                                    // PUSH-CHAT-1: async, never blocks countDownLatch; notifications keep
+                                    // their own FCM object and are processed below unchanged.
+                                    PushChatSync.onPushMessage(currentAccount, messageObject);
                                     ArrayList<MessageObject> arrayList = new ArrayList<>();
                                     arrayList.add(messageObject);
                                     canRelease = false;

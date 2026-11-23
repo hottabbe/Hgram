@@ -1353,9 +1353,19 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                 case ROW_GIGAAM_MODEL:
                     ((TextSettingsCell) holder.itemView).setTextAndValue(LocaleController.getString(R.string.HgramGigaAmModel), gigaAmStatusText(), divider);
                     break;
-                case ROW_OCR_MODELS:
-                    ((TextSettingsCell) holder.itemView).setTextAndValue(LocaleController.getString(R.string.HgramOcrModelsTitle), ocrModelsStatusText(), divider);
+                case ROW_OCR_MODELS: {
+                    final String status = ocrModelsStatusText();
+                    final int separator = status.lastIndexOf(" · ");
+                    final TextSettingsCell cell = (TextSettingsCell) holder.itemView;
+                    final String title = LocaleController.getString(R.string.HgramOcrModelsTitle);
+                    if (separator > 0 && separator + 3 < status.length()) {
+                        cell.setTextAndValueAction(title, status.substring(0, separator), status.substring(separator + 3), divider);
+                    } else {
+                        cell.setTextAndValue(title, status, divider);
+                        cell.setValueEllipsizeToHalf(true);
+                    }
                     break;
+                }
                 case ROW_SHERPA_DEVICE:
                     ((TextSettingsCell) holder.itemView).setTextAndValue(LocaleController.getString(R.string.HgramSherpaDevice), sherpaDeviceName(), divider);
                     break;

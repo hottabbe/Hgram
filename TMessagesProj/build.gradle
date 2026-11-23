@@ -33,7 +33,7 @@ idea {
 }
 
 def verName = APP_VERSION_NAME
-def verCode = 1310
+def verCode = 1311
 
 
 def officialVer = APP_VERSION_NAME
@@ -352,6 +352,68 @@ android {
     }
 
     namespace "org.telegram.messenger"
+}
+
+def hgramNativeMarker = "signature verification skipped".getBytes("US-ASCII")
+
+def hgramContainsMarker = { File file, byte[] marker ->
+    def stream = new java.io.BufferedInputStream(new java.io.FileInputStream(file))
+    try {
+        byte[] buffer = new byte[64 * 1024]
+        int carry = 0
+        int read
+        boolean found = false
+        while (!found && (read = stream.read(buffer, carry, buffer.length - carry)) > 0) {
+            int total = carry + read
+            int limit = total - marker.length
+            for (int i = 0; i <= limit && !found; i++) {
+                boolean match = true
+                for (int j = 0; j < marker.length; j++) {
+                    if (buffer[i + j] != marker[j]) {
+                        match = false
+                        break
+                    }
+                }
+                found = match
+            }
+            if (!found) {
+                carry = Math.min(marker.length - 1, total)
+                System.arraycopy(buffer, total - carry, buffer, 0, carry)
+            }
+        }
+        return found
+    } finally {
+        stream.close()
+    }
+}
+
+def verifyHgramNativeRelease = tasks.register("verifyHgramNativeRelease") {
+    group = "verification"
+    description = "Fails release builds that package debug libtmessages prebuilts."
+    doLast {
+        File libsDir = project.file("src/main/libs")
+        if (!libsDir.exists()) {
+            logger.lifecycle("Hgram native guard: src/main/libs is absent, OK")
+            return
+        }
+        List<File> libs = project.fileTree(libsDir) { include "**/libtmessages*.so" }.files.toList()
+        if (libs.isEmpty()) {
+            logger.lifecycle("Hgram native guard: no libtmessages*.so, OK")
+            return
+        }
+        List<File> offenders = libs.findAll { hgramContainsMarker(it, hgramNativeMarker) }
+        if (!offenders.isEmpty()) {
+            throw new GradleException("Hgram native guard: debug prebuilt contains '" +
+                    "signature verification skipped" + "': " +
+                    offenders.collect { it.absolutePath }.join(", ") +
+                    ". Rebuild release native libraries with bin/libs/native.sh.")
+        }
+        logger.lifecycle("Hgram native guard: " + libs.size() + " release prebuilt(s), OK")
+    }
+}
+
+tasks.matching { it.name == "preReleaseBuild" || it.name == "mergeReleaseNativeLibs" }.configureEach {
+    dependsOn verifyHgramNativeRelease
 }
 
 androidComponents {

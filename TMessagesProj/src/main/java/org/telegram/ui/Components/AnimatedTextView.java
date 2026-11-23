@@ -437,7 +437,14 @@ public class AnimatedTextView extends View {
         }
 
         public void setText(CharSequence text, boolean animated, boolean moveDown) {
+            setText(text, animated, moveDown, false);
+        }
+
+        public void setText(CharSequence text, boolean animated, boolean moveDown, boolean forceLayout) {
             if (this.currentText == null || text == null) {
+                animated = false;
+            }
+            if (forceLayout) {
                 animated = false;
             }
             if (text == null) {
@@ -570,7 +577,12 @@ public class AnimatedTextView extends View {
                 toSetTextMoveDown = false;
                 rawT = t = 0;
 
-                if (!text.equals(currentText)) {
+                if (forceLayout || !text.equals(currentText)) {
+                    if (forceLayout && currentParts != null) {
+                        for (int i = 0; i < currentParts.length; ++i) {
+                            currentParts[i].detach();
+                        }
+                    }
                     clearCurrentParts();
                     currentParts = new Part[1];
                     currentParts[0] = new Part(makeLayout(currentText = text, width), 0, -1);
@@ -1240,6 +1252,7 @@ public class AnimatedTextView extends View {
     private Drawable backgroundDrawable;
     private final AnimatedTextDrawable drawable;
     private int lastMaxWidth, maxWidth;
+    private boolean relayoutOnBoundsChange;
 
     private CharSequence toSetText;
     private boolean toSetMoveDown;
@@ -1275,6 +1288,19 @@ public class AnimatedTextView extends View {
         maxWidth = width;
     }
 
+    public void setAdaptWidth(boolean adapt) {
+        adaptWidth = adapt;
+    }
+
+    /**
+     * Opt-in for cells that clamp the value width: rebuild the text layout when the measured
+     * bounds change, even if the text itself is unchanged. This keeps ellipsization in sync
+     * with a new limit without requesting another layout pass from {@link #onMeasure}.
+     */
+    public void setRelayoutOnBoundsChange(boolean relayout) {
+        relayoutOnBoundsChange = relayout;
+    }
+
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int width = MeasureSpec.getSize(widthMeasureSpec);
@@ -1284,7 +1310,7 @@ public class AnimatedTextView extends View {
         }
         if (lastMaxWidth != width && getLayoutParams().width != 0) {
             drawable.setBounds(getPaddingLeft(), getPaddingTop(), width - getPaddingRight(), height - getPaddingBottom());
-            drawable.setText(drawable.getText(), false, true);
+            drawable.setText(drawable.getText(), false, true, relayoutOnBoundsChange);
         }
         lastMaxWidth = width;
         if (adaptWidth && MeasureSpec.getMode(widthMeasureSpec) == MeasureSpec.AT_MOST) {

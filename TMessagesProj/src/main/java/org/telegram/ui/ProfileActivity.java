@@ -2561,12 +2561,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             }
 
             @Override
-            public void setItemsColor(int color, boolean isActionMode) {
-                super.setItemsColor(color, isActionMode);
+            protected void onItemsColorUpdated(int color, boolean isActionMode) {
+                super.onItemsColorUpdated(color, isActionMode);
                 if (!isActionMode && ttlIconView != null) {
                     ttlIconView.setColorFilter(new PorterDuffColorFilter(color, PorterDuff.Mode.MULTIPLY));
                 }
-                if (hasMainTabs && backButtonImageView != null) {
+                if (!isActionMode && hasMainTabs && backButtonImageView != null) {
                     backButtonImageView.setColorFilter(color, PorterDuff.Mode.SRC_IN);
                 }
             }
@@ -2580,8 +2580,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         actionBar.setForceSkipTouches(true);
         actionBar.setBackgroundColor(Color.TRANSPARENT);
         actionBar.setItemsBackgroundColor(peerColor != null ? 0x20ffffff : getThemedColor(Theme.key_avatar_actionBarSelectorBlue), false);
-        actionBar.setItemsColor(getThemedColor(Theme.key_actionBarDefaultIcon), false);
-        actionBar.setItemsColor(getThemedColor(Theme.key_actionBarDefaultIcon), true);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarActionModeDefaultIcon, true);
         actionBar.setCastShadows(false);
         actionBar.setAddToContainer(false);
         actionBar.setClipContent(true);
@@ -3880,6 +3880,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             @Override
             protected void showActionMode(boolean show) {
                 super.showActionMode(show);
+                if (actionBar != null) {
+                    actionBar.setSharedBackButtonActionModeVisible(show);
+                }
                 if (myProfile) {
                     disableScroll(show);
 
@@ -11933,7 +11936,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 peerColor = peerColors == null ? null : peerColors.getColor(colorId);
             }
             if (wasPeerColor != peerColor) {
-                updatedPeerColor();
+                updatedPeerColor(true);
             }
             if (topView != null) {
                 topView.setBackgroundEmojiId(UserObject.getProfileEmojiId(user), user != null && user.emoji_status instanceof TLRPC.TL_emojiStatusCollectible, true);
@@ -12264,7 +12267,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 peerColor = peerColors == null ? null : peerColors.getColor(colorId);
             }
             if (wasPeerColor != peerColor) {
-                updatedPeerColor();
+                updatedPeerColor(true);
             }
             if (topView != null) {
                 topView.setBackgroundEmojiId(ChatObject.getProfileEmojiId(chat), chat != null && chat.emoji_status instanceof TLRPC.TL_emojiStatusCollectible, true);
@@ -12641,7 +12644,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         super.clearViews();
     }
 
-    private void updatedPeerColor() {
+    private void updatedPeerColor(boolean updateIconTint) {
         adaptedColors.clear();
         if (topView != null) {
             topView.setBackgroundColorId(peerColor, true);
@@ -12659,7 +12662,9 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             showStatusButton.setBackgroundColor(ColorUtils.blendARGB(Theme.multAlpha(Theme.adaptHSV(actionBarBackgroundColor, +0.18f, -0.1f), 0.5f), 0x23ffffff, currentExpandAnimatorValue));
         }
         if (actionBar != null) {
-            actionBar.setItemsColor(ColorUtils.blendARGB(peerColor != null ? Color.WHITE : getThemedColor(Theme.key_actionBarDefaultIcon), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), mediaHeaderAnimationProgress), false);
+            if (updateIconTint) {
+                actionBar.setItemsColor(ColorUtils.blendARGB(peerColor != null ? Color.WHITE : getThemedColor(Theme.key_actionBarDefaultIcon), getThemedColor(Theme.key_actionBarActionModeDefaultIcon), mediaHeaderAnimationProgress), false);
+            }
             actionBar.setItemsBackgroundColor(ColorUtils.blendARGB(peerColor != null ? Theme.ACTION_BAR_WHITE_SELECTOR_COLOR : peerColor != null ? 0x20ffffff : getThemedColor(Theme.key_avatar_actionBarSelectorBlue), getThemedColor(Theme.key_actionBarActionModeDefaultSelector), mediaHeaderAnimationProgress), false);
         }
         if (verifiedDrawable[1] != null) {
@@ -16130,7 +16135,6 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     idTextView.setTextColor(Theme.getColor(Theme.key_avatar_subtitleInProfileBlue));
                 }
                 if (actionBar != null) {
-                    actionBar.setItemsColor(peerColor != null ? Color.WHITE : getThemedColor(Theme.key_actionBarDefaultIcon), false);
                     actionBar.setItemsBackgroundColor(peerColor != null ? 0x20ffffff : getThemedColor(Theme.key_avatar_actionBarSelectorBlue), false);
                 }
 //                if (sharedMediaLayout != null) {
@@ -16138,7 +16142,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
 //                }
             }
             updateEmojiStatusDrawableColor();
-            updatedPeerColor();
+            updatedPeerColor(!(isPulledDown || currentExpandAnimatorValue > 0f));
         };
         ArrayList<ThemeDescription> arrayList = new ArrayList<>();
         if (sharedMediaLayout != null) {

@@ -447,8 +447,8 @@ public abstract class BaseFragment {
         actionBar.setBackgroundColor(getThemedColor(Theme.key_actionBarDefault));
         actionBar.setItemsBackgroundColor(getThemedColor(Theme.key_actionBarDefaultSelector), false);
         actionBar.setItemsBackgroundColor(getThemedColor(Theme.key_actionBarActionModeDefaultSelector), true);
-        actionBar.setItemsColor(getThemedColor(Theme.key_actionBarDefaultIcon), false);
-        actionBar.setItemsColor(getThemedColor(Theme.key_actionBarActionModeDefaultIcon), true);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarActionModeDefaultIcon, true);
         if (inPreviewMode || inBubbleMode || parentLayout != null && parentLayout.isLayersLayout()) {
             actionBar.setOccupyStatusBar(false);
         }

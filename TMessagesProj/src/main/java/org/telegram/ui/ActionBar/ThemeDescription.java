@@ -303,7 +303,7 @@ public class ThemeDescription {
         }
         if (viewToInvalidate instanceof ActionBar) {
             if ((changeFlags & FLAG_AB_ITEMSCOLOR) != 0) {
-                ((ActionBar) viewToInvalidate).setItemsColor(color, false);
+                ((ActionBar) viewToInvalidate).applyDescribedItemsColor(currentKey, color, false);
             }
             if ((changeFlags & FLAG_AB_TITLECOLOR) != 0) {
                 ((ActionBar) viewToInvalidate).setTitleColor(color);
@@ -315,7 +315,7 @@ public class ThemeDescription {
                 ((ActionBar) viewToInvalidate).setItemsBackgroundColor(color, true);
             }
             if ((changeFlags & FLAG_AB_AM_ITEMSCOLOR) != 0) {
-                ((ActionBar) viewToInvalidate).setItemsColor(color, true);
+                ((ActionBar) viewToInvalidate).applyDescribedItemsColor(currentKey, color, true);
             }
             if ((changeFlags & FLAG_AB_SUBTITLECOLOR) != 0) {
                 ((ActionBar) viewToInvalidate).setSubtitleColor(color);

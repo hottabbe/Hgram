@@ -182,7 +182,7 @@ public class ContactAddActivity extends BaseFragment implements NotificationCent
     @Override
     public View createView(Context context) {
         actionBar.setItemsBackgroundColor(Theme.getColor(Theme.key_avatar_actionBarSelectorBlue, resourcesProvider), false);
-        actionBar.setItemsColor(Theme.getColor(Theme.key_actionBarDefaultIcon, resourcesProvider), false);
+        actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
         actionBar.setBackButtonImage(R.drawable.ic_ab_back);
         actionBar.setAllowOverlayTitle(true);
         if (addContact) {

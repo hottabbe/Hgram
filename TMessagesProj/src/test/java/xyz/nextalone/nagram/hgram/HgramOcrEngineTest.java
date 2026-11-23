@@ -15,14 +15,19 @@ import org.robolectric.annotation.Config;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
@@ -84,6 +89,63 @@ public class HgramOcrEngineTest {
         public void clear() {
             clearCalls++;
         }
+    }
+
+    private static final class FakeBoxApi implements HgramOcrEngine.BoxApi {
+        final FakeApi delegate = new FakeApi();
+        HgramOcrLayout layout;
+        boolean layoutThrows;
+        int layoutCalls;
+
+        @Override
+        public void init(String datapath, String language) throws Exception {
+            delegate.init(datapath, language);
+        }
+
+        @Override
+        public void setImage(Bitmap bitmap) {
+            delegate.setImage(bitmap);
+        }
+
+        @Override
+        public String getUTF8Text() {
+            return delegate.getUTF8Text();
+        }
+
+        @Override
+        public HgramOcrLayout readPixelLayout() {
+            layoutCalls++;
+            if (layoutThrows) {
+                throw new IllegalStateException("boxes failed");
+            }
+            return layout;
+        }
+
+        @Override
+        public void stop() {
+            delegate.stop();
+        }
+
+        @Override
+        public void clear() {
+            delegate.clear();
+        }
+    }
+
+    private static HgramOcrLayout layoutWithTwoLines(int width, int height) {
+        final List<HgramOcrLayout.PixelLine> pixelLines = new ArrayList<>();
+        final HgramOcrLayout.PixelLine first = new HgramOcrLayout.PixelLine(
+                new int[]{0, 0, width, height / 2}, "First line");
+        first.words.add(new HgramOcrLayout.PixelWord(
+                new int[]{0, 0, width / 2, height / 2}, "First"));
+        pixelLines.add(first);
+        final HgramOcrLayout.PixelLine second = new HgramOcrLayout.PixelLine(
+                new int[]{0, height / 2, width, height}, "Second line");
+        second.words.add(new HgramOcrLayout.PixelWord(
+                new int[]{0, height / 2, width / 2, height}, "Second"));
+        pixelLines.add(second);
+        return HgramOcrLayout.fromPixels(width, height,
+                HgramOcrLayout.SPACE_DISPLAY, pixelLines);
     }
 
     private HgramOcrEngine newEngine(File filesDir) {
@@ -157,7 +219,8 @@ public class HgramOcrEngineTest {
         engine.cancel(1);
         assertEquals("old cancel must not stop the current engine", stopsAfterRecognition, current.stopCalls);
         engine.cancel(2);
-        awaitStops(current, stopsAfterRecognition + 1);
+        assertEquals("no native owner remains after recognition",
+                stopsAfterRecognition, current.stopCalls);
     }
 
     @Test
@@ -223,6 +286,188 @@ public class HgramOcrEngineTest {
         releaseText.countDown();
         worker.join(5_000L);
         assertFalse(worker.isAlive());
+    }
+
+    @Test
+    public void releaseWaitsForStartedNativeStopBeforeClear() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("release-barrier"));
+        final FakeApi fake = new FakeApi();
+        fake.text = "late";
+        final CountDownLatch textStarted = new CountDownLatch(1);
+        final CountDownLatch releaseText = new CountDownLatch(1);
+        final CountDownLatch stopEntered = new CountDownLatch(1);
+        final CountDownLatch releaseStop = new CountDownLatch(1);
+        fake.beforeText = () -> {
+            textStarted.countDown();
+            await(releaseText);
+        };
+        fake.beforeStop = () -> {
+            stopEntered.countDown();
+            await(releaseStop);
+        };
+        final HgramOcrEngine.RequestToken token = engine.newRequest();
+        final Thread worker = new Thread(
+                () -> engine.recognize(fake, bitmap(10, 10), token),
+                "ocr-release-worker");
+        final CountDownLatch releaseDone = new CountDownLatch(1);
+        final Thread releaser = new Thread(() -> {
+            engine.release();
+            releaseDone.countDown();
+        }, "ocr-release");
+        try {
+            worker.start();
+            assertTrue(textStarted.await(5, TimeUnit.SECONDS));
+            engine.finish(token);
+            releaseText.countDown();
+            assertTrue("native stop must start", stopEntered.await(5, TimeUnit.SECONDS));
+            releaser.start();
+            assertEquals("release must wait for the native stop", 1, releaseDone.getCount());
+            assertEquals("clear must not overtake stop", 0, fake.clearCalls);
+        } finally {
+            releaseStop.countDown();
+            releaseText.countDown();
+            worker.join(5_000L);
+            releaser.join(5_000L);
+        }
+        assertTrue("release must complete after stop", releaseDone.await(5, TimeUnit.SECONDS));
+        assertFalse(releaser.isAlive());
+        assertTrue("API must be cleared after the stop", fake.clearCalls >= 1);
+    }
+
+    @Test
+    public void legacyStopDoesNotAffectNextTokenOnSameApi() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("legacy-stop"));
+        final FakeApi fake = new FakeApi();
+        fake.text = "legacy";
+        final AtomicInteger textCalls = new AtomicInteger();
+        final CountDownLatch legacyText = new CountDownLatch(1);
+        final CountDownLatch releaseLegacyText = new CountDownLatch(1);
+        final CountDownLatch newText = new CountDownLatch(1);
+        final CountDownLatch releaseNewText = new CountDownLatch(1);
+        fake.beforeText = () -> {
+            if (textCalls.incrementAndGet() == 1) {
+                legacyText.countDown();
+                await(releaseLegacyText);
+            } else {
+                newText.countDown();
+                await(releaseNewText);
+            }
+        };
+        final CountDownLatch releaseBlocker = new CountDownLatch(1);
+        final AtomicReference<HgramOcrEngine.Result> newResult = new AtomicReference<>();
+        final Thread legacyWorker = new Thread(
+                () -> engine.recognize(fake, bitmap(10, 10)),
+                "ocr-legacy");
+        final HgramOcrEngine.RequestToken newToken = engine.newRequest();
+        final Thread newWorker = new Thread(
+                () -> newResult.set(engine.recognize(fake, bitmap(10, 10), newToken)),
+                "ocr-new-after-legacy");
+        try {
+            legacyWorker.start();
+            assertTrue(legacyText.await(5, TimeUnit.SECONDS));
+            final CountDownLatch blockerEntered = new CountDownLatch(1);
+            engine.submitControlTaskForTests(() -> {
+                blockerEntered.countDown();
+                await(releaseBlocker);
+            });
+            assertTrue(blockerEntered.await(5, TimeUnit.SECONDS));
+            engine.cancel();
+            releaseLegacyText.countDown();
+            legacyWorker.join(5_000L);
+            assertFalse(legacyWorker.isAlive());
+            fake.stopCalls = 0;
+
+            newWorker.start();
+            assertTrue(newText.await(5, TimeUnit.SECONDS));
+            final CountDownLatch marker = new CountDownLatch(1);
+            engine.submitControlTaskForTests(marker::countDown);
+            releaseBlocker.countDown();
+            assertTrue(marker.await(5, TimeUnit.SECONDS));
+            assertEquals("legacy stop must not stop the new token", 0, fake.stopCalls);
+            assertTrue(engine.isRequestActive(newToken));
+        } finally {
+            releaseLegacyText.countDown();
+            releaseNewText.countDown();
+            releaseBlocker.countDown();
+            legacyWorker.join(5_000L);
+            newWorker.join(5_000L);
+        }
+        assertFalse(newWorker.isAlive());
+        assertNotNull(newResult.get());
+        assertEquals(HgramOcrEngine.Status.OK, newResult.get().status);
+        assertEquals(1, fake.stopCalls);
+    }
+
+    @Test
+    public void staleStopDoesNotAffectNextTokenOnSameApi() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("stale-stop"));
+        final FakeApi fake = new FakeApi();
+        fake.text = "late";
+        final AtomicInteger textCalls = new AtomicInteger();
+        final CountDownLatch oldText = new CountDownLatch(1);
+        final CountDownLatch releaseOldText = new CountDownLatch(1);
+        final CountDownLatch newText = new CountDownLatch(1);
+        final CountDownLatch releaseNewText = new CountDownLatch(1);
+        fake.beforeText = () -> {
+            if (textCalls.incrementAndGet() == 1) {
+                oldText.countDown();
+                await(releaseOldText);
+            } else {
+                newText.countDown();
+                await(releaseNewText);
+            }
+        };
+        final CountDownLatch releaseBlocker = new CountDownLatch(1);
+        final AtomicReference<HgramOcrEngine.Result> newResult = new AtomicReference<>();
+        final HgramOcrEngine.RequestToken oldToken = engine.newRequest();
+        final HgramOcrEngine.RequestToken newToken = engine.newRequest();
+        final Thread oldWorker = new Thread(
+                () -> engine.recognize(fake, bitmap(10, 10), oldToken),
+                "ocr-old-token");
+        final Thread newWorker = new Thread(
+                () -> newResult.set(engine.recognize(fake, bitmap(10, 10), newToken)),
+                "ocr-new-token");
+        try {
+            oldWorker.start();
+            assertTrue(oldText.await(5, TimeUnit.SECONDS));
+
+            final CountDownLatch blockerEntered = new CountDownLatch(1);
+            engine.submitControlTaskForTests(() -> {
+                blockerEntered.countDown();
+                await(releaseBlocker);
+            });
+            assertTrue(blockerEntered.await(5, TimeUnit.SECONDS));
+            engine.cancel(oldToken);
+            engine.finish(oldToken);
+            releaseOldText.countDown();
+            oldWorker.join(5_000L);
+            assertFalse(oldWorker.isAlive());
+            fake.stopCalls = 0;
+
+            newWorker.start();
+            assertTrue("new OCR must be inside getUTF8Text", newText.await(5, TimeUnit.SECONDS));
+            assertTrue("new request must own the native phase",
+                    engine.isRequestActive(newToken));
+
+            final CountDownLatch marker = new CountDownLatch(1);
+            engine.submitControlTaskForTests(marker::countDown);
+            releaseBlocker.countDown();
+            assertTrue("control worker must reach FIFO marker", marker.await(5, TimeUnit.SECONDS));
+            assertEquals("stale stop must not touch the new owner", 0, fake.stopCalls);
+            assertEquals("old state must be gone, new state retained",
+                    1, engine.requestCountForTests());
+            assertTrue(engine.isRequestActive(newToken));
+        } finally {
+            releaseOldText.countDown();
+            releaseNewText.countDown();
+            releaseBlocker.countDown();
+            oldWorker.join(5_000L);
+            newWorker.join(5_000L);
+        }
+        assertFalse(newWorker.isAlive());
+        assertNotNull(newResult.get());
+        assertEquals(HgramOcrEngine.Status.OK, newResult.get().status);
+        assertEquals(1, fake.stopCalls);
     }
 
     @Test
@@ -310,6 +555,73 @@ public class HgramOcrEngineTest {
         assertEquals(HgramOcrEngine.Status.OK, result.status);
         assertEquals("Первая строка\nВторая строка", result.text);
         assertFalse(result.cancelled);
+    }
+
+    @Test
+    public void boxApiLayoutIsReturnedWithOkText() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("box-layout"));
+        final FakeBoxApi fake = new FakeBoxApi();
+        fake.delegate.text = "First line\nSecond line";
+        fake.layout = layoutWithTwoLines(100, 100);
+
+        final HgramOcrEngine.Result result = engine.recognize(fake, bitmap(100, 100));
+
+        assertEquals(HgramOcrEngine.Status.OK, result.status);
+        assertEquals("First line\nSecond line", result.text);
+        assertSame(fake.layout, result.layout);
+        assertEquals(2, result.layout.lines.size());
+        assertEquals(100, result.layout.imageWidth);
+        assertEquals(100, result.layout.imageHeight);
+        assertEquals(HgramOcrLayout.SPACE_DISPLAY, result.layout.space);
+        assertEquals(1, fake.layoutCalls);
+        assertEquals(1, fake.delegate.stopCalls);
+        assertEquals(1, fake.delegate.clearCalls);
+    }
+
+    @Test
+    public void nullBoxLayoutKeepsOkResult() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("box-null"));
+        final FakeBoxApi fake = new FakeBoxApi();
+        fake.delegate.text = "text without boxes";
+        fake.layout = null;
+
+        final HgramOcrEngine.Result result = engine.recognize(fake, bitmap(10, 10));
+
+        assertEquals(HgramOcrEngine.Status.OK, result.status);
+        assertEquals("text without boxes", result.text);
+        assertNull(result.layout);
+        assertEquals(1, fake.layoutCalls);
+    }
+
+    @Test
+    public void throwingBoxApiKeepsOkResult() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("box-throws"));
+        final FakeBoxApi fake = new FakeBoxApi();
+        fake.delegate.text = "text survives";
+        fake.layoutThrows = true;
+
+        final HgramOcrEngine.Result result = engine.recognize(fake, bitmap(10, 10));
+
+        assertEquals(HgramOcrEngine.Status.OK, result.status);
+        assertEquals("text survives", result.text);
+        assertNull(result.layout);
+        assertEquals(1, fake.layoutCalls);
+    }
+
+    @Test
+    public void cancelBeforeBoxesSkipsLayout() throws Exception {
+        final HgramOcrEngine engine = newEngine(temporary.newFolder("box-cancel"));
+        final FakeBoxApi fake = new FakeBoxApi();
+        fake.delegate.text = "should be dropped";
+        fake.delegate.beforeText = engine::cancel;
+        fake.layout = layoutWithTwoLines(10, 10);
+
+        final HgramOcrEngine.Result result = engine.recognize(fake, bitmap(10, 10));
+
+        assertEquals(HgramOcrEngine.Status.FAILED, result.status);
+        assertTrue(result.cancelled);
+        assertNull(result.layout);
+        assertEquals("cancelled request must not read boxes", 0, fake.layoutCalls);
     }
 
     @Test

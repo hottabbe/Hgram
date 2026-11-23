@@ -152,6 +152,7 @@ import tw.nekomimi.nekogram.utils.AlertUtil;
 import tw.nekomimi.nekogram.utils.UIUtil;
 import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.hgram.HgramExifCleaner;
+import xyz.nextalone.nagram.hgram.HgramVoiceSummarizer;
 
 public class MessagesController extends BaseController implements NotificationCenter.NotificationCenterDelegate {
 
@@ -378,6 +379,12 @@ public class MessagesController extends BaseController implements NotificationCe
     private boolean getDifferenceFirstSync = true;
     public boolean updatingState;
     public boolean firstGettingTask;
+
+    // PUSH-CHAT-1: push placeholder markers live in MessagesStorage's registry, which is restored
+    // from push_pending_messages on startup. A controller-local copy would stay empty after a
+    // restart and the open chat would keep the preview instead of replacing it.
+    private long lastPushDifferenceRequestTime;
+    private static final long PUSH_DIFFERENCE_REQUEST_INTERVAL = 5000L;
     public boolean registeringForPush;
     private long lastPushRegisterSendTime;
     private boolean resetingDialogs;
@@ -6696,10 +6703,13 @@ public class MessagesController extends BaseController implements NotificationCe
         sendAsPeersLiveStories.clear();
         dialogs_dict.clear();
         dialogs_read_inbox_max.clear();
+        // No local registry to clear: MessagesStorage clears the shared one in cleanupInternal().
+        lastPushDifferenceRequestTime = 0;
         loadingPinnedDialogs.clear();
         dialogs_read_outbox_max.clear();
         exportedChats.clear();
         fullUsers.clear();
+        HgramVoiceSummarizer.clearPeerProtection(currentAccount);
         fullChats.clear();
         activeVoiceChatsMap.clear();
         loadingGroupCalls.clear();
@@ -7967,6 +7977,7 @@ public class MessagesController extends BaseController implements NotificationCe
             return;
         }
         loadingFullUsers.add(user.id);
+        final int voiceProfileEpoch = HgramVoiceSummarizer.accountGeneration(currentAccount);
         TLRPC.TL_users_getFullUser req = new TLRPC.TL_users_getFullUser();
         req.id = getInputUser(user);
         long dialogId = user.id;
@@ -7983,6 +7994,9 @@ public class MessagesController extends BaseController implements NotificationCe
                 getMessagesStorage().updateUserInfo(userFull, false);
                 getStoriesController().updateStoriesFromFullPeer(dialogId, userFull.stories);
                 ChatThemeController.getInstance(currentAccount).saveChatWallpaper(res.full_user.id, res.full_user.wallpaper);
+                // Conservative: a callback that runs before the UI cache mutation must not see a
+                // stale ALLOWED snapshot for the profile being replaced.
+                HgramVoiceSummarizer.markProfilePending(currentAccount, user.id, voiceProfileEpoch);
 
                 if (whenReceivedFullUser != null) {
                     whenReceivedFullUser.run(userFull);
@@ -8008,7 +8022,8 @@ public class MessagesController extends BaseController implements NotificationCe
                             getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
                         }
                     }
-                    fullUsers.put(user.id, userFull);
+                    HgramVoiceSummarizer.publishProfileAtomically(currentAccount, user.id, userFull,
+                            voiceProfileEpoch, () -> fullUsers.put(user.id, userFull));
                     getTranslateController().updateDialogFull(user.id);
                     StarsController.getInstance(currentAccount).invalidateProfileGifts(userFull);
                     loadingFullUsers.remove(user.id);
@@ -10763,6 +10778,7 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void processUserInfo(TLRPC.User user, TLRPC.UserFull info, boolean fromCache, boolean force, int classGuid, ArrayList<Integer> pinnedMessages, HashMap<Integer, MessageObject> pinnedMessagesMap, int totalPinnedCount, boolean pinnedEndReached) {
+        final int voiceProfileEpoch = HgramVoiceSummarizer.accountGeneration(currentAccount);
         AndroidUtilities.runOnUIThread(() -> {
             if (fromCache) {
                 long lastLoadedTime = loadedFullUsers.get(user.id, 0);
@@ -10772,7 +10788,8 @@ public class MessagesController extends BaseController implements NotificationCe
             }
             if (info != null) {
                 if (fullUsers.get(user.id) == null) {
-                    fullUsers.put(user.id, info);
+                    HgramVoiceSummarizer.publishProfileAtomically(currentAccount, user.id, info,
+                            voiceProfileEpoch, () -> fullUsers.put(user.id, info));
                     getTranslateController().updateDialogFull(user.id);
                     StarsController.getInstance(currentAccount).invalidateProfileGifts(info);
 
@@ -10788,6 +10805,9 @@ public class MessagesController extends BaseController implements NotificationCe
                             getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
                         }
                     }
+                } else {
+                    HgramVoiceSummarizer.publishProfileAtomically(currentAccount, user.id,
+                            getUserFull(user.id), voiceProfileEpoch, null);
                 }
                 getNotificationCenter().postNotificationName(NotificationCenter.userInfoDidLoad, user.id, info);
             }
@@ -12514,6 +12534,11 @@ public class MessagesController extends BaseController implements NotificationCe
             Timer.Task t3 = Timer.start(loaderLogger, "processLoadedMessages: post runOnUIThread");
             putUsers(messagesRes.users, isCache);
             putChats(messagesRes.chats, isCache);
+            // PUSH-CHAT-3: a non-cache MODE_DEFAULT history load overlapping a restored preview
+            // must show the server copy. ChatActivity skips the id in processMessagesDidLoad, so
+            // the real objects are published as one replaceMessagesObjects packet (anchor kept).
+            publishPushPlaceholderReplacements(getNotificationCenter(),
+                    getMessagesStorage().getPushPlaceholderRegistry(), dialogId, mode, isCache, objects);
 
             if (messagesRes.animatedEmoji != null && needProcess) {
                 AnimatedEmojiDrawable.getDocumentFetcher(currentAccount).processDocuments(messagesRes.animatedEmoji);
@@ -13647,9 +13672,13 @@ public class MessagesController extends BaseController implements NotificationCe
                 AndroidUtilities.runOnUIThread(() -> {
                     putUsers(dialogsRes.users, true);
                     if (fullUsers != null) {
+                        final int voiceProfileEpoch =
+                                HgramVoiceSummarizer.accountGeneration(currentAccount);
                         for (int i = 0; i < fullUsers.size(); i++) {
-                            long did = fullUsers.get(i).id;
-                            this.fullUsers.put(did, fullUsers.get(i));
+                            final TLRPC.UserFull full = fullUsers.get(i);
+                            final long did = full.id;
+                            HgramVoiceSummarizer.publishProfileAtomically(currentAccount, did, full,
+                                    voiceProfileEpoch, () -> this.fullUsers.put(did, full));
                             getTranslateController().updateDialogFull(did);
                         }
                     }
@@ -13905,9 +13934,13 @@ public class MessagesController extends BaseController implements NotificationCe
                 putUsers(dialogsRes.users, loadType == DIALOGS_LOAD_TYPE_CACHE);
                 putChats(dialogsRes.chats, loadType == DIALOGS_LOAD_TYPE_CACHE);
                 if (fullUsers != null) {
+                    final int voiceProfileEpoch =
+                            HgramVoiceSummarizer.accountGeneration(currentAccount);
                     for (int i = 0; i < fullUsers.size(); i++) {
-                        long did = fullUsers.get(i).id;
-                        this.fullUsers.put(did, fullUsers.get(i));
+                        final TLRPC.UserFull full = fullUsers.get(i);
+                        final long did = full.id;
+                        HgramVoiceSummarizer.publishProfileAtomically(currentAccount, did, full,
+                                voiceProfileEpoch, () -> this.fullUsers.put(did, full));
                         getTranslateController().updateDialogFull(did);
                     }
                 }
@@ -21252,17 +21285,20 @@ public class MessagesController extends BaseController implements NotificationCe
                 for (TLRPC.Message message : finalMessageActionNoForwardsToggles) {
                     final long peerId = MessageObject.getPeerId(message.peer_id);
                     final long fromId = MessageObject.getPeerId(message.from_id);
-                    TLRPC.UserFull userFull = getUserFull(peerId);
+                    final TLRPC.UserFull userFull = getUserFull(peerId);
                     if (userFull != null && message.action instanceof TLRPC.TL_messageActionNoForwardsToggle) {
-                        TLRPC.TL_messageActionNoForwardsToggle action = (TLRPC.TL_messageActionNoForwardsToggle) message.action;
-                        if (!action.new_value) {
-                            userFull.noforwards_peer_enabled = false;
-                            userFull.noforwards_my_enabled = false;
-                        } else if (fromId == peerId) {
-                            userFull.noforwards_peer_enabled = true;
-                        } else {
-                            userFull.noforwards_my_enabled = true;
-                        }
+                        final TLRPC.TL_messageActionNoForwardsToggle action = (TLRPC.TL_messageActionNoForwardsToggle) message.action;
+                        HgramVoiceSummarizer.publishProfileAtomically(currentAccount, peerId, userFull,
+                                HgramVoiceSummarizer.accountGeneration(currentAccount), () -> {
+                                    if (!action.new_value) {
+                                        userFull.noforwards_peer_enabled = false;
+                                        userFull.noforwards_my_enabled = false;
+                                    } else if (fromId == peerId) {
+                                        userFull.noforwards_peer_enabled = true;
+                                    } else {
+                                        userFull.noforwards_my_enabled = true;
+                                    }
+                                });
                         getNotificationCenter().postNotificationName(NotificationCenter.userInfoDidLoad, peerId, userFull);
                         getMessagesStorage().updateUserInfo(userFull, false);
                     }
@@ -22345,13 +22381,130 @@ public class MessagesController extends BaseController implements NotificationCe
         return false;
     }
 
+    /**
+     * Restores both preview keys for {@code (dialogId, mid)}. The live push path must not call
+     * this: {@code MessagesStorage#putPushPlaceholder} already marks the registry right after its
+     * commit, and a delayed UI callback that re-marked would resurrect a durable marker that a real
+     * write already cleared (PUSH-CHAT-3).
+     */
+    public void markPushPlaceholder(long dialogId, int mid) {
+        if (mid > 0) {
+            getMessagesStorage().getPushPlaceholderRegistry().mark(dialogId, mid);
+        }
+    }
+
+    public boolean consumePushPlaceholder(long dialogId, int mid) {
+        return mid > 0 && getMessagesStorage().getPushPlaceholderRegistry().consume(dialogId, mid);
+    }
+
+    /**
+     * PUSH-CHAT-3: authoritative-history replacement for a restored push preview.
+     *
+     * <p>A server history response is the authoritative copy of every id it contains. When such an
+     * id still has a preview key (durable pending from {@code push_pending_messages} or the
+     * not-yet-consumed one-shot replacement right), the preview row in {@code ChatActivity} is
+     * skipped by the existing "id already present" check in {@code processMessagesDidLoad}. The
+     * loaded real objects are therefore published as one {@link NotificationCenter#replaceMessagesObjects}
+     * packet: the existing replace path swaps the bubble in place, keeps the scroll anchor and
+     * never inserts a second row.
+     *
+     * <p>Only a non-cache {@code MODE_DEFAULT} load may do this. Cache loads, scheduled, quick
+     * replies, welcome and saved messages use local ids or non-authoritative rows and must be left
+     * untouched. Nothing here touches pts/qts/seq or the durable marker itself: the durable row is
+     * cleared by the storage write that this same call already schedules.
+     *
+     * @return true when a replacement packet was posted
+     */
+    static boolean publishPushPlaceholderReplacements(NotificationCenter notificationCenter,
+                                                      PushPlaceholderRegistry registry, long dialogId, int mode,
+                                                      boolean isCache, ArrayList<MessageObject> objects) {
+        if (notificationCenter == null || registry == null || objects == null || objects.isEmpty()
+                || isCache || mode != ChatActivity.MODE_DEFAULT) {
+            return false;
+        }
+        ArrayList<MessageObject> replacements = null;
+        for (int a = 0, size = objects.size(); a < size; a++) {
+            MessageObject object = objects.get(a);
+            if (object == null || object.isFcmMessage()) {
+                continue;
+            }
+            int mid = object.getId();
+            if (mid <= 0) {
+                continue;
+            }
+            if (registry.hasPending(dialogId, mid) || registry.hasReplacement(dialogId, mid)) {
+                // The loaded server object is the authoritative copy: spend the one-shot UI right
+                // so a later update cannot post the same replacement twice.
+                registry.consume(dialogId, mid);
+                if (replacements == null) {
+                    replacements = new ArrayList<>(1);
+                }
+                replacements.add(object);
+            }
+        }
+        if (replacements == null) {
+            return false;
+        }
+        notificationCenter.postNotificationName(NotificationCenter.replaceMessagesObjects, dialogId, replacements);
+        return true;
+    }
+
+    /**
+     * PUSH-CHAT-1: refreshes a pushed placeholder through updates/difference. Only runs while a
+     * placeholder is still pending, is debounced by timestamps (no timers/sleep) and never touches
+     * pts/qts/seq/lastPts. Channels use channel difference only when their pts is known.
+     */
+    public void maybeRequestDifferenceForPush(long dialogId) {
+        if (!getMessagesStorage().getPushPlaceholderRegistry().hasAny()) {
+            return;
+        }
+        if (getMessagesStorage().getLastPtsValue() == 0) {
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (lastPushDifferenceRequestTime != 0 && now - lastPushDifferenceRequestTime < PUSH_DIFFERENCE_REQUEST_INTERVAL) {
+            return;
+        }
+        if (dialogId < 0) {
+            long channelId = -dialogId;
+            if (channelsPts.get(channelId) != 0 && !gettingDifferenceChannels.get(channelId, false)) {
+                lastPushDifferenceRequestTime = now;
+                getChannelDifference(channelId);
+                return;
+            }
+        }
+        if (gettingDifference) {
+            return;
+        }
+        lastPushDifferenceRequestTime = now;
+        getDifference();
+    }
+
     public boolean updateInterfaceWithMessages(long dialogId, ArrayList<MessageObject> messages, int mode) {
+        return updateInterfaceWithMessages(dialogId, messages, mode, false);
+    }
+
+    public boolean updateInterfaceWithMessages(long dialogId, ArrayList<MessageObject> messages, int mode, boolean fromPushPlaceholder) {
         if (messages == null || messages.isEmpty()) {
             return false;
         }
         final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
         final boolean quickReplies = mode == ChatActivity.MODE_QUICK_REPLIES;
         final boolean welcomeMessages = mode == ChatActivity.MODE_WELCOME_MESSAGES;
+
+        ArrayList<MessageObject> pushPlaceholderReplacements = null;
+        // Scheduled / quick-reply / welcome ids are local and must not consume a server push marker.
+        if (!fromPushPlaceholder && !scheduled && !quickReplies && !welcomeMessages) {
+            for (int a = 0; a < messages.size(); a++) {
+                MessageObject obj = messages.get(a);
+                if (obj != null && !obj.isFcmMessage() && consumePushPlaceholder(dialogId, obj.getId())) {
+                    if (pushPlaceholderReplacements == null) {
+                        pushPlaceholderReplacements = new ArrayList<>(1);
+                    }
+                    pushPlaceholderReplacements.add(obj);
+                }
+            }
+        }
 
         boolean isEncryptedChat = DialogObject.isEncryptedDialog(dialogId);
         MessageObject lastMessage = null;
@@ -22415,6 +22568,11 @@ public class MessagesController extends BaseController implements NotificationCe
             }
         }
         getNotificationCenter().postNotificationName(NotificationCenter.didReceiveNewMessages, dialogId, messages, scheduled, mode);
+        if (pushPlaceholderReplacements != null) {
+            // ChatActivity skips an already existing id in processNewMessages, so the pushed preview
+            // must be replaced explicitly. dialogMessage/dialogs_dict are updated by this method.
+            getNotificationCenter().postNotificationName(NotificationCenter.replaceMessagesObjects, dialogId, pushPlaceholderReplacements);
+        }
 
         if (lastMessage == null || scheduled) {
             return false;
