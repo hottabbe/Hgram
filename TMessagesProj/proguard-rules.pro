@@ -4,6 +4,19 @@
     @com.google.android.gms.common.annotation.KeepName *;
 }
 
+# Firebase Components discovers registrars through reflection. R8 must keep the
+# ComponentRegistrar type, every implementation and its public no-arg constructor.
+-keep interface com.google.firebase.components.ComponentRegistrar { *; }
+-keep class * implements com.google.firebase.components.ComponentRegistrar { *; }
+-keepclassmembers class * implements com.google.firebase.components.ComponentRegistrar {
+    public <init>();
+}
+
+# ML Kit and Firebase load models, providers and metadata reflectively. Keep only
+# these library trees; do not widen the keep to the rest of the application.
+-keep class com.google.mlkit.** { *; }
+-keep class com.google.firebase.** { *; }
+
 -keep @interface androidx.annotation.Keep
 -keep @androidx.annotation.Keep class * { *; }
 -keepclasseswithmembers class * { @androidx.annotation.Keep *; }
