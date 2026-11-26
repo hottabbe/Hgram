@@ -5,7 +5,7 @@
 (суммаризация сообщений, склейка коротких сообщений, анти-подглядывание, офлайн-расшифровка голосовых
 и другое) и развивает приватность и повседневные мелочи интерфейса.
 
-> **Актуальная версия:** 13.0.2 (сборка 1312) — 23 ноября 2026 г.
+> **Актуальная версия:** 13.0.2 (сборка 1313) — 26 ноября 2026 г.
 
 - Релизы и APK: <https://github.com/hottabbe/Hgram/releases>
 - Канал обновлений: <https://t.me/hgram_updates>
@@ -24,9 +24,9 @@ Hgram не связан с Telegram Messenger LLP и не является оф�
 
 | Параметр | Значение |
 |---|---|
-| Версия | 13.0.2 (1312) |
+| Версия | 13.0.2 (1313) |
 | ABI | `arm64-v8a` (64-битный ARM) |
-| Размер APK | 69 686 004 байт (~66,5 МиБ) |
+| Размер APK | 69 831 794 байт (~66,6 МиБ) |
 | Минимальная версия Android | 6.0 (API 23) |
 | Целевая версия Android | 16 (API 36) |
 
@@ -202,12 +202,13 @@ Hgram основан на работе других проектов:
 ## English summary
 
 Hgram is an unofficial open-source Telegram client for Android, forked from Nagram (which builds on
-Telegram for Android and NekoX). Current release: **13.0.2 (1312)**, 23 November 2026, arm64-v8a,
+Telegram for Android and NekoX). Current release: **13.0.2 (1313)**, 26 November 2026, arm64-v8a,
 Android 6.0+. Highlights: on-device photo text recognition (long-press a photo, models downloaded on
 demand), OpenRouter-powered message summarization with selectable models and pricing, merged
 short-message chains, anti-peek masking triggered by flipping the phone, a hidden space with a decoy
 PIN and encrypted media cache, media previews in notifications, offline voice transcription
-(Vosk / sherpa-onnx / GigaAM), haptic effect types, and the usual NekoX/Nagram customization.
+(Vosk / sherpa-onnx / GigaAM), haptic effect types, reliable read receipts with ghost-mode recovery,
+photo viewer navigation across album boundaries, and the usual NekoX/Nagram customization.
 
 Downloads: <https://github.com/hottabbe/Hgram/releases> · Channel: <https://t.me/hgram_updates>
 

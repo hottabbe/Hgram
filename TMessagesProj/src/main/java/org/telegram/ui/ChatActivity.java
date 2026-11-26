@@ -33829,6 +33829,9 @@ public class ChatActivity extends BaseFragment implements
                         if (finalReactionsLayout1 != null) {
                             finalReactionsLayout1.dismissParent(animated);
                         }
+                        if (selectionReactionsOverlay != null) {
+                            selectionReactionsOverlay.dismissMenu();
+                        }
                     }
                 };
                 scrimPopupWindow.setPauseNotifications(true);
@@ -34271,6 +34274,9 @@ public class ChatActivity extends BaseFragment implements
             scrimPopupWindow.dismiss();
         } else if (scrimInlineMenuOverlay != null) {
             dismissScrimInlineMenu(true);
+            if (selectionReactionsOverlay != null) {
+                selectionReactionsOverlay.dismissMenu();
+            }
             menuDeleteItem = null;
             scrimPopupWindowItems = null;
             chatLayoutManager.setCanScrollVertically(true);

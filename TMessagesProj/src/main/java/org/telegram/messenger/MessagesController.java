@@ -149,9 +149,12 @@ import tw.nekomimi.nekogram.ui.InternalFilters;
 import tw.nekomimi.nekogram.NekoConfig;
 import tw.nekomimi.nekogram.NekoXConfig;
 import tw.nekomimi.nekogram.utils.AlertUtil;
+import tw.nekomimi.nekogram.utils.AyuGhostUtils;
 import tw.nekomimi.nekogram.utils.UIUtil;
 import xyz.nextalone.nagram.NaConfig;
 import xyz.nextalone.nagram.hgram.HgramExifCleaner;
+import xyz.nextalone.nagram.hgram.HgramReadReceiptCoordinator;
+import xyz.nextalone.nagram.hgram.HgramReadReceiptQueue;
 import xyz.nextalone.nagram.hgram.HgramVoiceSummarizer;
 
 public class MessagesController extends BaseController implements NotificationCenter.NotificationCenterDelegate {
@@ -356,10 +359,12 @@ public class MessagesController extends BaseController implements NotificationCe
 
     private LongSparseArray<ArrayList<Integer>> reloadingMessages = new LongSparseArray<>();
 
+    private static final String HGRAM_PENDING_READS_KEY = "hgram_pending_reads_v1";
     private ArrayList<ReadTask> readTasks = new ArrayList<>();
     private LongSparseArray<ReadTask> readTasksMap = new LongSparseArray<>();
     private ArrayList<ReadTask> repliesReadTasks = new ArrayList<>();
     private HashMap<String, ReadTask> threadsReadTasksMap = new HashMap<>();
+    private HgramReadReceiptCoordinator hgramReadReceipts;
 
     private boolean gettingNewDeleteTask;
     private int currentDeletingTaskTime;
@@ -1745,6 +1750,23 @@ public class MessagesController extends BaseController implements NotificationCe
             mainPreferences = ApplicationLoader.applicationContext.getSharedPreferences("mainconfig" + currentAccount, Activity.MODE_PRIVATE);
             emojiPreferences = ApplicationLoader.applicationContext.getSharedPreferences("emoji" + currentAccount, Activity.MODE_PRIVATE);
         }
+        hgramReadReceipts = new HgramReadReceiptCoordinator(
+                mainPreferences.getString(HGRAM_PENDING_READS_KEY, ""),
+                new HgramReadReceiptCoordinator.Scheduler() {
+                    @Override
+                    public boolean post(Runnable runnable) {
+                        return getMessagesStorage().getStorageQueue().postRunnable(runnable);
+                    }
+
+                    @Override
+                    public boolean postDelayed(Runnable runnable, long delayMillis) {
+                        return getMessagesStorage().getStorageQueue().postRunnable(runnable, delayMillis);
+                    }
+                },
+                value -> value.isEmpty()
+                        ? mainPreferences.edit().remove(HGRAM_PENDING_READS_KEY).commit()
+                        : mainPreferences.edit().putString(HGRAM_PENDING_READS_KEY, value).commit(),
+                message -> FileLog.e(message));
         long time = System.currentTimeMillis();
 
         remoteConfigLoaded = mainPreferences.getBoolean("remoteConfigLoaded", false);
@@ -6768,6 +6790,7 @@ public class MessagesController extends BaseController implements NotificationCe
             readTasksMap.clear();
             repliesReadTasks.clear();
             threadsReadTasksMap.clear();
+            clearHgramPendingReads();
             updatesQueueSeq.clear();
             updatesQueuePts.clear();
             updatesQueueQts.clear();
@@ -13959,6 +13982,7 @@ public class MessagesController extends BaseController implements NotificationCe
                 }
                 boolean added = false;
                 dialogsLoaded = true;
+                Utilities.stageQueue.postRunnable(this::restoreHgramPendingReads);
 
                 int archivedDialogsCount = 0;
                 int lastDialogDate = migrate && !allDialogs.isEmpty() ? allDialogs.get(allDialogs.size() - 1).last_message_date : 0;
@@ -14920,28 +14944,145 @@ public class MessagesController extends BaseController implements NotificationCe
         }
     }
 
-    private void completeReadTask(ReadTask task) {
+    private void rememberHgramPendingRead(ReadTask task) {
+        if (task == null) {
+            return;
+        }
+        rememberHgramPendingRead(task.dialogId, task.replyId, task.monoForumPeerId,
+                task.maxId, task.maxDate);
+    }
+
+    /**
+     * Updates the in-memory queue synchronously and posts the durable write to the storage queue.
+     * The local unread reset is posted to the same FIFO queue afterwards, so a process death cannot
+     * lose the receipt before the visible state changes; the UI thread never waits for the commit.
+     */
+    private void rememberHgramPendingRead(long dialogId, long replyId, long monoForumPeerId,
+                                          int maxId, int maxDate) {
+        hgramReadReceipts.remember(dialogId, replyId, monoForumPeerId, maxId, maxDate);
+    }
+
+    private void forgetHgramPendingRead(ReadTask task) {
+        if (task == null) {
+            return;
+        }
+        hgramReadReceipts.forget(task.dialogId, task.replyId, task.maxId, task.maxDate);
+    }
+
+    private void clearHgramPendingReads() {
+        hgramReadReceipts.clear();
+    }
+
+    private void restoreHgramPendingReads() {
+        final String pending = hgramReadReceipts.snapshot();
+        if (pending.isEmpty()) {
+            return;
+        }
+        for (HgramReadReceiptQueue.Entry entry : HgramReadReceiptQueue.parse(pending)) {
+            final ReadTask task = new ReadTask();
+            task.dialogId = entry.dialogId;
+            task.replyId = entry.replyId;
+            task.monoForumPeerId = entry.monoForumPeerId;
+            task.maxId = entry.maxId;
+            task.maxDate = entry.maxDate;
+            task.sendRequestTime = 0;
+            if (entry.replyId != 0) {
+                final String key = entry.dialogId + "_" + entry.replyId;
+                if (threadsReadTasksMap.containsKey(key)) {
+                    continue;
+                }
+                threadsReadTasksMap.put(key, task);
+                repliesReadTasks.add(task);
+            } else {
+                if (readTasksMap.get(entry.dialogId) != null) {
+                    continue;
+                }
+                readTasksMap.put(entry.dialogId, task);
+                readTasks.add(task);
+            }
+        }
+    }
+
+    private void removeReadTask(ReadTask task) {
+        if (task.replyId != 0) {
+            repliesReadTasks.remove(task);
+            final String key = task.dialogId + "_" + task.replyId;
+            if (threadsReadTasksMap.get(key) == task) {
+                threadsReadTasksMap.remove(key);
+                forgetHgramPendingRead(task);
+            }
+        } else {
+            readTasks.remove(task);
+            if (readTasksMap.get(task.dialogId) == task) {
+                readTasksMap.remove(task.dialogId);
+                forgetHgramPendingRead(task);
+            }
+        }
+    }
+
+    /** Removes only if no newer read arrived while the request was in flight. */
+    private void onReadTaskSent(ReadTask task, int sentMaxId, int sentMaxDate) {
+        Utilities.stageQueue.postRunnable(() -> {
+            if (task.maxId == sentMaxId && task.maxDate == sentMaxDate) {
+                removeReadTask(task);
+            } else {
+                task.sendRequestTime = SystemClock.elapsedRealtime();
+            }
+        });
+    }
+
+    private void onReadTaskFailed(ReadTask task) {
+        Utilities.stageQueue.postRunnable(() ->
+                task.sendRequestTime = SystemClock.elapsedRealtime()
+                        + HgramReadReceiptQueue.retryDelayMillis(false));
+    }
+
+    private boolean sendReadTask(ReadTask task) {
+        if (task == null) {
+            return false;
+        }
+        final int sentMaxId = task.maxId;
+        final int sentMaxDate = task.maxDate;
         if (task.replyId != 0 && task.monoForumPeerId == 0) {
+            final TLRPC.InputPeer peer = getInputPeer(task.dialogId);
+            if (peer == null) {
+                return false;
+            }
             TLRPC.TL_messages_readDiscussion req = new TLRPC.TL_messages_readDiscussion();
             req.msg_id = (int) task.replyId;
-            req.peer = getInputPeer(task.dialogId);
+            req.peer = peer;
             req.read_max_id = task.maxId;
             getConnectionsManager().sendRequest(req, (response, error) -> {
-
+                if (error == null) {
+                    onReadTaskSent(task, sentMaxId, sentMaxDate);
+                } else {
+                    onReadTaskFailed(task);
+                }
             });
         } else if (!DialogObject.isEncryptedDialog(task.dialogId)) {
-            TLRPC.InputPeer inputPeer = getInputPeer(task.dialogId);
+            final TLRPC.InputPeer inputPeer = getInputPeer(task.dialogId);
+            if (inputPeer == null) {
+                return false;
+            }
             TLObject req;
 
             if (task.monoForumPeerId != 0) {
+                final TLRPC.InputPeer peer = getInputPeer(task.monoForumPeerId);
+                if (peer == null) {
+                    return false;
+                }
                 TLRPC.TL_messages_readSavedHistory request = new TLRPC.TL_messages_readSavedHistory();
-                request.parent_peer = getInputPeer(task.dialogId);
-                request.peer = getInputPeer(task.monoForumPeerId);
+                request.parent_peer = inputPeer;
+                request.peer = peer;
                 request.max_id = task.maxId;
                 req = request;
             } else if (inputPeer instanceof TLRPC.TL_inputPeerChannel) {
+                final TLRPC.InputChannel channel = getInputChannel(-task.dialogId);
+                if (channel == null) {
+                    return false;
+                }
                 TLRPC.TL_channels_readHistory request = new TLRPC.TL_channels_readHistory();
-                request.channel = getInputChannel(-task.dialogId);
+                request.channel = channel;
                 request.max_id = task.maxId;
                 req = request;
             } else {
@@ -14956,68 +15097,89 @@ public class MessagesController extends BaseController implements NotificationCe
                         TLRPC.TL_messages_affectedMessages res = (TLRPC.TL_messages_affectedMessages) response;
                         processNewDifferenceParams(-1, res.pts, -1, res.pts_count);
                     }
+                    onReadTaskSent(task, sentMaxId, sentMaxDate);
+                } else {
+                    onReadTaskFailed(task);
                 }
             });
         } else {
-            TLRPC.EncryptedChat chat = getEncryptedChat(DialogObject.getEncryptedChatId(task.dialogId));
-            if (chat.auth_key != null && chat.auth_key.length > 1 && chat instanceof TLRPC.TL_encryptedChat) {
-                TLRPC.TL_messages_readEncryptedHistory req = new TLRPC.TL_messages_readEncryptedHistory();
-                req.peer = new TLRPC.TL_inputEncryptedChat();
-                req.peer.chat_id = chat.id;
-                req.peer.access_hash = chat.access_hash;
-                req.max_date = task.maxDate;
-                getConnectionsManager().sendRequest(req, (response, error) -> {
-
-                });
+            final TLRPC.EncryptedChat chat = getEncryptedChat(DialogObject.getEncryptedChatId(task.dialogId));
+            if (chat == null || chat.auth_key == null || chat.auth_key.length <= 1
+                    || !(chat instanceof TLRPC.TL_encryptedChat)) {
+                return false;
             }
+            TLRPC.TL_messages_readEncryptedHistory req = new TLRPC.TL_messages_readEncryptedHistory();
+            req.peer = new TLRPC.TL_inputEncryptedChat();
+            req.peer.chat_id = chat.id;
+            req.peer.access_hash = chat.access_hash;
+            req.max_date = task.maxDate;
+            getConnectionsManager().sendRequest(req, (response, error) -> {
+                if (error == null) {
+                    onReadTaskSent(task, sentMaxId, sentMaxDate);
+                } else {
+                    onReadTaskFailed(task);
+                }
+            });
         }
+        return true;
     }
 
     private void checkReadTasks() {
-        long time = SystemClock.elapsedRealtime();
+        final long time = SystemClock.elapsedRealtime();
         for (int a = 0, size = readTasks.size(); a < size; a++) {
             ReadTask task = readTasks.get(a);
             if (task.sendRequestTime > time) {
                 continue;
             }
-            completeReadTask(task);
-            readTasks.remove(a);
-            readTasksMap.remove(task.dialogId);
-            a--;
-            size--;
+            if (!HgramReadReceiptQueue.shouldSend(NekoConfig.sendReadMessagePackets,
+                    AyuGhostUtils.peekAllowReadPacket())) {
+                task.sendRequestTime = time + HgramReadReceiptQueue.retryDelayMillis(false);
+                continue;
+            }
+            task.sendRequestTime = time + HgramReadReceiptQueue.retryDelayMillis(sendReadTask(task));
         }
         for (int a = 0, size = repliesReadTasks.size(); a < size; a++) {
             ReadTask task = repliesReadTasks.get(a);
             if (task.sendRequestTime > time) {
                 continue;
             }
-            completeReadTask(task);
-            repliesReadTasks.remove(a);
-            threadsReadTasksMap.remove(task.dialogId + "_" + task.replyId);
-            a--;
-            size--;
+            if (!HgramReadReceiptQueue.shouldSend(NekoConfig.sendReadMessagePackets,
+                    AyuGhostUtils.peekAllowReadPacket())) {
+                task.sendRequestTime = time + HgramReadReceiptQueue.retryDelayMillis(false);
+                continue;
+            }
+            task.sendRequestTime = time + HgramReadReceiptQueue.retryDelayMillis(sendReadTask(task));
         }
     }
 
     public void markDialogAsReadNow(long dialogId, long replyId) {
         Utilities.stageQueue.postRunnable(() -> {
+            if (!HgramReadReceiptQueue.shouldSend(NekoConfig.sendReadMessagePackets,
+                    AyuGhostUtils.peekAllowReadPacket())) {
+                FileLog.d("HGRAM_READ ghost defer now dialog=" + dialogId + " thread=" + replyId);
+                return;
+            }
             if (replyId != 0) {
                 String key = dialogId + "_" + replyId;
                 ReadTask currentReadTask = threadsReadTasksMap.get(key);
                 if (currentReadTask == null) {
                     return;
                 }
-                completeReadTask(currentReadTask);
-                repliesReadTasks.remove(currentReadTask);
-                threadsReadTasksMap.remove(key);
+                currentReadTask.sendRequestTime = SystemClock.elapsedRealtime();
+                if (sendReadTask(currentReadTask)) {
+                    currentReadTask.sendRequestTime = SystemClock.elapsedRealtime()
+                            + HgramReadReceiptQueue.retryDelayMillis(true);
+                }
             } else {
                 ReadTask currentReadTask = readTasksMap.get(dialogId);
                 if (currentReadTask == null) {
                     return;
                 }
-                completeReadTask(currentReadTask);
-                readTasks.remove(currentReadTask);
-                readTasksMap.remove(dialogId);
+                currentReadTask.sendRequestTime = SystemClock.elapsedRealtime();
+                if (sendReadTask(currentReadTask)) {
+                    currentReadTask.sendRequestTime = SystemClock.elapsedRealtime()
+                            + HgramReadReceiptQueue.retryDelayMillis(true);
+                }
             }
         });
     }
@@ -15039,6 +15201,16 @@ public class MessagesController extends BaseController implements NotificationCe
     public void markDialogAsRead(long dialogId, int maxPositiveId, int maxNegativeId, int maxDate, boolean popup, long threadId, int countDiff, boolean readNow, int scheduledCount) {
         boolean createReadTask;
 
+        // Ghost mode must not write a local read state that the server will never see.
+        if (!DialogObject.isEncryptedDialog(dialogId)
+                && !HgramReadReceiptQueue.shouldSend(NekoConfig.sendReadMessagePackets,
+                        AyuGhostUtils.peekAllowReadPacket())) {
+            FileLog.d("HGRAM_READ ghost defer dialog=" + dialogId + " thread=" + threadId);
+            return;
+        }
+
+        final long monoForumPeerId = getMessagesStorage().isMonoForum(dialogId) ? threadId : 0;
+
         if (threadId != 0) {
             createReadTask = maxPositiveId != Integer.MAX_VALUE;
         } else {
@@ -15053,6 +15225,11 @@ public class MessagesController extends BaseController implements NotificationCe
                 }
                 dialogs_read_inbox_max.put(dialogId, Math.max(value, maxPositiveId));
 
+                createReadTask = maxPositiveId != Integer.MAX_VALUE;
+                if (createReadTask) {
+                    rememberHgramPendingRead(dialogId, threadId, monoForumPeerId,
+                            maxPositiveId, maxDate);
+                }
                 getMessagesStorage().processPendingRead(dialogId, maxPositiveId, maxNegativeId, scheduledCount);
                 getMessagesStorage().getStorageQueue().postRunnable(() -> AndroidUtilities.runOnUIThread(() -> {
                     TLRPC.Dialog dialog = dialogs_dict.get(dialogId);
@@ -15099,12 +15276,13 @@ public class MessagesController extends BaseController implements NotificationCe
                     }
                 }));
 
-                createReadTask = maxPositiveId != Integer.MAX_VALUE;
             } else {
                 if (maxDate == 0) {
                     return;
                 }
                 createReadTask = true;
+                rememberHgramPendingRead(dialogId, threadId, monoForumPeerId,
+                        maxPositiveId, maxDate);
 
                 TLRPC.EncryptedChat chat = getEncryptedChat(DialogObject.getEncryptedChatId(dialogId));
                 getMessagesStorage().processPendingRead(dialogId, maxPositiveId, maxNegativeId, scheduledCount);
@@ -15152,13 +15330,6 @@ public class MessagesController extends BaseController implements NotificationCe
             }
         }
 
-        final long monoForumPeerId;
-        if (getMessagesStorage().isMonoForum(dialogId)) {
-            monoForumPeerId = threadId;
-        } else {
-            monoForumPeerId = 0;
-        }
-
         if (createReadTask) {
             Utilities.stageQueue.postRunnable(() -> {
                 ReadTask currentReadTask;
@@ -15173,20 +15344,23 @@ public class MessagesController extends BaseController implements NotificationCe
                     currentReadTask.replyId = threadId;
                     currentReadTask.monoForumPeerId = monoForumPeerId;
                     currentReadTask.sendRequestTime = SystemClock.elapsedRealtime() + 5000;
-                    if (!readNow) {
-                        if (threadId != 0) {
-                            threadsReadTasksMap.put(dialogId + "_" + threadId, currentReadTask);
-                            repliesReadTasks.add(currentReadTask);
-                        } else {
-                            readTasksMap.put(dialogId, currentReadTask);
-                            readTasks.add(currentReadTask);
-                        }
+                    if (threadId != 0) {
+                        threadsReadTasksMap.put(dialogId + "_" + threadId, currentReadTask);
+                        repliesReadTasks.add(currentReadTask);
+                    } else {
+                        readTasksMap.put(dialogId, currentReadTask);
+                        readTasks.add(currentReadTask);
                     }
                 }
                 currentReadTask.maxDate = maxDate;
                 currentReadTask.maxId = maxPositiveId;
+                rememberHgramPendingRead(currentReadTask);
                 if (readNow) {
-                    completeReadTask(currentReadTask);
+                    currentReadTask.sendRequestTime = SystemClock.elapsedRealtime();
+                    if (sendReadTask(currentReadTask)) {
+                        currentReadTask.sendRequestTime = SystemClock.elapsedRealtime()
+                            + HgramReadReceiptQueue.retryDelayMillis(true);
+                    }
                 }
             });
         }

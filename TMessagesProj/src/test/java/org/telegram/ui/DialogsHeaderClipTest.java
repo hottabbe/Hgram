@@ -173,6 +173,37 @@ public class DialogsHeaderClipTest {
                 f.parentEdge(f.firstPage), 0f);
     }
 
+    @Test
+    public void dialogsClipFollowsOverscrollRowsAndReleases() {
+        Fixture f = new Fixture(false);
+        // Put the static padding above the header so the old code left a visible band.
+        f.first.setPadding(0, 20, 0, 0);
+        f.first.setLayoutManager(new androidx.recyclerview.widget.LinearLayoutManager(f.first.getContext()));
+
+        final float listTop = f.firstPage.getY() + f.first.getY();
+        final float scale = f.firstPage.getScaleY() * f.first.getScaleY();
+        final int height = f.first.getHeight();
+        final float[] overscrolls = {0f, 30.5f, 90f, -10f, Float.NaN};
+        for (float overscroll : overscrolls) {
+            ReflectionHelpers.setField(f.activity, "storiesOverscroll", overscroll);
+            f.first.setViewsOffset(overscroll);
+            assertEquals("view offset=" + overscroll, overscroll,
+                    ReflectionHelpers.getStaticField(DialogsActivity.class, "viewOffset"), 0.001f);
+            ReflectionHelpers.callInstanceMethod(f.first, "updateHgramClipTop",
+                    from(float.class, f.headerBottom()));
+            final HgramDialogsClip.Clip expected = HgramDialogsClip.resolveClipTop(
+                    f.headerBottom(), listTop, scale, height, 20, overscroll);
+            assertEquals("clip overscroll=" + overscroll, expected.clipTop, f.clip(f.first));
+        }
+
+        // Release: the animator returns overscroll to zero and the band must not reappear.
+        ReflectionHelpers.setField(f.activity, "storiesOverscroll", 0f);
+        f.first.setViewsOffset(0f);
+        ReflectionHelpers.callInstanceMethod(f.first, "updateHgramClipTop",
+                from(float.class, f.headerBottom()));
+        assertEquals(20, f.clip(f.first));
+    }
+
     private static final class Fixture {
         final DialogsActivity activity;
         final android.widget.FrameLayout root;

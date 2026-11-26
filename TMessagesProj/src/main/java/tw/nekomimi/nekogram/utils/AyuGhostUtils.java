@@ -37,6 +37,13 @@ public class AyuGhostUtils {
         return NekoConfig.sendReadMessagePackets || allowReadPacket.process();
     }
 
+    /** Non-consuming check for callers that must not spend a one-shot read allowance. */
+    public static boolean peekAllowReadPacket() {
+        synchronized (allowReadPacket.sync) {
+            return NekoConfig.sendReadMessagePackets || allowReadPacket.val;
+        }
+    }
+
     public static Long getDialogId(TLRPC.InputPeer peer) {
         long dialogId;
         if (peer.chat_id != 0) {

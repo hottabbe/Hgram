@@ -131,6 +131,47 @@ public class HgramAlbumNavigatorTest {
     }
 
     @Test
+    public void flatFallbackLeavesChatAlbumToAdjacentMessage() {
+        // Newest album item (right edge of the mirrored grid): forward goes to the newer chat photo.
+        assertEquals(0, HgramAlbumNavigator.flatFallbackIndex(
+                CHAT_ALBUM.length, 1, false, CHAT_ALBUM, FORWARD));
+        // Oldest album item (left edge): back goes to the older chat photo.
+        assertEquals(5, HgramAlbumNavigator.flatFallbackIndex(
+                CHAT_ALBUM.length, 4, false, CHAT_ALBUM, BACK));
+    }
+
+    @Test
+    public void flatFallbackClosesOnlyAtRealArrayEdges() {
+        final long[] flat = {0L, 0L, 0L};
+        assertEquals(CLOSE, HgramAlbumNavigator.flatFallbackIndex(
+                flat.length, 0, false, flat, BACK));
+        assertEquals(CLOSE, HgramAlbumNavigator.flatFallbackIndex(
+                flat.length, 2, false, flat, FORWARD));
+        assertEquals(1, HgramAlbumNavigator.flatFallbackIndex(
+                flat.length, 0, false, flat, FORWARD));
+        assertEquals(1, HgramAlbumNavigator.flatFallbackIndex(
+                flat.length, 2, false, flat, BACK));
+    }
+
+    @Test
+    public void flatFallbackHandlesSingleItemAlbumAndMediaTab() {
+        final long[] singleItemAlbum = {0L, 9L, 0L};
+        assertEquals(0, HgramAlbumNavigator.flatFallbackIndex(
+                singleItemAlbum.length, 1, false, singleItemAlbum, FORWARD));
+        assertEquals(2, HgramAlbumNavigator.flatFallbackIndex(
+                singleItemAlbum.length, 1, false, singleItemAlbum, BACK));
+
+        assertEquals(0, HgramAlbumNavigator.flatFallbackIndex(
+                MEDIA_ALBUM.length, 1, true, MEDIA_ALBUM, BACK));
+        assertEquals(5, HgramAlbumNavigator.flatFallbackIndex(
+                MEDIA_ALBUM.length, 4, true, MEDIA_ALBUM, FORWARD));
+        assertEquals(CLOSE, HgramAlbumNavigator.flatFallbackIndex(
+                MEDIA_ALBUM.length, 0, true, MEDIA_ALBUM, BACK));
+        assertEquals(CLOSE, HgramAlbumNavigator.flatFallbackIndex(
+                MEDIA_ALBUM.length, 5, true, MEDIA_ALBUM, FORWARD));
+    }
+
+    @Test
     public void unloadedNeighbourSuppressesTheMove() {
         assertEquals(NO_MOVE, HgramAlbumNavigator.resolveMove(
                 CHAT_ALBUM.length, 2, false, CHAT_ALBUM, FORWARD, false));
@@ -156,5 +197,63 @@ public class HgramAlbumNavigatorTest {
         } finally {
             Locale.setDefault(original);
         }
+    }
+
+    @Test
+    public void previewNeighbourFallsBackToFlatIndexAtAlbumEdges() {
+        // setImages() preloads these indexes into the side receivers before the swipe.
+        assertEquals(0, HgramAlbumNavigator.previewIndex(
+                CHAT_ALBUM.length, 1, false, CHAT_ALBUM, FORWARD));
+        assertEquals(5, HgramAlbumNavigator.previewIndex(
+                CHAT_ALBUM.length, 4, false, CHAT_ALBUM, BACK));
+        // Inside the album the preview stays group-bound; real array edges stay empty.
+        assertEquals(3, HgramAlbumNavigator.previewIndex(
+                CHAT_ALBUM.length, 4, false, CHAT_ALBUM, FORWARD));
+        assertEquals(CLOSE, HgramAlbumNavigator.previewIndex(
+                CHAT_ALBUM.length, 0, false, CHAT_ALBUM, BACK));
+        assertEquals(CLOSE, HgramAlbumNavigator.previewIndex(
+                CHAT_ALBUM.length, 5, false, CHAT_ALBUM, FORWARD));
+        // Media tab keeps the flat preview at album edges.
+        assertEquals(0, HgramAlbumNavigator.previewIndex(
+                MEDIA_ALBUM.length, 1, true, MEDIA_ALBUM, BACK));
+        assertEquals(5, HgramAlbumNavigator.previewIndex(
+                MEDIA_ALBUM.length, 4, true, MEDIA_ALBUM, FORWARD));
+        // Single photo at the array edge has no preview target.
+        long[] flat = {0L, 0L, 0L};
+        assertEquals(CLOSE, HgramAlbumNavigator.previewIndex(flat.length, 0, false, flat, BACK));
+        assertEquals(1, HgramAlbumNavigator.previewIndex(flat.length, 0, false, flat, FORWARD));
+    }
+
+    @Test
+    public void boundaryForwardStepKeepsAlbumMirror() {
+        // Leaving a chat album keeps the mirrored direction; entering it uses the flat step.
+        assertTrue(HgramAlbumNavigator.isForwardStep(false, 7L, 0L, 4, 3));
+        assertFalse(HgramAlbumNavigator.isForwardStep(false, 7L, 0L, 4, 5));
+        assertTrue(HgramAlbumNavigator.isForwardStep(false, 0L, 7L, 2, 3));
+        assertFalse(HgramAlbumNavigator.isForwardStep(false, 0L, 7L, 2, 1));
+        // Media tab stays flat across album boundaries.
+        assertTrue(HgramAlbumNavigator.isForwardStep(true, 7L, 0L, 2, 3));
+        assertFalse(HgramAlbumNavigator.isForwardStep(true, 7L, 0L, 2, 1));
+    }
+
+    @Test
+    public void edgeReturnContinuesOutwardAndReturnsToAlbum() {
+        // Forward exit: album edge 2 -> flat 1. Same direction goes further out, reverse returns.
+        assertEquals(0, HgramAlbumNavigator.edgeReturnIndex(6, 1, 2, FORWARD, FORWARD));
+        assertEquals(2, HgramAlbumNavigator.edgeReturnIndex(6, 1, 2, FORWARD, BACK));
+        assertEquals(CLOSE, HgramAlbumNavigator.edgeReturnIndex(6, 0, 2, FORWARD, FORWARD));
+        assertEquals(1, HgramAlbumNavigator.edgeReturnIndex(6, 0, 2, FORWARD, BACK));
+
+        // Backward exit: album edge 3 -> flat 4. Same direction goes further out, reverse returns.
+        assertEquals(5, HgramAlbumNavigator.edgeReturnIndex(6, 4, 3, BACK, BACK));
+        assertEquals(3, HgramAlbumNavigator.edgeReturnIndex(6, 4, 3, BACK, FORWARD));
+        assertEquals(CLOSE, HgramAlbumNavigator.edgeReturnIndex(6, 5, 3, BACK, BACK));
+        assertEquals(4, HgramAlbumNavigator.edgeReturnIndex(6, 5, 3, BACK, FORWARD));
+
+        // Outside the outward side or with an unrelated direction there is no override.
+        assertEquals(HgramAlbumNavigator.NO_EDGE_RETURN,
+                HgramAlbumNavigator.edgeReturnIndex(6, 2, 2, FORWARD, FORWARD));
+        assertEquals(HgramAlbumNavigator.NO_EDGE_RETURN,
+                HgramAlbumNavigator.edgeReturnIndex(6, 1, 2, FORWARD, 0));
     }
 }

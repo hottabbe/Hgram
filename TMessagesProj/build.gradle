@@ -33,7 +33,7 @@ idea {
 }
 
 def verName = APP_VERSION_NAME
-def verCode = 1312
+def verCode = 1313
 // Opt-in R8 experiment; default release keeps minify/shrink disabled.
 def hgramR8 = project.hasProperty("hgramR8")
 

@@ -30,9 +30,48 @@ public final class HgramDialogsClip {
         return Math.max(0, Math.min(computed, safePadding));
     }
 
+    /**
+     * During a pull-down the list rows are translated by {@code storiesOverscroll} while the
+     * static list padding stays the same. The clip must follow the rows, otherwise the space
+     * between the header and the translated rows stays visible as an empty band until the
+     * 200 ms overscroll animator returns to zero.
+     */
+    public static int effectivePaddingTop(int paddingTop, float storiesOverscroll) {
+        final int safePadding = Math.max(0, paddingTop);
+        if (!(storiesOverscroll > 0f)) {
+            return safePadding;
+        }
+        return safePadding + (int) Math.ceil(storiesOverscroll);
+    }
+
     /** A DOWN below the clip must reach the panel, not the list. */
     public static boolean acceptsDown(float y, int clipTop) {
         return y >= clipTop;
+    }
+
+    /** Result of the complete clip computation, reused by logging and the cache. */
+    public static final class Clip {
+        public final int computed;
+        public final int paddingTop;
+        public final int clipTop;
+
+        public Clip(int computed, int paddingTop, int clipTop) {
+            this.computed = computed;
+            this.paddingTop = paddingTop;
+            this.clipTop = clipTop;
+        }
+    }
+
+    /**
+     * Single composition used by the dialogs list: absolute header edge -> local computed clip ->
+     * overscroll-aware padding clamp. Kept pure so the on-screen path can be unit tested.
+     */
+    public static Clip resolveClipTop(float headerBottom, float listTop, float scale, int listHeight,
+                                      int staticPaddingTop, float storiesOverscroll) {
+        final float adjustedBottom = scale > 0f ? (headerBottom - listTop) / scale : 0f;
+        final int computed = clipTop(adjustedBottom, 0, listHeight);
+        final int paddingTop = effectivePaddingTop(staticPaddingTop, storiesOverscroll);
+        return new Clip(computed, paddingTop, clampToPadding(computed, paddingTop));
     }
 
     /** Single publication point: equal edges do not invalidate, changed edges do. */

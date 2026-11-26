@@ -2068,6 +2068,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     private Bitmap videoFrameBitmap = null;
     private int currentIndex;
     private int switchingToIndex;
+    private int hgramEdgeReturnAlbumIndex = -1;
+    private int hgramEdgeReturnDirection;
+    private long hgramEdgeReturnGroupId;
+    private boolean hgramEdgeReturnTransition;
     private boolean editing;
     private boolean fancyShadows;
     private MessageObject currentMessageObject;
@@ -14900,11 +14904,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             int forwardIndex = currentIndex + 1;
             int backwardIndex = currentIndex - 1;
             if (!imagesArr.isEmpty()) {
-                long[] groupedIds = getHgramGroupedIds();
-                forwardIndex = HgramAlbumNavigator.neighborIndex(imagesArr.size(), currentIndex,
-                        opennedFromMedia, groupedIds, HgramAlbumNavigator.DIRECTION_FORWARD);
-                backwardIndex = HgramAlbumNavigator.neighborIndex(imagesArr.size(), currentIndex,
-                        opennedFromMedia, groupedIds, HgramAlbumNavigator.DIRECTION_BACKWARD);
+                forwardIndex = getHgramNeighborIndex(currentIndex, HgramAlbumNavigator.DIRECTION_FORWARD);
+                backwardIndex = getHgramNeighborIndex(currentIndex, HgramAlbumNavigator.DIRECTION_BACKWARD);
             }
             setIndexToImage(centerImage, currentIndex, null);
             setIndexToPaintingOverlay(currentIndex, paintingOverlay);
@@ -14929,13 +14930,29 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         if (imagesArr.isEmpty()) {
             return index + (direction > 0 ? 1 : -1);
         }
-        return HgramAlbumNavigator.neighborIndex(imagesArr.size(), index, opennedFromMedia,
+        if (isHgramEdgeReturnActive(index)) {
+            final int returnIndex = HgramAlbumNavigator.edgeReturnIndex(imagesArr.size(), index,
+                    hgramEdgeReturnAlbumIndex, hgramEdgeReturnDirection, direction);
+            if (returnIndex != HgramAlbumNavigator.NO_EDGE_RETURN) {
+                return returnIndex;
+            }
+        }
+        // At an album edge the adjacent chat photo still belongs to imagesArr. Preload it into
+        // the side slot so the swipe animation has the real target instead of an empty receiver.
+        return HgramAlbumNavigator.previewIndex(imagesArr.size(), index, opennedFromMedia,
                 getHgramGroupedIds(), direction);
     }
 
     private boolean isHgramAlbumBoundary(int direction) {
         if (opennedFromMedia) {
             return false;
+        }
+        if (isHgramEdgeReturnActive(currentIndex)
+                && HgramAlbumNavigator.edgeReturnIndex(imagesArr.size(), currentIndex,
+                        hgramEdgeReturnAlbumIndex, hgramEdgeReturnDirection, direction)
+                        != HgramAlbumNavigator.NO_EDGE_RETURN) {
+            // Allow both the outward gesture (may close at the real edge) and the return gesture.
+            return true;
         }
         if (imagesArr.isEmpty() || currentIndex < 0 || currentIndex >= imagesArr.size()) {
             return false;
@@ -14961,6 +14978,57 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
         return HgramAlbumNavigator.isForwardStep(opennedFromMedia, previousGroupId,
                 currentGroupId, previousIndex, index);
+    }
+
+    private boolean isHgramGroupChanged(int previousIndex, int index) {
+        if (imagesArr.isEmpty() || previousIndex < 0 || previousIndex >= imagesArr.size()
+                || index < 0 || index >= imagesArr.size()) {
+            return false;
+        }
+        MessageObject previous = imagesArr.get(previousIndex);
+        MessageObject current = imagesArr.get(index);
+        final long previousGroupId = previous != null ? previous.getGroupId() : 0L;
+        final long currentGroupId = current != null ? current.getGroupId() : 0L;
+        return previousGroupId != currentGroupId;
+    }
+
+    private boolean isHgramEdgeReturnActive(int index) {
+        if (opennedFromMedia || hgramEdgeReturnDirection == 0
+                || index < 0 || index >= imagesArr.size()
+                || hgramEdgeReturnAlbumIndex < 0 || hgramEdgeReturnAlbumIndex >= imagesArr.size()) {
+            return false;
+        }
+        if (hgramEdgeReturnDirection > 0
+                ? index >= hgramEdgeReturnAlbumIndex
+                : index <= hgramEdgeReturnAlbumIndex) {
+            return false;
+        }
+        final MessageObject album = imagesArr.get(hgramEdgeReturnAlbumIndex);
+        if (album == null || album.getGroupId() == 0L
+                || album.getGroupId() != hgramEdgeReturnGroupId) {
+            return false;
+        }
+        final MessageObject current = imagesArr.get(index);
+        return current != null && current.getGroupId() == 0L;
+    }
+
+    private void rememberHgramEdgeReturn(int albumIndex, int direction) {
+        if (opennedFromMedia || direction == 0 || albumIndex < 0 || albumIndex >= imagesArr.size()) {
+            return;
+        }
+        final MessageObject album = imagesArr.get(albumIndex);
+        if (album == null || album.getGroupId() == 0L) {
+            return;
+        }
+        hgramEdgeReturnAlbumIndex = albumIndex;
+        hgramEdgeReturnDirection = direction;
+        hgramEdgeReturnGroupId = album.getGroupId();
+    }
+
+    private void clearHgramEdgeReturn() {
+        hgramEdgeReturnAlbumIndex = -1;
+        hgramEdgeReturnDirection = 0;
+        hgramEdgeReturnGroupId = 0L;
     }
 
     private void setIsAboutToSwitchToIndex(int index, boolean init, boolean animated) {
@@ -16167,6 +16235,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
         int prevIndex = currentIndex;
         currentIndex = index;
+        if (!hgramEdgeReturnTransition && hgramEdgeReturnDirection != 0
+                && !isHgramEdgeReturnActive(currentIndex)) {
+            clearHgramEdgeReturn();
+        }
         setIsAboutToSwitchToIndex(currentIndex, init, animateCaption);
 
         boolean isVideo = false;
@@ -16476,13 +16548,28 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         centerImageIsLivePhoto = isLivePhoto;
 
         if (prevIndex == -1 || force) {
+            clearHgramEdgeReturn();
             setImages();
             for (int a = 0; a < 3; a++) {
                 checkProgress(a, false, false);
             }
         } else {
             checkProgress(0, true, false);
-            if (!isHgramAlbumForwardStep(prevIndex, currentIndex)) {
+            if (hgramEdgeReturnTransition) {
+                // The return gesture leaves the flat neighbour in the mirrored direction; the
+                // rotated receivers no longer describe the new neighbours, so rebind all slots.
+                setImages();
+                for (int a = 0; a < 3; a++) {
+                    checkProgress(a, false, false);
+                }
+            } else if (!opennedFromMedia && isHgramGroupChanged(prevIndex, currentIndex)) {
+                // Crossed an album boundary: the rotated receivers no longer match the flat
+                // order, so rebind all three slots to the new neighbours.
+                setImages();
+                for (int a = 0; a < 3; a++) {
+                    checkProgress(a, false, false);
+                }
+            } else if (!isHgramAlbumForwardStep(prevIndex, currentIndex)) {
                 ImageReceiver temp = rightImage;
                 rightImage = centerImage;
                 centerImage = leftImage;
@@ -19975,21 +20062,52 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     private void switchToNextIndex(int add, boolean init) {
         int targetIndex;
+        boolean hgramReturnTransition = false;
         if (imagesArr.isEmpty()) {
             targetIndex = currentIndex + add;
         } else {
-            boolean neighborLoaded = add > 0 ? rightImage.hasImageSet() : leftImage.hasImageSet();
-            targetIndex = HgramAlbumNavigator.resolveMove(imagesArr.size(), currentIndex,
-                    opennedFromMedia, getHgramGroupedIds(), add, neighborLoaded);
-            if (targetIndex == HgramAlbumNavigator.CLOSE) {
-                if (isHgramAlbumBoundary(add)) {
+            final int returnIndex = isHgramEdgeReturnActive(currentIndex)
+                    ? HgramAlbumNavigator.edgeReturnIndex(imagesArr.size(), currentIndex,
+                            hgramEdgeReturnAlbumIndex, hgramEdgeReturnDirection, add)
+                    : HgramAlbumNavigator.NO_EDGE_RETURN;
+            if (returnIndex != HgramAlbumNavigator.NO_EDGE_RETURN) {
+                final boolean targetIsFlat = returnIndex >= 0 && returnIndex < imagesArr.size()
+                        && imagesArr.get(returnIndex) != null
+                        && imagesArr.get(returnIndex).getGroupId() == 0L;
+                if (returnIndex == HgramAlbumNavigator.CLOSE || !targetIsFlat) {
+                    clearHgramEdgeReturn();
+                }
+                if (returnIndex == HgramAlbumNavigator.CLOSE) {
                     closePhoto(false, false);
                     return;
                 }
-                targetIndex = currentIndex + add;
-            }
-            if (targetIndex == HgramAlbumNavigator.NO_MOVE) {
-                return;
+                targetIndex = returnIndex;
+                hgramReturnTransition = true;
+            } else {
+                clearHgramEdgeReturn();
+                boolean neighborLoaded = add > 0 ? rightImage.hasImageSet() : leftImage.hasImageSet();
+                targetIndex = HgramAlbumNavigator.resolveMove(imagesArr.size(), currentIndex,
+                        opennedFromMedia, getHgramGroupedIds(), add, neighborLoaded);
+                if (targetIndex == HgramAlbumNavigator.CLOSE) {
+                    // The album edge may still have a flat neighbour in the chat; only the real
+                    // edge of imagesArr closes the viewer.
+                    targetIndex = HgramAlbumNavigator.flatFallbackIndex(imagesArr.size(), currentIndex,
+                            opennedFromMedia, getHgramGroupedIds(), add);
+                    if (targetIndex == HgramAlbumNavigator.CLOSE) {
+                        closePhoto(false, false);
+                        return;
+                    }
+                    // Remember the edge so the next gesture can continue outward or come back.
+                    final MessageObject fallbackTarget = imagesArr.get(targetIndex);
+                    if (fallbackTarget != null && fallbackTarget.getGroupId() == 0L) {
+                        rememberHgramEdgeReturn(currentIndex, add);
+                    } else {
+                        clearHgramEdgeReturn();
+                    }
+                }
+                if (targetIndex == HgramAlbumNavigator.NO_MOVE) {
+                    return;
+                }
             }
         }
         if (currentMessageObject != null) {
@@ -20006,7 +20124,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             groupedPhotosListView.setAnimateBackground(true);
         }
         playerAutoStarted = false;
+        hgramEdgeReturnTransition = hgramReturnTransition;
         setImageIndex(targetIndex, init, true);
+        hgramEdgeReturnTransition = false;
         if (shouldMessageObjectAutoPlayed(currentMessageObject) || shouldIndexAutoPlayed(currentIndex)) {
             playerAutoStarted = true;
             onActionClick(true);

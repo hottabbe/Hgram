@@ -387,11 +387,39 @@ public class ChatSelectionReactionMenuOverlay extends FrameLayout {
     }
 
     public boolean onBackPressed(boolean invoked) {
-        if (reactionsContainerLayout != null && reactionsContainerLayout.getReactionsWindow() != null) {
-            if (invoked) reactionsContainerLayout.dismissWindow();
-            return false;
+        final boolean customEmojiWindowOpen = reactionsContainerLayout != null
+                && reactionsContainerLayout.getReactionsWindow() != null;
+        switch (ChatSelectionReactionBack.resolve(customEmojiWindowOpen, isVisible())) {
+            case ChatSelectionReactionBack.CLOSE_CUSTOM_EMOJI:
+                if (invoked) {
+                    reactionsContainerLayout.dismissWindow();
+                }
+                return false;
+            case ChatSelectionReactionBack.HIDE_OVERLAY:
+                if (invoked) {
+                    dismissMenu();
+                }
+                return true;
+            case ChatSelectionReactionBack.PASS:
+            default:
+                return true;
         }
-        return true;
+    }
+
+    /** Hides the selection reaction bar together with the message menu, without clearing selection. */
+    public void dismissMenu() {
+        if (reactionsContainerLayout != null) {
+            reactionsContainerLayout.dismissParent(true);
+        }
+        if (!isVisible) {
+            return;
+        }
+        final boolean alreadyHiding = hiddenByScroll;
+        isVisible = false;
+        hiddenByScroll = false;
+        if (!alreadyHiding) {
+            animateVisible(false);
+        }
     }
 
     public void setHiddenByScroll(boolean hiddenByScroll) {
