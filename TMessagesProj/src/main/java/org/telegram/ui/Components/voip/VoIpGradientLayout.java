@@ -355,7 +355,7 @@ public class VoIpGradientLayout extends FrameLayout {
                 animator.resume();
             } else if (!animator.isStarted()) {
                 animator.start();
-            }
+        }
         } else if (animator.isRunning() && !animator.isPaused()) {
             animator.pause();
         }

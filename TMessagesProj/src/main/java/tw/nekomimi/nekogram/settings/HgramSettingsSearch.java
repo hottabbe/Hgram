@@ -45,6 +45,7 @@ final class HgramSettingsSearch {
     static final int ROW_EXIF_CLEAR = 79;
     static final int ROW_OCR_LONG_PRESS = 80;
     static final int ROW_OCR_MODELS = 81;
+    static final int ROW_HIGH_REFRESH_BOOST = 82;
 
     private static final String HAPTIC_COMMON =
             "вибра вибро вибрация haptic feedback сила длительность";
@@ -151,6 +152,8 @@ final class HgramSettingsSearch {
                 return "fps кадр throttle частота frame 60";
             case ROW_WEAK_NETWORK:
                 return "слабая сеть weak network мобильная mobile всегда off";
+            case ROW_HIGH_REFRESH_BOOST:
+                return "refresh rate частота обновления экран display 120 fps boost производительность battery батарея";
             case ROW_NOTIF_MEDIA_STYLE:
                 return "уведомление превью фото hyperos miui media notification style bigpicture";
             case ROW_DOWNLOAD_THREADS:

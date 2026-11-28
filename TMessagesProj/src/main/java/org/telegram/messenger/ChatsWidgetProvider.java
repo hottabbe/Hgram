@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.PendingIntent;
 import android.appwidget.AppWidgetManager;
 import android.appwidget.AppWidgetProvider;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -65,6 +66,19 @@ public class ChatsWidgetProvider extends AppWidgetProvider {
         return n - 1;
     }
 
+    /** Refreshes all chat widgets after hidden-dialog visibility changes. */
+    public static void updateAllWidgets() {
+        final Context context = ApplicationLoader.applicationContext;
+        if (context == null) {
+            return;
+        }
+        final AppWidgetManager manager = AppWidgetManager.getInstance(context);
+        final int[] ids = manager.getAppWidgetIds(new ComponentName(context, ChatsWidgetProvider.class));
+        for (int id : ids) {
+            updateWidget(context, manager, id);
+        }
+    }
+
     public static void updateWidget(Context context, AppWidgetManager appWidgetManager, int appWidgetId) {
         ApplicationLoader.postInitApplication();
         Bundle options = appWidgetManager.getAppWidgetOptions(appWidgetId);
@@ -85,16 +99,11 @@ public class ChatsWidgetProvider extends AppWidgetProvider {
                 editor.putInt("account" + appWidgetId, UserConfig.selectedAccount);
                 editor.putInt("type" + appWidgetId, EditWidgetActivity.TYPE_CHATS).commit();
             }
-            ArrayList<Long> selectedDialogs = new ArrayList<>();
-            if (accountId >= 0) {
-                AccountInstance.getInstance(accountId).getMessagesStorage().getWidgetDialogIds(appWidgetId, EditWidgetActivity.TYPE_CHATS, selectedDialogs, null, null, false);
-            }
-
-            if (rows == 1 || selectedDialogs.size() <= 1) {
+            if (rows == 1) {
                 id = R.layout.shortcut_widget_layout_1;
-            } else if (rows == 2 || selectedDialogs.size() <= 2) {
+            } else if (rows == 2) {
                 id = R.layout.shortcut_widget_layout_2;
-            } else if (rows == 3 || selectedDialogs.size() <= 3) {
+            } else if (rows == 3) {
                 id = R.layout.shortcut_widget_layout_3;
             } else {
                 id = R.layout.shortcut_widget_layout_4;

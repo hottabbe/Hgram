@@ -217,7 +217,7 @@ public class Emoji {
                 }
                 if (bitmap != null) {
                     synchronized (Emoji.class) {
-                        emojiBmp[page][page2] = bitmap;
+                    emojiBmp[page][page2] = bitmap;
                         memoryUsage += bitmap.getByteCount();
                     }
                     trimEmojiMemory(page, page2);

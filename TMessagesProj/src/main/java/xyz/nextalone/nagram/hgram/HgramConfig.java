@@ -23,6 +23,8 @@ public final class HgramConfig {
     private static final String EXIF_CLEANUP = "exif_clean";
     private static final String OCR_LONG_PRESS = "ocr_long_press";
     private static final String HAPTIC_ENABLED = "haptic_enabled";
+    private static final String HIGH_REFRESH_BOOST = "high_refresh_boost";
+    private static final String NOTIFICATION_IMPORTANCE_BOOST = "notification_importance_boost";
     private static final String SUMMARIZER_ENABLED = "summarizer_enabled";
     private static final String SUMMARIZER_MIN_WORDS = "summarizer_min_words";
     private static final String SUMMARIZER_KEY = "summarizer_openrouter_key";
@@ -50,6 +52,7 @@ public final class HgramConfig {
     private static volatile Boolean fastNetworkHandoverEnabled;
     private static volatile Boolean allowScreenshots;
     private static volatile int antiPeekSensitivity = -1;
+    private static volatile boolean antiPeekSensitivityLoaded;
     private static volatile Boolean antiPeekShowToast;
     private static volatile Boolean antiPeekHaptic;
     private static volatile int antiPeekHoldMin = -1;
@@ -120,7 +123,7 @@ public final class HgramConfig {
     }
 
     public static int getShortMergeMaxChars() {
-        if (shortMergeMaxChars < 0) {
+        if (shortMergeMaxChars <= 0) {
             shortMergeMaxChars = preferences().getInt("short_merge_max_chars",
                     HgramShortMessageMerger.DEFAULT_MAX_CHARS);
         }
@@ -128,7 +131,7 @@ public final class HgramConfig {
     }
 
     public static int getShortMergeMaxWords() {
-        if (shortMergeMaxWords < 0) {
+        if (shortMergeMaxWords <= 0) {
             shortMergeMaxWords = preferences().getInt("short_merge_max_words",
                     HgramShortMessageMerger.DEFAULT_MAX_WORDS);
         }
@@ -136,7 +139,7 @@ public final class HgramConfig {
     }
 
     public static int getShortMergeMaxWindowSeconds() {
-        if (shortMergeMaxWindow < 0) {
+        if (shortMergeMaxWindow <= 0) {
             shortMergeMaxWindow = preferences().getInt("short_merge_max_window",
                     HgramShortMessageMerger.DEFAULT_MAX_WINDOW_SECONDS);
         }
@@ -144,7 +147,7 @@ public final class HgramConfig {
     }
 
     public static int getShortMergeMaxChainSize() {
-        if (shortMergeMaxChain < 0) {
+        if (shortMergeMaxChain <= 0) {
             shortMergeMaxChain = preferences().getInt("short_merge_max_chain",
                     HgramShortMessageMerger.DEFAULT_MAX_CHAIN_SIZE);
         }
@@ -287,7 +290,9 @@ public final class HgramConfig {
             synchronized (HgramConfig.class) {
                 enabled = pinToScreenEnabled;
                 if (enabled == null) {
-                    enabled = preferences().getBoolean(PIN_TO_SCREEN, true);
+                    // The floating card/menu was not restored after the 13.2.2 sync; keep the
+                    // unfinished feature opt-in instead of advertising an inert default.
+                    enabled = preferences().getBoolean(PIN_TO_SCREEN, false);
                     pinToScreenEnabled = enabled;
                 }
             }
@@ -315,7 +320,9 @@ public final class HgramConfig {
     private static final String WEAK_NETWORK_MODE = "weak_network_mode";
     private static final String NOTIF_MEDIA_STYLE = "notif_media_style";
     private static volatile int weakNetworkMode = -1;
+    private static volatile boolean weakNetworkModeLoaded;
     private static volatile int notifMediaStyle = -1;
+    private static volatile boolean notifMediaStyleLoaded;
 
     /**
      * Controls the low-bandwidth behaviour. Auto enables it when the connection looks slow,
@@ -323,21 +330,22 @@ public final class HgramConfig {
      * report a fast network type), Off disables it completely.
      */
     public static int getWeakNetworkMode() {
-        int value = weakNetworkMode;
-        if (value < 0) {
-            value = preferences().getInt(WEAK_NETWORK_MODE, WEAK_NETWORK_AUTO);
+        if (!weakNetworkModeLoaded) {
+            int value = preferences().getInt(WEAK_NETWORK_MODE, WEAK_NETWORK_AUTO);
             if (value != WEAK_NETWORK_ALWAYS && value != WEAK_NETWORK_OFF) {
                 value = WEAK_NETWORK_AUTO;
             }
             weakNetworkMode = value;
+            weakNetworkModeLoaded = true;
         }
-        return value;
+        return weakNetworkMode;
     }
 
     public static void setWeakNetworkMode(int mode) {
         final int value = mode == WEAK_NETWORK_ALWAYS || mode == WEAK_NETWORK_OFF ? mode : WEAK_NETWORK_AUTO;
         preferences().edit().putInt(WEAK_NETWORK_MODE, value).apply();
         weakNetworkMode = value;
+        weakNetworkModeLoaded = true;
     }
 
     public static final int NOTIF_MEDIA_STYLE_AUTO = 0;
@@ -346,15 +354,15 @@ public final class HgramConfig {
 
     /** 0 = platform default/auto, 1 = system BigPictureStyle, 2 = custom RemoteViews. */
     public static int getNotifMediaStyle() {
-        int value = notifMediaStyle;
-        if (value < 0) {
-            value = preferences().getInt(NOTIF_MEDIA_STYLE, NOTIF_MEDIA_STYLE_AUTO);
+        if (!notifMediaStyleLoaded) {
+            int value = preferences().getInt(NOTIF_MEDIA_STYLE, NOTIF_MEDIA_STYLE_AUTO);
             if (value != NOTIF_MEDIA_STYLE_SYSTEM && value != NOTIF_MEDIA_STYLE_CUSTOM) {
                 value = NOTIF_MEDIA_STYLE_AUTO;
             }
             notifMediaStyle = value;
+            notifMediaStyleLoaded = true;
         }
-        return value;
+        return notifMediaStyle;
     }
 
     public static void setNotifMediaStyle(int style) {
@@ -362,6 +370,7 @@ public final class HgramConfig {
                 ? style : NOTIF_MEDIA_STYLE_AUTO;
         preferences().edit().putInt(NOTIF_MEDIA_STYLE, value).apply();
         notifMediaStyle = value;
+        notifMediaStyleLoaded = true;
     }
 
     public static final String STT_ENGINE_VOSK = "vosk";
@@ -417,7 +426,16 @@ public final class HgramConfig {
     }
 
     public static boolean isHapticEnabled() {
-        return preferences().getBoolean(HAPTIC_ENABLED, true);
+        return preferences().getBoolean(HAPTIC_ENABLED, false);
+    }
+
+    /** Optional Hgram display boost; upstream default keeps the standard refresh behavior. */
+    public static boolean isHighRefreshBoostEnabled() {
+        return preferences().getBoolean(HIGH_REFRESH_BOOST, false);
+    }
+
+    public static void setHighRefreshBoostEnabled(boolean enabled) {
+        preferences().edit().putBoolean(HIGH_REFRESH_BOOST, enabled).apply();
     }
 
     public static boolean isSummarizerEnabled() {
@@ -549,13 +567,21 @@ public final class HgramConfig {
         fastNetworkHandoverEnabled = enabled;
     }
 
+    public static boolean isNotificationImportanceBoostEnabled() {
+        return preferences().getBoolean(NOTIFICATION_IMPORTANCE_BOOST, false);
+    }
+
+    public static void setNotificationImportanceBoostEnabled(boolean enabled) {
+        preferences().edit().putBoolean(NOTIFICATION_IMPORTANCE_BOOST, enabled).apply();
+    }
+
     public static boolean isAllowScreenshotsEnabled() {
         Boolean enabled = allowScreenshots;
         if (enabled == null) {
             synchronized (HgramConfig.class) {
                 enabled = allowScreenshots;
                 if (enabled == null) {
-                    enabled = preferences().getBoolean(ALLOW_SCREENSHOTS, true);
+                    enabled = preferences().getBoolean(ALLOW_SCREENSHOTS, false);
                     allowScreenshots = enabled;
                 }
             }
@@ -666,11 +692,10 @@ public final class HgramConfig {
      * (including 500 ms) to MEDIUM.
      */
     public static int getAntiPeekSensitivity() {
-        int value = antiPeekSensitivity;
-        if (value < 0) {
-            final android.content.SharedPreferences prefs = preferences();
-            value = readIntPreference(prefs, ANTI_PEEK_SENSITIVITY, -1);
+        if (!antiPeekSensitivityLoaded) {
+            int value = readIntPreference(preferences(), ANTI_PEEK_SENSITIVITY, -1);
             if (value != ANTI_PEEK_SENSITIVITY_LOW && value != ANTI_PEEK_SENSITIVITY_MEDIUM && value != ANTI_PEEK_SENSITIVITY_HIGH) {
+                final SharedPreferences prefs = preferences();
                 final int legacyMin = readIntPreference(prefs, "anti_peek_hold_min_ms", 500);
                 if (legacyMin == 300) {
                     value = ANTI_PEEK_SENSITIVITY_HIGH;
@@ -682,8 +707,9 @@ public final class HgramConfig {
                 prefs.edit().putInt(ANTI_PEEK_SENSITIVITY, value).apply();
             }
             antiPeekSensitivity = value;
+            antiPeekSensitivityLoaded = true;
         }
-        return value;
+        return antiPeekSensitivity;
     }
 
     public static void setAntiPeekSensitivity(int value) {
@@ -691,6 +717,7 @@ public final class HgramConfig {
                 ? value : ANTI_PEEK_SENSITIVITY_MEDIUM;
         preferences().edit().putInt(ANTI_PEEK_SENSITIVITY, safe).apply();
         antiPeekSensitivity = safe;
+        antiPeekSensitivityLoaded = true;
     }
 
     public static boolean isAntiPeekShowToast() {
@@ -726,6 +753,9 @@ public final class HgramConfig {
         preferences().edit().clear().apply();
         downloadThreads = 0;
         notifMediaStyle = 0;
+        notifMediaStyleLoaded = false;
+        weakNetworkMode = -1;
+        weakNetworkModeLoaded = false;
         shortMessageMergeEnabled = false;
         shortMergeMaxChars = -1;
         shortMergeMaxWords = -1;
@@ -739,6 +769,7 @@ public final class HgramConfig {
         pinToScreenEnabled = true;
         antiPeekGestureEnabled = false;
         antiPeekSensitivity = -1;
+        antiPeekSensitivityLoaded = false;
         antiPeekShowToast = true;
         antiPeekHaptic = true;
         antiPeekHoldMin = -1;
@@ -753,7 +784,7 @@ public final class HgramConfig {
         autoLoudnessEnabled = false;
         smartFrameThrottlingEnabled = false;
         fastNetworkHandoverEnabled = false;
-        allowScreenshots = true;
+        allowScreenshots = false;
         sherpaProvider = null;
         if (compactWasEnabled) {
             compactMediaAlbumsVersion++;

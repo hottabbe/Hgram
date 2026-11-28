@@ -8,6 +8,8 @@
 
 package org.telegram.ui.ActionBar;
 
+import static org.telegram.messenger.AndroidUtilities.dp;
+
 import android.animation.Animator;
 import android.animation.AnimatorSet;
 import android.app.Activity;
@@ -17,19 +19,23 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.RectF;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Trace;
 import android.text.TextUtils;
+import android.view.Gravity;
 import android.view.Menu;
 import android.view.MotionEvent;
+import android.view.ScrollCaptureSession;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.view.Window;
 import android.view.accessibility.AccessibilityManager;
 import android.widget.FrameLayout;
+import android.widget.ScrollView;
 
 import androidx.annotation.CallSuper;
 import androidx.annotation.NonNull;
@@ -63,22 +69,22 @@ import org.telegram.ui.ArticleViewer;
 import org.telegram.ui.Components.Bulletin;
 import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.LayoutHelper;
+import org.telegram.ui.Components.RecyclerListView;
+import org.telegram.ui.Components.SectionsScrollView;
 import org.telegram.ui.LaunchActivity;
 import org.telegram.ui.Stories.StoryViewer;
 import org.telegram.ui.bots.BotWebViewAttachedSheet;
-import org.telegram.ui.iv.RichCommand;
+import org.telegram.utils.glass.BaseFragmentSimpleGlass;
 import org.telegram.utils.glass.GlassEngine;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 
 import tw.nekomimi.nekogram.NekoConfig;
 import tw.nekomimi.nekogram.helpers.CloudStorageHelper;
 import tw.nekomimi.nekogram.helpers.UserHelper;
 import tw.nekomimi.nekogram.utils.VibrateUtil;
 import tw.nekomimi.nekogram.ui.MessageHelper;
-import xyz.nextalone.nagram.NaConfig;
-import xyz.nextalone.nagram.hgram.HgramAntiPeek;
-import xyz.nextalone.nagram.hgram.HgramSheetState;
 
 public abstract class BaseFragment {
 
@@ -90,6 +96,8 @@ public abstract class BaseFragment {
     public View fragmentView;
     protected INavigationLayout parentLayout;
     protected ActionBar actionBar;
+    /** Lightweight header of the simple glass screens, used instead of {@link #actionBar} when {@link #useSimpleActionBar()}. */
+    protected SimpleActionBar simpleActionBar;
     protected boolean inPreviewMode;
     protected boolean inMenuMode;
     protected boolean inBubbleMode;
@@ -102,6 +110,7 @@ public abstract class BaseFragment {
     protected boolean fragmentBeginToShow;
     private boolean removingFromStack;
     private PreviewDelegate previewDelegate;
+    protected View navigationBarFadeView;
     protected Theme.ResourcesProvider resourceProvider;
     private boolean isFullyVisible;
 //    public ArrayList<StoryViewer> storyViewerStack;
@@ -285,8 +294,41 @@ public abstract class BaseFragment {
 
     private View performCreateViewImpl(Context context) {
         final View view = createView(context);
+
+        final RecyclerListView listViewForGlass = getListViewForSimpleGlass();
+        final SectionsScrollView scrollViewForGlass = getScrollViewForSimpleGlass();
+
+        listViewForSimpleGlass = listViewForGlass != null ? listViewForGlass : scrollViewForGlass;
+        if (listViewForSimpleGlass != null && view instanceof FrameLayout) {
+            final BaseFragmentSimpleGlass simpleGlass = getBaseSimpleGlass();
+
+            final View header = simpleActionBar != null ? simpleActionBar : actionBar;
+            if (listViewForGlass != null) {
+                simpleGlass.setViews((FrameLayout) view, listViewForGlass, header, resourceProvider);
+            } else if (scrollViewForGlass != null) {
+                simpleGlass.setViews((FrameLayout) view, scrollViewForGlass, header, resourceProvider);
+            }
+
+            if (useFadeDrawableForActionBar() && header != null) {
+                header.setBackground(simpleGlass.createActionBarFadeDrawable(header));
+            }
+            BaseFragmentSimpleGlass.setListViewParams(listViewForSimpleGlass, mSystemInsets.top, mSystemInsets.bottom, ActionBar.getCurrentActionBarHeight(), 0);
+
+            if (drawEdgeNavigationBar()) {
+                navigationBarFadeView = new View(context);
+                navigationBarFadeView.setBackground(simpleGlass.createNavigationBarFadeDrawable(navigationBarFadeView));
+                FrameLayout.LayoutParams lp = LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 0, Gravity.BOTTOM);
+                lp.height = mSystemInsets.bottom;
+                ((FrameLayout) view).addView(navigationBarFadeView, lp);
+            }
+        }
+
         onViewCreated(view);
         return view;
+    }
+
+    protected boolean useFadeDrawableForActionBar() {
+        return true;
     }
 
     @CallSuper
@@ -343,6 +385,9 @@ public abstract class BaseFragment {
         if (actionBar != null) {
             actionBar.setOccupyStatusBar(!inPreviewMode);
         }
+        if (simpleActionBar != null) {
+            simpleActionBar.setOccupyStatusBar(!inPreviewMode);
+        }
     }
 
     public void setInMenuMode(boolean value) {
@@ -379,6 +424,10 @@ public abstract class BaseFragment {
                 }
             }
             actionBar = null;
+        }
+        if (simpleActionBar != null) {
+            AndroidUtilities.removeFromParent(simpleActionBar);
+            simpleActionBar = null;
         }
         clearSheets();
         parentLayout = null;
@@ -433,7 +482,16 @@ public abstract class BaseFragment {
                     actionBar = null;
                 }
             }
-            if (parentLayout != null && actionBar == null) {
+            if (simpleActionBar != null && parentLayout != null && parentLayout.getView().getContext() != simpleActionBar.getContext()) {
+                AndroidUtilities.removeFromParent(simpleActionBar);
+                simpleActionBar = null;
+            }
+            if (parentLayout != null && useSimpleActionBar()) {
+                if (simpleActionBar == null) {
+                    simpleActionBar = createSimpleActionBar(parentLayout.getView().getContext());
+                    simpleActionBar.setMenuOverlayProvider(this::getSimpleMenuOverlay);
+                }
+            } else if (parentLayout != null && actionBar == null) {
                 actionBar = createActionBar(parentLayout.getView().getContext());
                 if (actionBar != null) {
                     actionBar.parentFragment = this;
@@ -442,13 +500,75 @@ public abstract class BaseFragment {
         }
     }
 
+    /**
+     * Screens with simple glass header return true to get {@link #simpleActionBar} instead of {@link #actionBar}.
+     * Warn: the result must not change after the fragment is created.
+     */
+    protected boolean useSimpleActionBar() {
+        return false;
+    }
+
+    public SimpleActionBar createSimpleActionBar(Context context) {
+        final SimpleActionBar simpleActionBar = new SimpleActionBar(context, getResourceProvider());
+        if (inPreviewMode || inBubbleMode || parentLayout != null && parentLayout.isLayersLayout()) {
+            simpleActionBar.setOccupyStatusBar(false);
+        }
+        return simpleActionBar;
+    }
+
+    @Nullable
+    public SimpleActionBar getSimpleActionBar() {
+        return simpleActionBar;
+    }
+
+    private SimpleActionBarMenuOverlay simpleMenuOverlay;
+
+    /**
+     * The layer where the menus of {@link #simpleActionBar} open, above the content and the header.
+     * Created on first use in the root {@link FrameLayout} of the screen (or the parent of the header).
+     */
+    @Nullable
+    private BaseFragment simpleMenuOverlayHost;
+
+    /**
+     * A fragment shown inside another one (a page of the main tabs) opens its menus in the host's overlay:
+     * over the host's views too (the tabs), dimmed with the rest of the screen.
+     */
+    public void setSimpleMenuOverlayHost(@Nullable BaseFragment host) {
+        simpleMenuOverlayHost = host;
+    }
+
+    @Nullable
+    public SimpleActionBarMenuOverlay getSimpleMenuOverlay() {
+        if (simpleMenuOverlayHost != null && simpleMenuOverlayHost.fragmentView != null) {
+            return simpleMenuOverlayHost.getSimpleMenuOverlay();
+        }
+        final ViewGroup root;
+        if (fragmentView instanceof FrameLayout) {
+            root = (ViewGroup) fragmentView;
+        } else if (simpleActionBar != null && simpleActionBar.getParent() instanceof FrameLayout) {
+            root = (ViewGroup) simpleActionBar.getParent();
+        } else {
+            return null;
+        }
+        if (simpleMenuOverlay == null || simpleMenuOverlay.getParent() != root) {
+            if (simpleMenuOverlay != null) {
+                simpleMenuOverlay.close(false);
+                AndroidUtilities.removeFromParent(simpleMenuOverlay);
+            }
+            simpleMenuOverlay = new SimpleActionBarMenuOverlay(root.getContext());
+            root.addView(simpleMenuOverlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        return simpleMenuOverlay;
+    }
+
     public ActionBar createActionBar(Context context) {
         ActionBar actionBar = new ActionBar(context, getResourceProvider());
-        actionBar.setBackgroundColor(getThemedColor(Theme.key_actionBarDefault));
-        actionBar.setItemsBackgroundColor(getThemedColor(Theme.key_actionBarDefaultSelector), false);
-        actionBar.setItemsBackgroundColor(getThemedColor(Theme.key_actionBarActionModeDefaultSelector), true);
-        actionBar.setItemsColorThemeKey(Theme.key_actionBarDefaultIcon, false);
-        actionBar.setItemsColorThemeKey(Theme.key_actionBarActionModeDefaultIcon, true);
+        ThemeBind.backgroundColor(actionBar, Theme.key_actionBarDefault, themedColors);
+        ThemeBind.actionBarItemsBackgroundColor(actionBar, Theme.key_actionBarDefaultSelector, themedColors, false);
+        ThemeBind.actionBarItemsBackgroundColor(actionBar, Theme.key_actionBarActionModeDefaultSelector, themedColors, true);
+        ThemeBind.actionBarItemsColor(actionBar, Theme.key_actionBarDefaultIcon, themedColors, false);
+        ThemeBind.actionBarItemsColor(actionBar, Theme.key_actionBarActionModeDefaultIcon, themedColors, true);
         if (inPreviewMode || inBubbleMode || parentLayout != null && parentLayout.isLayersLayout()) {
             actionBar.setOccupyStatusBar(false);
         }
@@ -525,6 +645,9 @@ public abstract class BaseFragment {
         if (actionBar != null) {
             actionBar.setEnabled(false);
         }
+        if (simpleActionBar != null) {
+            simpleActionBar.setEnabled(false);
+        }
 
         if (hasForceLightStatusBar() && !AndroidUtilities.isTablet() && getParentLayout().getLastFragment() == this && getParentActivity() != null && !finishing) {
             AndroidUtilities.setLightStatusBar(getParentActivity(), Theme.getColor(Theme.key_actionBarDefault) == Color.WHITE);
@@ -555,7 +678,7 @@ public abstract class BaseFragment {
     @CallSuper
     public void onResume() {
         isPaused = false;
-        org.telegram.messenger.utils.PerfLogger.setScreen(getClass().getSimpleName());
+        xyz.nextalone.nagram.hgram.HgramAntiPeek.onScopeResume(this, getClass().getName());
         if (actionBar != null) {
             actionBar.onResume();
         }
@@ -567,8 +690,12 @@ public abstract class BaseFragment {
 
     @CallSuper
     public void onPause() {
+        xyz.nextalone.nagram.hgram.HgramAntiPeek.onScopePause(this);
         if (actionBar != null) {
             actionBar.onPause();
+        }
+        if (simpleMenuOverlay != null) {
+            simpleMenuOverlay.close(false);
         }
         isPaused = true;
         try {
@@ -775,8 +902,8 @@ public abstract class BaseFragment {
         AccessibilityManager mgr = (AccessibilityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACCESSIBILITY_SERVICE);
         if (mgr.isEnabled()) {
             ActionBar actionBar = getActionBar();
-            if (actionBar != null) {
-                String title = actionBar.getTitle();
+            if (actionBar != null || simpleActionBar != null) {
+                String title = actionBar != null ? actionBar.getTitle() : simpleActionBar.getTitle();
                 if (!TextUtils.isEmpty(title)) {
                     setParentActivityTitle(title);
                 }
@@ -905,6 +1032,18 @@ public abstract class BaseFragment {
         return false;
     }
 
+    /**
+     * Called on every theme color update (each frame of a theme animation, and after a theme change), after the views
+     * of every window were updated by {@link ThemeBind#updateAll}. Recolor here whatever is not a view binding or a
+     * {@link Theme.Colorable}: map styles, popup menus, cached bitmaps, ...
+     */
+    public void onThemeColorsChanged() {
+    }
+
+    /** theme editor: color keys this page shows that no ThemeBind binding / Theme.Colorable view on screen reports */
+    public void addThemeColorKeys(HashSet<Integer> keys) {
+    }
+
     public ArrayList<ThemeDescription> getThemeDescriptions() {
         return new ArrayList<>();
     }
@@ -1021,13 +1160,10 @@ public abstract class BaseFragment {
         }
         BottomSheet[] bottomSheet = new BottomSheet[1];
         INavigationLayout[] actionBarLayout = new INavigationLayout[]{INavigationLayout.newLayout(getParentActivity(), false, () -> bottomSheet[0])};
-        final INavigationLayout sheetToken = actionBarLayout[0];
         actionBarLayout[0].setIsSheet(true);
-        HgramSheetState.addIdentityOnce(LaunchActivity.instance.sheetFragmentsStack, sheetToken);
+        LaunchActivity.instance.sheetFragmentsStack.add(actionBarLayout[0]);
         fragment.onTransitionAnimationStart(true, false);
         bottomSheet[0] = new BottomSheet(getParentActivity(), true, fragment.getResourceProvider()) {
-            private boolean reopenedByShow;
-
             {
                 occupyNavigationBar = params != null && params.occupyNavigationBar;
                 drawNavigationBar = !occupyNavigationBar;
@@ -1037,30 +1173,6 @@ public abstract class BaseFragment {
                 actionBarLayout[0].getView().setPadding(backgroundPaddingLeft, 0, backgroundPaddingLeft, 0);
                 ViewGroup view = actionBarLayout[0].getView();
                 containerView = view;
-                view.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
-                    @Override
-                    public void onViewAttachedToWindow(View v) {
-                        if (!isDismissed()) {
-                            HgramAntiPeek.onSheetClosed(sheetToken);
-                        }
-                    }
-
-                    @Override
-                    public void onViewDetachedFromWindow(View v) {
-                        // Reparenting during normal opening must not tear down the sheet entry.
-                        if (!isDismissed()) {
-                            return;
-                        }
-                        final LaunchActivity activity = LaunchActivity.instance;
-                        if (activity != null) {
-                            HgramSheetState.removeIdentity(activity.sheetFragmentsStack, sheetToken);
-                        }
-                        if (actionBarLayout[0] == sheetToken) {
-                            actionBarLayout[0] = null;
-                        }
-                        HgramAntiPeek.onSheetClosed(sheetToken);
-                    }
-                });
                 setApplyBottomPadding(false);
                 setOnDismissListener(dialog -> {
                     fragment.onPause();
@@ -1076,7 +1188,7 @@ public abstract class BaseFragment {
                 super.onCreate(savedInstanceState);
                 actionBarLayout[0].setWindow(bottomSheet[0].getWindow());
                 if (params == null || !params.occupyNavigationBar) {
-                    fixNavigationBar(Theme.getColor(Theme.key_dialogBackgroundGray, fragment.getResourceProvider()));
+                    fixNavigationBarKey(Theme.key_dialogBackgroundGray);
                 } else {
                     AndroidUtilities.setLightNavigationBar(bottomSheet[0], true);
                 }
@@ -1114,75 +1226,14 @@ public abstract class BaseFragment {
 
             @Override
             public void dismiss() {
-                final boolean alreadyDismissed = isDismissed();
-                // One delegate decision, before onPreFinished and before the reopen bit is
-                // cleared. A veto leaves every piece of live state exactly as it was.
-                if (!HgramSheetState.acceptDismiss(
-                        alreadyDismissed,
-                        this::canDismissNow,
-                        params != null ? params.onPreFinished : null,
-                        () -> reopenedByShow = false)) {
-                    return;
-                }
-                super.dismissAccepted();
                 if (!isDismissed()) {
-                    return;
-                }
-                final LaunchActivity activity = LaunchActivity.instance;
-                // The fragment leaves sheetFragmentsStack immediately, but the window keeps
-                // animating for 200-250 ms. finalizeDismiss sets the anti-peek guard before
-                // removing the stack entry, so the resolver cannot fall through to the chat
-                // underneath during the close animation.
-                HgramSheetState.finalizeDismiss(
-                        activity != null ? activity.sheetFragmentsStack : null,
-                        actionBarLayout, sheetToken, alreadyDismissed, true);
-            }
-
-            @Override
-            public void dismissInternal() {
-                // A cancelled close animation may still post a stale dismissInternal after
-                // show() has reopened this same sheet. Do not tear down the restored state.
-                if (reopenedByShow && !isDismissed()) {
-                    HgramAntiPeek.onSheetClosed(sheetToken);
-                    return;
-                }
-                try {
-                    super.dismissInternal();
-                } finally {
-                    final LaunchActivity activity = LaunchActivity.instance;
-                    if (activity != null) {
-                        HgramSheetState.removeIdentity(activity.sheetFragmentsStack, sheetToken);
+                    if (params != null && params.onPreFinished != null) {
+                        params.onPreFinished.run();
                     }
-                    if (actionBarLayout[0] == sheetToken) {
-                        actionBarLayout[0] = null;
-                    }
-                    HgramAntiPeek.onSheetClosed(sheetToken);
                 }
-            }
-
-            @Override
-            public void show() {
-                final LaunchActivity activity = LaunchActivity.instance;
-                // Distinguish a first show from a same-sheet reopen during the close
-                // animation: a reopen has either been dismissed already or lost its stack
-                // ownership. Only that case needs stale dismissInternal suppression.
-                reopenedByShow = isDismissed()
-                        || activity == null
-                        || !activity.sheetFragmentsStack.contains(sheetToken);
-                // A same-sheet reopen during the close animation must restore foreground
-                // ownership before the guard is released, otherwise the still-visible sheet
-                // would be invisible to the resolver during the reopen.
-                HgramSheetState.restoreForShow(
-                        activity != null ? activity.sheetFragmentsStack : null,
-                        actionBarLayout, sheetToken);
-                HgramAntiPeek.onSheetClosed(sheetToken);
-                super.show();
-            }
-
-            @Override
-            protected void cancelSheetAnimation() {
-                super.cancelSheetAnimation();
-                HgramAntiPeek.onSheetClosed(sheetToken);
+                super.dismiss();
+                LaunchActivity.instance.sheetFragmentsStack.remove(actionBarLayout[0]);
+                actionBarLayout[0] = null;
             }
 
             @Override
@@ -1217,6 +1268,19 @@ public abstract class BaseFragment {
 
     public int getThemedColor(int key) {
         return Theme.getColor(key, getResourceProvider());
+    }
+
+    /**
+     * Theme provider for ThemeBind bindings that resolves through getThemedColor() (subclasses override it). A named
+     * class held by this fragment (not a lambda): bindings keep it weakly, so it lives exactly as long as the fragment.
+     */
+    private final Theme.ResourcesProvider themedColors = new ThemedColors();
+
+    private class ThemedColors implements Theme.ResourcesProvider {
+        @Override
+        public int getColor(int key) {
+            return getThemedColor(key);
+        }
     }
 
     public Paint getThemedPaint(String paintKey) {
@@ -1310,6 +1374,8 @@ public abstract class BaseFragment {
         int key = Theme.key_actionBarDefault;
         if (actionBar != null && actionBar.isActionModeShowed()) {
             key = Theme.key_actionBarActionModeDefault;
+        } else if (simpleActionBar != null) {
+            key = Theme.key_windowBackgroundGray;
         }
         if (resourcesProvider != null) {
             color = resourcesProvider.getColorOrDefault(key);
@@ -1456,6 +1522,38 @@ public abstract class BaseFragment {
         return storyViewer;
     }
 
+    private @Nullable BaseFragmentSimpleGlass simpleGlass;
+
+    protected BaseFragmentSimpleGlass getBaseSimpleGlass() {
+        if (simpleGlass == null) {
+            simpleGlass = new BaseFragmentSimpleGlass(glassEngine, () -> getThemedColor(Theme.key_windowBackgroundGray));
+        }
+        return simpleGlass;
+    }
+
+    /**
+     * A glass of the parent over this fragment, e.g. the tabs, on the capture of the simple glass: its area in the
+     * coordinates of the fragment's view, null for none. Does nothing without the simple glass.
+     */
+    public void setParentGlass(@Nullable RectF position, @Nullable Runnable onCaptured) {
+        if (simpleGlass != null) {
+            glassEngine.setExternalCapturePosition(position);
+            simpleGlass.setOnCaptured(onCaptured);
+        }
+    }
+
+    private ViewGroup listViewForSimpleGlass;
+
+    @Nullable
+    protected RecyclerListView getListViewForSimpleGlass() {
+        return null;
+    }
+
+    @Nullable
+    protected SectionsScrollView getScrollViewForSimpleGlass() {
+        return null;
+    }
+
 
     public void setTitleOverlayTextIfActionBarAttached(String title, int titleId, Runnable action) {
         if (actionBar != null && actionBar.shouldAddToContainer()) {
@@ -1564,15 +1662,29 @@ public abstract class BaseFragment {
     @Deprecated
     public boolean isSupportEdgeToEdge() {
         // warn: overridden method must return a constant
-        return NaConfig.INSTANCE.getForceEdgeToEdge().Bool();
+        return false;
     }
 
     public boolean drawEdgeNavigationBar() {
         return isSupportEdgeToEdge();
     }
 
+    protected Insets mSystemInsets = Insets.NONE;
+
     public WindowInsetsCompat onInsetsInternal(@NonNull View view, @NonNull WindowInsetsCompat windowInsets) {
-        final Insets insets = windowInsets.getInsets(WindowInsetsCompat.Type.navigationBars() | WindowInsetsCompat.Type.statusBars());
+        // stable: bars hidden over the fragment (the photo viewer hiding its controls) do not move its content
+        // away from the headers, which keep their place under the status bar
+        final Insets insets = AndroidUtilities.getDefaultWindowInsets(windowInsets, false);
+        mSystemInsets = insets;
+        if (listViewForSimpleGlass != null) {
+            BaseFragmentSimpleGlass.setListViewParams(listViewForSimpleGlass, mSystemInsets.top, mSystemInsets.bottom, ActionBar.getCurrentActionBarHeight(), 0);
+        }
+        if (navigationBarFadeView != null) {
+            final int visibility = mSystemInsets.bottom >= dp(40) ? View.VISIBLE : View.GONE;
+            navigationBarFadeView.getLayoutParams().height = mSystemInsets.bottom;
+            navigationBarFadeView.setVisibility(visibility);
+        }
+
         onInsets(insets.left, insets.top, insets.right, bottomInset = insets.bottom);
         return WindowInsetsCompat.CONSUMED;
     }

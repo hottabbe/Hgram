@@ -149,11 +149,13 @@ public class HgramHapticsTest {
         HgramHapticProfile minimum = new HgramHapticProfile(10, 20, 0, 60);
         assertEquals(HgramHapticProfile.MIN_INTENSITY, HgramHaptics.amplitudes(minimum, true)[0]);
         assertEquals(HgramHapticProfile.MIN_INTENSITY, HgramHaptics.amplitudes(minimum, false)[0]);
+        HgramConfig.setHapticEnabled(true);
         assertTrue(HgramConfig.isHapticEnabled());
         HgramConfig.setHapticEnabled(false);
         assertFalse(HgramConfig.isHapticEnabled());
+        HgramConfig.setHapticEnabled(true);
         HgramConfig.reset();
-        assertTrue(HgramConfig.isHapticEnabled());
+        assertFalse(HgramConfig.isHapticEnabled());
     }
 
     @Test
@@ -224,6 +226,7 @@ public class HgramHapticsTest {
         final ShadowVibrator shadowVibrator = Shadows.shadowOf(vibrator);
         shadowVibrator.setHasVibrator(true);
         vibrator.cancel();
+        HgramConfig.setHapticEnabled(true);
 
         final int[] flagSets = {
                 0,
@@ -285,6 +288,7 @@ public class HgramHapticsTest {
         HgramHapticProfile.reset(HgramHapticProfile.PLACE_LONG_PRESS);
         Settings.System.putInt(context.getContentResolver(),
                 Settings.System.HAPTIC_FEEDBACK_ENABLED, 1);
+        HgramConfig.setHapticEnabled(true);
 
         // Null View: never the View path, but the regular play(place) path still runs.
         HgramHaptics.play((View) null, HgramHapticProfile.PLACE_LONG_PRESS);
@@ -303,6 +307,49 @@ public class HgramHapticsTest {
         HgramConfig.setHapticEnabled(false);
         HgramHaptics.play((View) null, HgramHapticProfile.PLACE_LONG_PRESS);
         assertEquals("", HgramHaptics.lastPath());
+    }
+
+    @Test
+    public void masterDisabledByDefaultAfterReset() {
+        HgramConfig.setHapticEnabled(true);
+        HgramConfig.reset();
+        assertFalse(HgramConfig.isHapticEnabled());
+        assertFalse(HgramHaptics.isEnabled());
+    }
+
+    @Test
+    public void profilePathsRequireExplicitEnable() {
+        final Context context = ApplicationProvider.getApplicationContext();
+        Settings.System.putInt(context.getContentResolver(),
+                Settings.System.HAPTIC_FEEDBACK_ENABLED, 1);
+        final Vibrator vibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
+        final ShadowVibrator shadowVibrator = Shadows.shadowOf(vibrator);
+        shadowVibrator.setHasVibrator(true);
+        vibrator.cancel();
+        final ProbeView probe = new ProbeView(context);
+        probe.setHapticFeedbackEnabled(true);
+
+        for (boolean custom : new boolean[]{false, true}) {
+            saveProfile(custom);
+            probe.hapticCalls = 0;
+            HgramHaptics.play(probe, HgramHapticProfile.PLACE_LONG_PRESS,
+                    HapticFeedbackConstants.LONG_PRESS, 0);
+            assertEquals("", HgramHaptics.lastPath());
+            assertEquals(0, probe.hapticCalls);
+            HgramHaptics.play(probe, HgramHapticProfile.PLACE_LONG_PRESS);
+            assertEquals("", HgramHaptics.lastPath());
+            assertEquals(0, probe.hapticCalls);
+            assertFalse(shadowVibrator.isVibrating());
+        }
+
+        HgramConfig.setHapticEnabled(true);
+        for (boolean custom : new boolean[]{false, true}) {
+            saveProfile(custom);
+            probe.hapticCalls = 0;
+            HgramHaptics.play(probe, HgramHapticProfile.PLACE_LONG_PRESS,
+                    HapticFeedbackConstants.LONG_PRESS, 0);
+            assertRoute(true, custom, probe);
+        }
     }
 
     private static void saveProfile(boolean custom) {

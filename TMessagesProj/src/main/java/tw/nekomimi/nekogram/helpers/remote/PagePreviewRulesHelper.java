@@ -163,7 +163,7 @@ public class PagePreviewRulesHelper extends BaseRemoteHelper {
         }
         loading = true;
         if (domains.isEmpty()) {
-            loadPagePreviewRules();
+        loadPagePreviewRules();
         }
         if (needUpdate()) {
             load();

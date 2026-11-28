@@ -33,14 +33,31 @@ object VibrateUtil {
     @JvmStatic
     @JvmOverloads
     fun vibrate(time: Long = 200L, effect: VibrationEffect? = null) {
-        vibrate(HgramHapticProfile.PLACE_LIST_ITEMS, time, effect)
-    }
-
-    @JvmStatic
-    @JvmOverloads
-    fun vibrate(place: String, time: Long = 200L, effect: VibrationEffect? = null) {
         if (NekoConfig.disableVibration.Bool()) return
-        HgramHaptics.play(place)
+        if (HgramHaptics.isEnabled()) {
+            HgramHaptics.play(HgramHapticProfile.PLACE_LIST_ITEMS)
+            return
+        }
+
+        initVibrator()
+
+        if (!vibrator.hasVibrator()) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                var vibe = effect
+                if (vibe == null) {
+                    vibe = VibrationEffect.createOneShot(time, VibrationEffect.DEFAULT_AMPLITUDE)
+                }
+                vibrator.cancel()
+                vibrator.vibrate(vibe, null)
+            }
+        } else {
+            runCatching {
+                vibrator.cancel()
+                vibrator.vibrate(time)
+            }
+        }
     }
 
     @JvmStatic
@@ -52,6 +69,26 @@ object VibrateUtil {
     @JvmStatic
     fun vibrate(longs: LongArray, repeat: Int) {
         if (NekoConfig.disableVibration.Bool()) return
-        HgramHaptics.play(HgramHapticProfile.PLACE_MINIAPPS)
+        if (HgramHaptics.isEnabled()) {
+            HgramHaptics.play(HgramHapticProfile.PLACE_MINIAPPS)
+            return
+        }
+
+        initVibrator()
+
+        if (!vibrator.hasVibrator()) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                val vibe = VibrationEffect.createWaveform(longs, repeat)
+                vibrator.cancel()
+                vibrator.vibrate(vibe, null)
+            }
+        } else {
+            runCatching {
+                vibrator.cancel()
+                vibrator.vibrate(longs, repeat)
+            }
+        }
     }
 }

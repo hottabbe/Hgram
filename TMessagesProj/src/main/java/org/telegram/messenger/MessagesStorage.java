@@ -16,7 +16,6 @@ import static org.telegram.messenger.MessagesController.LOAD_FROM_UNREAD;
 
 import android.appwidget.AppWidgetManager;
 import android.content.SharedPreferences;
-import android.os.Looper;
 import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -51,6 +50,7 @@ import org.telegram.tgnet.tl.TL_update;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Adapters.DialogsSearchAdapter;
 import org.telegram.ui.ChatActivity;
+import org.telegram.utils.twidget.WidgetMedia;
 import org.telegram.ui.Components.Forum.ForumUtilities;
 import org.telegram.ui.Components.Reactions.ReactionsLayoutInBubble;
 import org.telegram.ui.Components.Reactions.ReactionsUtils;
@@ -84,7 +84,7 @@ import tw.nekomimi.nekogram.database.ObjectBoxKt;
 
 public class MessagesStorage extends BaseController {
 
-    private DispatchQueue storageQueue;
+    private DispatchQueue2 storageQueue;
     private SQLiteDatabase database;
     private File cacheFile;
     private File walCacheFile;
@@ -118,9 +118,8 @@ public class MessagesStorage extends BaseController {
 
     private static SparseArray<MessagesStorage> Instance = new SparseArray();
     private static final Object lockObject = new Object();
-    private static boolean hgramSttSingletonLogged;
 
-    public final static int LAST_DB_VERSION = 180;
+    public final static int LAST_DB_VERSION = 181;
     private boolean databaseMigrationInProgress;
     public boolean showClearDatabaseAlert;
 
@@ -129,12 +128,7 @@ public class MessagesStorage extends BaseController {
     public static final int FORUM_TYPE_DIRECT = 1 << 2;
     public static final int FORUM_TYPE_BOT = 1 << 3;
 
-    /** Result of {@code SQLitePreparedStatement#step()} for a completed non-SELECT statement. */
-    private static final int SQLITE_DONE = 1;
-
     private final LongSparseIntArray dialogIsForumTyped = new LongSparseIntArray();
-    private final PushPlaceholderRegistry pushPlaceholderRegistry = new PushPlaceholderRegistry();
-    private volatile boolean pushPendingLoaded;
 
 
     public static MessagesStorage getInstance(int num) {
@@ -144,10 +138,6 @@ public class MessagesStorage extends BaseController {
                 localInstance = Instance.get(num);
                 if (localInstance == null) {
                     Instance.put(num, localInstance = new MessagesStorage(num));
-                    if (!hgramSttSingletonLogged && ApplicationLoader.isHgramSttProcess()) {
-                        hgramSttSingletonLogged = true;
-                        FileLog.e("HgramSTT: account singleton created in :stt: MessagesStorage");
-                    }
                 }
             }
         }
@@ -242,7 +232,7 @@ public class MessagesStorage extends BaseController {
 
     public MessagesStorage(int instance) {
         super(instance);
-        storageQueue = new DispatchQueue("storageQueue_" + instance);
+        storageQueue = new DispatchQueue2("storageQueue_" + instance);
         storageQueue.setPriority(8);
         storageQueue.postRunnable(() -> openDatabase(1));
     }
@@ -251,7 +241,7 @@ public class MessagesStorage extends BaseController {
         return database;
     }
 
-    public DispatchQueue getStorageQueue() {
+    public DispatchQueue2 getStorageQueue() {
         return storageQueue;
     }
 
@@ -338,13 +328,7 @@ public class MessagesStorage extends BaseController {
             database.executeFast("PRAGMA secure_delete = ON").stepThis().dispose();
             database.executeFast("PRAGMA temp_store = MEMORY").stepThis().dispose();
             database.executeFast("PRAGMA journal_mode = WAL").stepThis().dispose();
-            // With WAL, NORMAL keeps the database consistent for the application and removes
-            // a disk flush from every commit; only a power loss can drop the last transactions.
-            database.executeFast("PRAGMA synchronous = NORMAL").stepThis().dispose();
             database.executeFast("PRAGMA journal_size_limit = 10485760").stepThis().dispose();
-            database.executeFast("PRAGMA mmap_size = 134217728").stepThis().dispose();
-            database.executeFast("PRAGMA cache_size = -16384").stepThis().dispose();
-            database.executeFast("PRAGMA wal_autocheckpoint = 1000").stepThis().dispose();
 
             if (createTable) {
                 if (BuildVars.LOGS_ENABLED) {
@@ -425,7 +409,6 @@ public class MessagesStorage extends BaseController {
         });
         loadDialogFilters();
         loadUnreadMessages();
-        loadPushPending();
         loadPendingTasks();
         try {
             openSync.countDown();
@@ -457,13 +440,8 @@ public class MessagesStorage extends BaseController {
                 database = new SQLiteDatabase(cacheFile.getPath());
                 database.executeFast("PRAGMA secure_delete = ON").stepThis().dispose();
                 database.executeFast("PRAGMA temp_store = MEMORY").stepThis().dispose();
-            database.executeFast("PRAGMA journal_mode = WAL").stepThis().dispose();
-            // Nagram: NORMAL is safe with WAL and avoids an fsync on every commit
-            database.executeFast("PRAGMA synchronous = NORMAL").stepThis().dispose();
+                database.executeFast("PRAGMA journal_mode = WAL").stepThis().dispose();
                 database.executeFast("PRAGMA journal_size_limit = 10485760").stepThis().dispose();
-                database.executeFast("PRAGMA mmap_size = 134217728").stepThis().dispose();
-                database.executeFast("PRAGMA cache_size = -16384").stepThis().dispose();
-                database.executeFast("PRAGMA wal_autocheckpoint = 1000").stepThis().dispose();
             } catch (SQLiteException e) {
                 FileLog.e(new Exception(e));
                 restored = false;
@@ -536,7 +514,6 @@ public class MessagesStorage extends BaseController {
             "emoji_keywords_info_v2",
             "wallpapers2",
             "unread_push_messages",
-            "push_pending_messages",
             "polls_v2",
             "reactions",
             "reaction_mentions",
@@ -556,7 +533,9 @@ public class MessagesStorage extends BaseController {
             "emoji_groups",
             "poll_votes_mentions",
             "poll_votes_mentions_topics",
-            "ephemeral_messages"
+            "ephemeral_messages",
+            "widget_state",
+            "widget_heights"
     };
 
     public static void createTables(SQLiteDatabase database) throws SQLiteException {
@@ -694,9 +673,6 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE INDEX IF NOT EXISTS unread_push_messages_idx_date ON unread_push_messages(date);").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS unread_push_messages_idx_random ON unread_push_messages(random);").stepThis().dispose();
 
-        database.executeFast(PushPlaceholderStore.CREATE_TABLE_SQL).stepThis().dispose();
-        database.executeFast(PushPlaceholderStore.CREATE_INDEX_SQL).stepThis().dispose();
-
         database.executeFast("CREATE TABLE polls_v2(mid INTEGER, uid INTEGER, id INTEGER, PRIMARY KEY (mid, uid));").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS polls_id_v2 ON polls_v2(id);").stepThis().dispose();
 
@@ -800,6 +776,9 @@ public class MessagesStorage extends BaseController {
         database.executeFast("CREATE TABLE ephemeral_messages (id INTEGER, dialog_id INTEGER, topic_id INTEGER, date INTEGER, data BLOB, PRIMARY KEY(dialog_id, id));").stepThis().dispose();
         database.executeFast("CREATE INDEX IF NOT EXISTS ephemeral_messages_date_idx ON ephemeral_messages(date);").stepThis().dispose();
 
+        database.executeFast("CREATE TABLE widget_state(uid INTEGER, mid INTEGER, local TEXT, PRIMARY KEY(uid, mid));").stepThis().dispose();
+        database.executeFast("CREATE TABLE widget_heights(uid INTEGER, mid INTEGER, width INTEGER, height INTEGER, date INTEGER, anchor INTEGER default 0, PRIMARY KEY(uid, mid, width));").stepThis().dispose();
+
         database.executeFast("PRAGMA user_version = " + MessagesStorage.LAST_DB_VERSION).stepThis().dispose();
 
     }
@@ -865,8 +844,6 @@ public class MessagesStorage extends BaseController {
         dialogFilters.clear();
         dialogFiltersMap.clear();
         unknownDialogsIds.clear();
-        pushPlaceholderRegistry.clear();
-        pushPendingLoaded = false;
 
         lastSavedSeq = 0;
         lastSavedPts = 0;
@@ -1442,430 +1419,111 @@ public class MessagesStorage extends BaseController {
         });
     }
 
-    public PushPlaceholderRegistry getPushPlaceholderRegistry() {
-        return pushPlaceholderRegistry;
+    /**
+     * Storage queue: a widget message's Web Storage `local` area (null: none) and its content heights by
+     * widget width (CSS px), the most recent first.
+     */
+    public Object[] getWidgetState(long dialogId, int messageId) {
+        SQLiteCursor cursor = null;
+        String local = null;
+        ArrayList<int[]> heights = new ArrayList<>();
+        try {
+            cursor = database.queryFinalized(String.format(Locale.US, "SELECT local FROM widget_state WHERE uid = %d AND mid = %d", dialogId, messageId));
+            if (cursor.next() && !cursor.isNull(0)) {
+                local = cursor.stringValue(0);
+            }
+            cursor.dispose();
+            cursor = database.queryFinalized(String.format(Locale.US, "SELECT width, height, anchor FROM widget_heights WHERE uid = %d AND mid = %d ORDER BY date DESC", dialogId, messageId));
+            while (cursor.next()) {
+                heights.add(new int[]{cursor.intValue(0), cursor.intValue(1), cursor.intValue(2)});
+            }
+        } catch (Exception e) {
+            checkSQLException(e);
+        } finally {
+            if (cursor != null) {
+                cursor.dispose();
+            }
+        }
+        return new Object[]{local, heights};
     }
 
-    public boolean isPushPendingLoaded() {
-        return pushPendingLoaded;
-    }
-
-    public void loadPushPending() {
-        loadPushPending(null);
-    }
-
-    public void loadPushPending(Runnable callback) {
-        Runnable task = () -> {
-            SQLiteCursor cursor = null;
+    /** Keeps a widget message's `local` area ("" clears it). */
+    public void putWidgetStorage(long dialogId, int messageId, String local) {
+        storageQueue.postRunnable(() -> {
+            SQLitePreparedStatement state = null;
             try {
-                // Keep clear+restore atomic for a UI consume() that may race with startup.
-                synchronized (pushPlaceholderRegistry) {
-                    pushPlaceholderRegistry.clear();
-                    cursor = database.queryFinalized(PushPlaceholderStore.SELECT_PENDING_SQL);
-                    while (cursor.next()) {
-                        // mark() also grants the one-shot UI replacement right, so an open chat can
-                        // replace the restored preview when the real message with the same id arrives.
-                        pushPlaceholderRegistry.mark(cursor.longValue(0), cursor.intValue(1));
-                    }
+                if (local.isEmpty()) {
+                    database.executeFast(String.format(Locale.US, "DELETE FROM widget_state WHERE uid = %d AND mid = %d", dialogId, messageId)).stepThis().dispose();
+                    return;
                 }
+                state = database.executeFast("REPLACE INTO widget_state VALUES(?, ?, ?)");
+                state.bindLong(1, dialogId);
+                state.bindInteger(2, messageId);
+                state.bindString(3, local);
+                state.step();
             } catch (Exception e) {
                 checkSQLException(e);
             } finally {
-                if (cursor != null) {
-                    cursor.dispose();
-                }
-                pushPendingLoaded = true;
-                if (callback != null) {
-                    AndroidUtilities.runOnUIThread(callback);
+                if (state != null) {
+                    state.dispose();
                 }
             }
-        };
-        // openDatabase() calls this from the storage thread; run inline so openSync is released only
-        // after the durable index is ready for the UI.
-        if (Thread.currentThread() == storageQueue) {
-            task.run();
-        } else {
-            storageQueue.postRunnable(task);
-        }
+        });
     }
 
-    /**
-     * Inserts a push preview only when {@code (dialogId, message.id)} is absent and still unread.
-     *
-     * The canonical read barrier is {@code dialogs.inbox_max}, queried on the storage queue right
-     * before the insert (no clamp and no in-memory cache): a message at or below it is rejected
-     * without writing anything. The message row and the durable pending row are then written in
-     * one transaction; {@link PushPlaceholderRegistry} is marked and the callback receives true
-     * only after that transaction commits.
-     */
-    public void putPushPlaceholder(TLRPC.Message placeholder, Utilities.Callback<Boolean> callback) {
-        if (placeholder == null) {
-            if (callback != null) {
-                AndroidUtilities.runOnUIThread(() -> callback.run(false));
-            }
-            return;
-        }
-        final long dialogId = placeholder.dialog_id != 0 ? placeholder.dialog_id : MessageObject.getDialogId(placeholder);
-        final int mid = placeholder.id;
-        final int date = placeholder.date;
-        final long topicId = placeholder.reply_to == null ? 0
-                : (placeholder.reply_to.reply_to_top_id != 0
-                ? placeholder.reply_to.reply_to_top_id
-                : placeholder.reply_to.reply_to_msg_id);
-        final int payloadHash = PushPlaceholderStore.payloadHash(placeholder.message, date);
+    /** A message sent from this device got its id: its widget's `local` area and heights follow it. */
+    public void moveWidgetState(long dialogId, int oldId, int newId) {
         storageQueue.postRunnable(() -> {
-            boolean inserted = false;
             try {
-                if (dialogId != 0 && mid > 0
-                        && !PushPlaceholderStore.isAlreadyRead(getPushPlaceholderInboxMax(dialogId), mid)) {
-                    final boolean[] stored = new boolean[1];
-                    PushPlaceholderStore.insertIfAbsent(
-                            this::pushPlaceholderMessageRowExists,
-                            dialogId,
-                            mid,
-                            () -> stored[0] = storePushPlaceholderAtomic(placeholder, dialogId, mid, date, topicId, payloadHash));
-                    inserted = stored[0];
-                }
+                database.executeFast(String.format(Locale.US, "UPDATE OR REPLACE widget_state SET mid = %d WHERE uid = %d AND mid = %d", newId, dialogId, oldId)).stepThis().dispose();
+                database.executeFast(String.format(Locale.US, "UPDATE OR REPLACE widget_heights SET mid = %d WHERE uid = %d AND mid = %d", newId, dialogId, oldId)).stepThis().dispose();
             } catch (Exception e) {
                 checkSQLException(e);
             }
-            final boolean result = inserted;
-            if (callback != null) {
-                AndroidUtilities.runOnUIThread(() -> callback.run(result));
-            }
         });
     }
 
     /**
-     * Canonical {@code dialogs.inbox_max} lookup. Missing row means "no read information" (0);
-     * an unreadable row fails closed so an already read message cannot be resurrected.
+     * Keeps a widget message's content height at a widget width (CSS px) and the resize anchor it came with (1: the
+     * bottom edge stays put, 0: the top); only the `keep` most recent widths stay.
      */
-    private int getPushPlaceholderInboxMax(long dialogId) {
-        SQLiteCursor cursor = null;
-        try {
-            cursor = database.queryFinalized(PushPlaceholderStore.SELECT_INBOX_MAX_SQL, dialogId);
-            return cursor.next() ? cursor.intValue(0) : 0;
-        } catch (Exception e) {
-            checkSQLException(e);
-            return Integer.MAX_VALUE;
-        } finally {
-            if (cursor != null) {
-                cursor.dispose();
-            }
-        }
-    }
-
-    private boolean pushPlaceholderMessageRowExists(long dialogId, int mid) {
-        SQLiteCursor cursor = null;
-        try {
-            cursor = database.queryFinalized(PushPlaceholderStore.SELECT_MESSAGE_ROW_SQL, dialogId, mid);
-            return cursor.next();
-        } catch (Exception e) {
-            checkSQLException(e);
-            // Fail closed: an unreadable row is treated as existing so a full message can never
-            // be overwritten by a push preview.
-            return true;
-        } finally {
-            if (cursor != null) {
-                cursor.dispose();
-            }
-        }
-    }
-
-    /**
-     * Postcondition SELECT for the placeholder transaction. Errors are thrown on purpose so the
-     * caller rolls back instead of committing a preview whose row cannot be verified.
-     */
-    private boolean pushPlaceholderMessageRowWritten(long dialogId, int mid) throws SQLiteException {
-        SQLiteCursor cursor = null;
-        try {
-            cursor = database.queryFinalized(PushPlaceholderStore.SELECT_MESSAGE_ROW_SQL, dialogId, mid);
-            return cursor.next();
-        } finally {
-            if (cursor != null) {
-                cursor.dispose();
-            }
-        }
-    }
-
-    private boolean pushPendingRowExists(long dialogId, int mid) throws SQLiteException {
-        SQLiteCursor cursor = null;
-        try {
-            cursor = database.queryFinalized(PushPlaceholderStore.SELECT_PENDING_ROW_SQL, dialogId, mid);
-            return cursor.next();
-        } finally {
-            if (cursor != null) {
-                cursor.dispose();
-            }
-        }
-    }
-
-    private boolean storePushPlaceholderAtomic(final TLRPC.Message placeholder, final long dialogId, final int mid,
-                                               final int date, final long topicId, final int payloadHash) {
-        return PushPlaceholderStore.storePlaceholder(new PushPlaceholderStore.PlaceholderTransaction() {
-            @Override
-            public void beginTransaction() throws SQLiteException {
-                database.beginTransactionChecked();
-            }
-
-            @Override
-            public void insertMessageRow() throws Exception {
-                storePushPlaceholderRowsStrict(placeholder, dialogId, topicId);
-            }
-
-            @Override
-            public void insertPendingRow() throws SQLiteException {
-                insertPushPendingRow(dialogId, mid, date, topicId, payloadHash);
-            }
-
-            @Override
-            public boolean messageRowExists() throws SQLiteException {
-                return pushPlaceholderMessageRowWritten(dialogId, mid);
-            }
-
-            @Override
-            public boolean pendingRowExists() throws SQLiteException {
-                return pushPendingRowExists(dialogId, mid);
-            }
-
-            @Override
-            public void commitTransaction() throws SQLiteException {
-                database.commitTransactionChecked();
-            }
-
-            @Override
-            public void rollbackTransaction() throws SQLiteException {
-                database.rollbackTransactionChecked();
-            }
-
-            @Override
-            public void onCommitted() {
-                // Published strictly after the commit: a rolled back preview is never in the index.
-                pushPlaceholderRegistry.mark(dialogId, mid);
-            }
-        });
-    }
-
-    /**
-     * Strict placeholder writer used instead of {@code putMessagesInternal(..., false, ...)}.
-     *
-     * Only the two rows a preview needs are written: {@code messages_v2} always and
-     * {@code messages_topics} for a forum topic. Every {@code step()} must return
-     * {@code SQLITE_DONE}; a BUSY/error result throws so {@link PushPlaceholderStore} rolls the
-     * whole transaction back. Dialogs, counters and UI notifications are deliberately untouched:
-     * nothing may be visible before the caller confirms the commit.
-     */
-    private void storePushPlaceholderRowsStrict(TLRPC.Message message, long dialogId, long topicId) throws Exception {
-        fixUnsupportedMedia(message);
-        MessageObject.normalizeFlags(message);
-        NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
-        SQLitePreparedStatement state = null;
-        SQLitePreparedStatement topicState = null;
-        try {
-            message.serializeToStream(data);
-            state = database.executeFast(PushPlaceholderStore.REPLACE_MESSAGE_V2_SQL);
-            bindAndStepPushPlaceholderRow(state, message, dialogId, topicId, false, data);
-            if (topicId != 0) {
-                topicState = database.executeFast(PushPlaceholderStore.REPLACE_MESSAGE_TOPIC_SQL);
-                bindAndStepPushPlaceholderRow(topicState, message, dialogId, topicId, true, data);
-            }
-        } finally {
-            if (state != null) {
+    public void putWidgetHeight(long dialogId, int messageId, int width, int height, int anchor, int keep) {
+        storageQueue.postRunnable(() -> {
+            SQLitePreparedStatement state = null;
+            try {
+                state = database.executeFast("REPLACE INTO widget_heights VALUES(?, ?, ?, ?, ?, ?)");
+                state.bindLong(1, dialogId);
+                state.bindInteger(2, messageId);
+                state.bindInteger(3, width);
+                state.bindInteger(4, height);
+                state.bindLong(5, System.currentTimeMillis());
+                state.bindInteger(6, anchor);
+                state.step();
                 state.dispose();
-            }
-            if (topicState != null) {
-                topicState.dispose();
-            }
-            data.reuse();
-        }
-    }
-
-    /** Mirrors the {@code messages_v2}/{@code messages_topics} binding of putMessagesInternal. */
-    private void bindAndStepPushPlaceholderRow(SQLitePreparedStatement statement, TLRPC.Message message,
-                                               long dialogId, long topicId, boolean topicRow,
-                                               NativeByteBuffer data) throws Exception {
-        int messageId = message.local_id != 0 ? message.local_id : message.id;
-        int pointer = 1;
-        statement.requery();
-        statement.bindInteger(pointer++, messageId);
-        statement.bindLong(pointer++, dialogId);
-        if (topicRow) {
-            statement.bindLong(pointer++, topicId);
-        }
-        statement.bindInteger(pointer++, MessageObject.getUnreadFlags(message));
-        statement.bindInteger(pointer++, message.send_state);
-        statement.bindInteger(pointer++, message.date);
-        statement.bindByteBuffer(pointer++, data);
-        statement.bindInteger(pointer++, (MessageObject.isOut(message) || message.from_scheduled ? 1 : 0));
-        statement.bindInteger(pointer++, message.ttl);
-        if ((message.flags & TLRPC.MESSAGE_FLAG_HAS_VIEWS) != 0) {
-            statement.bindInteger(pointer++, message.views);
-        } else {
-            statement.bindInteger(pointer++, getMessageMediaType(message));
-        }
-        NativeByteBuffer storyData = null;
-        if (message.replyStory != null) {
-            storyData = new NativeByteBuffer(message.replyStory.getObjectSize());
-            message.replyStory.serializeToStream(storyData);
-            statement.bindByteBuffer(pointer++, storyData);
-        } else {
-            statement.bindNull(pointer++);
-        }
-        int flags = 0;
-        if (message.stickerVerified == 0) {
-            flags |= 1;
-        } else if (message.stickerVerified == 2) {
-            flags |= 2;
-        }
-        statement.bindInteger(pointer++, flags);
-        statement.bindInteger(pointer++, message.mentioned ? 1 : 0);
-        statement.bindInteger(pointer++, message.forwards);
-        NativeByteBuffer repliesData = null;
-        if (message.replies != null) {
-            repliesData = new NativeByteBuffer(message.replies.getObjectSize());
-            message.replies.serializeToStream(repliesData);
-            statement.bindByteBuffer(pointer++, repliesData);
-        } else {
-            statement.bindNull(pointer++);
-        }
-        if (message.reply_to != null) {
-            statement.bindInteger(pointer++, message.reply_to.reply_to_top_id != 0 ? message.reply_to.reply_to_top_id : message.reply_to.reply_to_msg_id);
-        } else {
-            statement.bindInteger(pointer++, 0);
-        }
-        statement.bindLong(pointer++, MessageObject.getChannelId(message));
-        NativeByteBuffer customParams = MessageCustomParamsHelper.writeLocalParams(message);
-        if (customParams != null) {
-            statement.bindByteBuffer(pointer++, customParams);
-        } else {
-            statement.bindNull(pointer++);
-        }
-        if (!topicRow) {
-            if ((message.flags & 131072) != 0) {
-                statement.bindLong(pointer++, message.grouped_id);
-            } else {
-                statement.bindNull(pointer++);
-            }
-        }
-        if (message.reply_to != null) {
-            statement.bindInteger(pointer++, message.reply_to.story_id);
-        } else {
-            statement.bindInteger(pointer++, 0);
-        }
-        try {
-            int result = statement.step();
-            if (result != SQLITE_DONE) {
-                throw new SQLiteException("push placeholder " + (topicRow ? "messages_topics" : "messages_v2")
-                        + " write failed, step result " + result);
-            }
-        } finally {
-            if (repliesData != null) {
-                repliesData.reuse();
-            }
-            if (customParams != null) {
-                customParams.reuse();
-            }
-            if (storyData != null) {
-                storyData.reuse();
-            }
-        }
-    }
-
-    /**
-     * Writes the durable pending row. Must throw on failure: the caller rolls the whole placeholder
-     * transaction back instead of publishing a message without its pending marker.
-     */
-    private void insertPushPendingRow(long dialogId, int mid, int date, long topicId, int payloadHash) throws SQLiteException {
-        SQLitePreparedStatement state = null;
-        try {
-            state = database.executeFast(PushPlaceholderStore.INSERT_PENDING_SQL);
-            state.requery();
-            state.bindLong(1, dialogId);
-            state.bindInteger(2, mid);
-            state.bindInteger(3, date);
-            state.bindLong(4, topicId);
-            state.bindInteger(5, 0);
-            state.bindInteger(6, payloadHash);
-            int result = state.step();
-            if (result != SQLITE_DONE) {
-                throw new SQLiteException("push_pending_messages write failed, step result " + result);
-            }
-        } finally {
-            if (state != null) {
-                state.dispose();
-            }
-        }
-    }
-
-    private void deletePushPendingRow(long dialogId, int mid) {
-        SQLitePreparedStatement state = null;
-        boolean deleted = false;
-        try {
-            state = database.executeFast(PushPlaceholderStore.DELETE_PENDING_SQL);
-            state.bindLong(1, dialogId);
-            state.bindInteger(2, mid);
-            deleted = state.step() == SQLITE_DONE;
-        } catch (Exception e) {
-            checkSQLException(e);
-        } finally {
-            if (state != null) {
-                state.dispose();
-            }
-        }
-        if (deleted && !database.isInTransaction()) {
-            // Auto-committed standalone DELETE: the durable marker must not outlive its row.
-            // Inside an owner transaction the registry is acknowledged by that owner after commit.
-            // The one-shot UI replacement right is kept for the later consume().
-            pushPlaceholderRegistry.clear(dialogId, mid);
-        }
-    }
-
-    /**
-     * Checked pending-row delete for a real message write. It runs on the same connection and
-     * inside the same transaction as {@code messages_v2}/{@code messages_topics}; a non-DONE step
-     * throws so the caller rolls everything back and the pending marker survives.
-     */
-    private void deletePushPendingRowsStrict(ArrayList<long[]> keys) throws SQLiteException {
-        SQLitePreparedStatement state = null;
-        try {
-            state = database.executeFast(PushPlaceholderStore.DELETE_PENDING_SQL);
-            for (int a = 0; a < keys.size(); a++) {
-                long[] key = keys.get(a);
-                state.requery();
-                state.bindLong(1, key[0]);
-                state.bindInteger(2, (int) key[1]);
-                int result = state.step();
-                if (result != SQLITE_DONE) {
-                    throw new SQLiteException("push_pending_messages delete failed, step result " + result);
+                state = null;
+                database.executeFast(String.format(Locale.US,
+                        "DELETE FROM widget_heights WHERE uid = %d AND mid = %d AND width NOT IN (SELECT width FROM widget_heights WHERE uid = %d AND mid = %d ORDER BY date DESC LIMIT %d)",
+                        dialogId, messageId, dialogId, messageId, keep)).stepThis().dispose();
+            } catch (Exception e) {
+                checkSQLException(e);
+            } finally {
+                if (state != null) {
+                    state.dispose();
                 }
             }
-        } finally {
-            if (state != null) {
-                state.dispose();
+        });
+    }
+
+    /** Development: forgets every widget message's content heights, so widgets lay out as on first sight. */
+    public void clearWidgetHeights() {
+        storageQueue.postRunnable(() -> {
+            try {
+                database.executeFast("DELETE FROM widget_heights").stepThis().dispose();
+            } catch (Exception e) {
+                checkSQLException(e);
             }
-        }
-    }
-
-    /** In-memory acknowledgement; must be called only after the owning transaction committed. */
-    private void clearPushPendingRegistry(ArrayList<long[]> keys) {
-        for (int a = 0; a < keys.size(); a++) {
-            long[] key = keys.get(a);
-            pushPlaceholderRegistry.clear(key[0], (int) key[1]);
-        }
-    }
-
-    private static void addPushPendingKey(ArrayList<long[]> keys, long dialogId, int mid) {
-        keys.add(new long[]{dialogId, mid});
-    }
-
-    /**
-     * Deletes the durable pending row and its durable registry marker in one storage runnable.
-     * The one-shot UI replacement right is kept: it is consumed exclusively by the UI path, so a
-     * real write that reaches storage before {@code updateInterfaceWithMessages} cannot hide the
-     * {@code replaceMessagesObjects} notification.
-     */
-    public void clearPushPendingForMessage(long dialogId, int mid) {
-        storageQueue.postRunnable(() -> deletePushPendingRow(dialogId, mid));
+            WidgetMedia.onHeightsCleared(currentAccount);
+        });
     }
 
     public void clearLocalDatabase() {
@@ -1880,6 +1538,9 @@ public class MessagesStorage extends BaseController {
                 ArrayList<Long> dialogsToCleanup = new ArrayList<>();
 
                 database.executeFast("DELETE FROM ephemeral_messages").stepThis().dispose();
+                database.executeFast("DELETE FROM widget_state").stepThis().dispose();
+                database.executeFast("DELETE FROM widget_heights").stepThis().dispose();
+                WidgetMedia.onStateCleared(currentAccount);
                 database.executeFast("DELETE FROM poll_votes_mentions").stepThis().dispose();
                 database.executeFast("DELETE FROM poll_votes_mentions_topics").stepThis().dispose();
                 database.executeFast("DELETE FROM reaction_mentions").stepThis().dispose();
@@ -2217,6 +1878,9 @@ public class MessagesStorage extends BaseController {
                     if ((flags & TopicsController.TOPIC_FLAG_ICON) != 0) {
                         topicToUpdate.icon_emoji_id = fromTopic.icon_emoji_id;
                         topicToUpdate.flags |= 1;
+                        if (fromTopic.icon_color != 0) {
+                            topicToUpdate.icon_color = fromTopic.icon_color;
+                        }
                     }
                     if ((flags & TopicsController.TOPIC_FLAG_PIN) != 0) {
                         topicToUpdate.pinned = fromTopic.pinned;
@@ -4958,6 +4622,8 @@ public class MessagesStorage extends BaseController {
                         cursor2 = null;
 
                         database.executeFast("DELETE FROM messages_v2 WHERE uid = " + did + " AND mid != " + last_mid_i + " AND mid != " + last_mid).stepThis().dispose();
+                        database.executeFast("DELETE FROM widget_state WHERE uid = " + did + " AND mid != " + last_mid_i + " AND mid != " + last_mid).stepThis().dispose();
+                        database.executeFast("DELETE FROM widget_heights WHERE uid = " + did + " AND mid != " + last_mid_i + " AND mid != " + last_mid).stepThis().dispose();
                         database.executeFast("DELETE FROM messages_topics WHERE uid = " + did + " AND mid != " + last_mid_i + " AND mid != " + last_mid).stepThis().dispose();
                         database.executeFast("DELETE FROM messages_holes WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM bot_keyboard WHERE uid = " + did).stepThis().dispose();
@@ -4985,6 +4651,8 @@ public class MessagesStorage extends BaseController {
 
                 database.executeFast("UPDATE dialogs SET unread_count = 0, unread_count_i = 0 WHERE did = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_v2 WHERE uid = " + did).stepThis().dispose();
+                database.executeFast("DELETE FROM widget_state WHERE uid = " + did).stepThis().dispose();
+                database.executeFast("DELETE FROM widget_heights WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_topics WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM bot_keyboard WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM bot_keyboard_topics WHERE uid = " + did).stepThis().dispose();
@@ -5101,6 +4769,8 @@ public class MessagesStorage extends BaseController {
                 database.executeFast("DELETE FROM dialogs WHERE did IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_v2 WHERE uid IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM polls_v2 WHERE 1").stepThis().dispose();
+                database.executeFast("DELETE FROM widget_state WHERE uid IN " + ids).stepThis().dispose();
+                database.executeFast("DELETE FROM widget_heights WHERE uid IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM bot_keyboard WHERE uid IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM bot_keyboard_topics WHERE uid IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM media_v4 WHERE uid IN " + ids).stepThis().dispose();
@@ -5729,6 +5399,63 @@ public class MessagesStorage extends BaseController {
                 }
                 if (cursor_groups != null) {
                     cursor_groups.dispose();
+                }
+            }
+        });
+    }
+
+    /**
+     * The bot edited a widget message's state (updateMessageWidgetData, a polled public_data): `publicData` (with its
+     * hash) / `chatData` replace the media's when not null, an empty one clears it.
+     */
+    public void updateMessageWidgetData(long dialogId, int msgId, String publicData, long publicDataHash, String chatData) {
+        storageQueue.postRunnable(() -> {
+            SQLiteCursor cursor = null;
+            try {
+                database.beginTransaction();
+                for (int i = 0; i < 2; i++) {
+                    cursor = database.queryFinalized(String.format(Locale.US, "SELECT data FROM %s WHERE mid = %d AND uid = %d", i == 0 ? "messages_v2" : "messages_topics", msgId, dialogId));
+                    if (cursor.next()) {
+                        NativeByteBuffer data = cursor.byteBufferValue(0);
+                        if (data != null) {
+                            TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                            if (message != null) {
+                                message.readAttachPath(data, getUserConfig().clientUserId);
+                            }
+                            data.reuse();
+                            if (message != null && message.media instanceof TLRPC.TL_messageMediaWidget) {
+                                TLRPC.TL_messageMediaWidget media = (TLRPC.TL_messageMediaWidget) message.media;
+                                if (publicData != null) {
+                                    media.public_data = publicData.isEmpty() ? null : publicData;
+                                    media.public_data_hash = publicDataHash;
+                                }
+                                if (chatData != null) media.chat_data = chatData.isEmpty() ? null : chatData;
+                                SQLitePreparedStatement state = database.executeFast(String.format(Locale.US, "UPDATE %s SET data = ? WHERE mid = ? AND uid = ?", i == 0 ? "messages_v2" : "messages_topics"));
+                                MessageObject.normalizeFlags(message);
+                                NativeByteBuffer data2 = new NativeByteBuffer(message.getObjectSize());
+                                message.serializeToStream(data2);
+                                state.requery();
+                                state.bindByteBuffer(1, data2);
+                                state.bindInteger(2, msgId);
+                                state.bindLong(3, dialogId);
+                                state.step();
+                                data2.reuse();
+                                state.dispose();
+                            }
+                        }
+                    }
+                    cursor.dispose();
+                    cursor = null;
+                }
+                database.commitTransaction();
+            } catch (Exception e) {
+                checkSQLException(e);
+            } finally {
+                if (database != null) {
+                    database.commitTransaction();
+                }
+                if (cursor != null) {
+                    cursor.dispose();
                 }
             }
         });
@@ -12354,7 +12081,6 @@ public class MessagesStorage extends BaseController {
         }
 
         boolean databaseInTransaction = false;
-        boolean normalTransaction = false;
         SQLitePreparedStatement state_messages = null;
         SQLitePreparedStatement state_messages_topic = null;
         SQLitePreparedStatement state_messages_tags = null;
@@ -12647,7 +12373,6 @@ public class MessagesStorage extends BaseController {
                 HashMap<TopicKey, ArrayList<Integer>> messagesMediaIdsMapTopics = new HashMap<>();
                 ArrayList<TLRPC.Message> createNewTopics = null;
                 ArrayList<TLRPC.Message> changedSavedMessages = null;
-                ArrayList<long[]> pushPendingToClear = null;
 
                 state_messages = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)");
                 state_messages_topic = database.executeFast("REPLACE INTO messages_topics VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
@@ -13059,7 +12784,6 @@ public class MessagesStorage extends BaseController {
                     }
                     fixUnsupportedMedia(message);
                     long topicId = MessageObject.getTopicId(currentAccount, message, getForumTypeFlags(message.dialog_id));
-                    boolean messageRowWritten = false;
 
                     state_messages.requery();
                     int messageId = message.id;
@@ -13201,14 +12925,7 @@ public class MessagesStorage extends BaseController {
                         } else {
                             statement.bindInteger(pointer++, 0);
                         }
-                        int stepResult = statement.step();
-                        if (!isTopic && stepResult == SQLITE_DONE) {
-                            messageRowWritten = true;
-                        } else if (isTopic && threadMessageId != 0 && stepResult == SQLITE_DONE) {
-                            // This branch intentionally skips messages_v2; the topic row is the
-                            // real row for a thread message.
-                            messageRowWritten = true;
-                        }
+                        statement.step();
 
                         if (repliesData != null) {
                             repliesData.reuse();
@@ -13229,21 +12946,6 @@ public class MessagesStorage extends BaseController {
                             bindMessageTags(state_messages_tags, message);
                             state_messages_tags.step();
                         }
-                    }
-
-                    if (messageRowWritten && PushPlaceholderStore.isRealMessageWrite(mode, scheduled, saved, quickReplies, welcomeMessages)
-                            && pushPlaceholderRegistry.hasPending(message.dialog_id, message.id)) {
-                        // Collected, not deleted: the checked DELETE runs once, after the loop and
-                        // before the commit, so a failed write cannot drop the pending marker and a
-                        // failed commit cannot clear the in-memory registry. No DELETE is issued for
-                        // ordinary messages that have no durable pending row.
-                        if (pushPendingToClear == null) {
-                            pushPendingToClear = new ArrayList<>();
-                        }
-                        // The first pending key activates rollback-on-failure for this normal
-                        // write, so a later step/DELETE/COMMIT error cannot publish or clear.
-                        normalTransaction = withTransaction;
-                        addPushPendingKey(pushPendingToClear, message.dialog_id, message.id);
                     }
 
                     if (message.random_id != 0) {
@@ -13716,27 +13418,9 @@ public class MessagesStorage extends BaseController {
                     state_randoms = null;
                 }
 
-                if (pushPendingToClear != null) {
-                    // The checked DELETE belongs to the same transaction as the rows above. A
-                    // failed DELETE/COMMIT rolls back and the durable marker stays set.
-                    deletePushPendingRowsStrict(pushPendingToClear);
-                }
                 if (withTransaction) {
-                    if (pushPendingToClear != null) {
-                        database.commitTransactionChecked();
-                    } else {
-                        database.commitTransaction();
-                    }
+                    database.commitTransaction();
                     databaseInTransaction = false;
-                    normalTransaction = false;
-                    if (pushPendingToClear != null) {
-                        // Only a confirmed COMMIT publishes the durable-marker removal.
-                        clearPushPendingRegistry(pushPendingToClear);
-                    }
-                } else if (pushPendingToClear != null && !database.isInTransaction()) {
-                    // No owning transaction: the DELETE above was auto-committed, so it is safe to
-                    // acknowledge it. An outer transaction is left to its owner.
-                    clearPushPendingRegistry(pushPendingToClear);
                 }
                 updateFiltersReadCounter(newMessagesCounts, newMentionsCounts, false);
                 loadGroupedMessagesForTopicUpdates(topicUpdatesInUi);
@@ -13758,14 +13442,6 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (Exception e) {
-            if (normalTransaction && database != null && database.isInTransaction()) {
-                try {
-                    database.rollbackTransactionChecked();
-                } catch (SQLiteException ignore) {
-                    // The original write/commit failure is what matters.
-                }
-                normalTransaction = false;
-            }
             checkSQLException(e);
         } finally {
             if (databaseInTransaction) {
@@ -15416,6 +15092,8 @@ public class MessagesStorage extends BaseController {
                     database.executeFast(String.format(Locale.US, "DELETE FROM messages_v2 WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
                     database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
                     database.executeFast(String.format(Locale.US, "DELETE FROM polls_v2 WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
+                    database.executeFast(String.format(Locale.US, "DELETE FROM widget_state WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
+                    database.executeFast(String.format(Locale.US, "DELETE FROM widget_heights WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
                     database.executeFast(String.format(Locale.US, "DELETE FROM bot_keyboard WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
                     database.executeFast(String.format(Locale.US, "DELETE FROM bot_keyboard_topics WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
                     if (unknownMessages.isEmpty()) {
@@ -15957,6 +15635,8 @@ public class MessagesStorage extends BaseController {
             }
 
             database.executeFast(String.format(Locale.US, "DELETE FROM messages_v2 WHERE uid = %d AND mid <= %d", -channelId, mid)).stepThis().dispose();
+            database.executeFast(String.format(Locale.US, "DELETE FROM widget_state WHERE uid = %d AND mid <= %d", -channelId, mid)).stepThis().dispose();
+            database.executeFast(String.format(Locale.US, "DELETE FROM widget_heights WHERE uid = %d AND mid <= %d", -channelId, mid)).stepThis().dispose();
             database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE uid = %d AND mid <= %d", -channelId, mid)).stepThis().dispose();
             database.executeFast(String.format(Locale.US, "DELETE FROM media_v4 WHERE uid = %d AND mid <= %d", -channelId, mid)).stepThis().dispose();
             database.executeFast(String.format(Locale.US, "UPDATE media_counts_v2 SET old = 1 WHERE uid = %d", -channelId)).stepThis().dispose();
@@ -16615,13 +16295,9 @@ public class MessagesStorage extends BaseController {
             SQLitePreparedStatement state_tasks = null;
             SQLitePreparedStatement state3 = null;
             SQLiteCursor cursor = null;
-            boolean historyTransaction = false;
-            boolean historyBranch = false;
-            ArrayList<long[]> pushPendingToClear = null;
             try {
                 final long selfId = getUserConfig().getClientUserId();
                 final boolean scheduled = mode == ChatActivity.MODE_SCHEDULED;
-                final boolean saved = mode == ChatActivity.MODE_SAVED;
                 final boolean quickReplies = mode == ChatActivity.MODE_QUICK_REPLIES;
                 final boolean welcomeMessages = mode == ChatActivity.MODE_WELCOME_MESSAGES;
                 if (welcomeMessages) {
@@ -16730,7 +16406,6 @@ public class MessagesStorage extends BaseController {
                     database.commitTransaction();
                     broadcastScheduledMessagesChange(dialogId);
                 } else {
-                    historyBranch = true;
                     int mentionCountUpdate = Integer.MAX_VALUE;
                     boolean isTopic = threadMessageId != 0;
                     String holesTableName = isTopic ? "messages_holes_topics" : "messages_holes";
@@ -16741,8 +16416,7 @@ public class MessagesStorage extends BaseController {
                         }
                         return;
                     }
-                    database.beginTransactionChecked();
-                    historyTransaction = true;
+                    database.beginTransaction();
 
                     if (load_type == LOAD_BACKWARD) {
                         int minId = messages.messages.get(messages.messages.size() - 1).id;
@@ -16936,7 +16610,6 @@ public class MessagesStorage extends BaseController {
                         MessageObject.normalizeFlags(message);
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                         message.serializeToStream(data);
-                        boolean messageRowWritten = false;
 
                         for (int i = 0; i < 2; i++) {
                             boolean isTopicMessage = i == 1;
@@ -17029,10 +16702,7 @@ public class MessagesStorage extends BaseController {
                             } else {
                                 currentState.bindInteger(pointer++, 0);
                             }
-                            int stepResult = currentState.step();
-                            if (!isTopicMessage && stepResult == SQLITE_DONE) {
-                                messageRowWritten = true;
-                            }
+                            currentState.step();
 
                             if (i == 0 && state_messages_tags != null) {
                                 bindMessageTags(state_messages_tags, message);
@@ -17052,16 +16722,6 @@ public class MessagesStorage extends BaseController {
                                 message.flags &=~ 268435456;
                                 message.saved_peer_id = null;
                             }
-                        }
-
-                        if (messageRowWritten && PushPlaceholderStore.isRealMessageWrite(mode, scheduled, saved, quickReplies, welcomeMessages)
-                                && pushPlaceholderRegistry.hasPending(dialogId, message.id)) {
-                            // The checked DELETE below runs in this transaction; the registry is
-                            // acknowledged only after commitTransactionChecked() succeeds.
-                            if (pushPendingToClear == null) {
-                                pushPendingToClear = new ArrayList<>();
-                            }
-                            addPushPendingKey(pushPendingToClear, dialogId, message.id);
                         }
 
                         if (threadMessageId == 0 || load_type == -2) {
@@ -17191,15 +16851,7 @@ public class MessagesStorage extends BaseController {
                         updateDialogs = true;
                     }
 
-                    if (pushPendingToClear != null) {
-                        deletePushPendingRowsStrict(pushPendingToClear);
-                    }
-                    database.commitTransactionChecked();
-                    historyTransaction = false;
-                    if (pushPendingToClear != null) {
-                        clearPushPendingRegistry(pushPendingToClear);
-                        pushPendingToClear = null;
-                    }
+                    database.commitTransaction();
 
                     if (createDialog || updateDialogs) {
                         updateDialogsWithDeletedMessages(dialogId, channelId, new ArrayList<>(), null);
@@ -17215,16 +16867,9 @@ public class MessagesStorage extends BaseController {
                     onReactionsUpdate(reactionUpdates);
                 }
             } catch (Exception e) {
-                if (historyTransaction && database != null && database.isInTransaction()) {
-                    try {
-                        database.rollbackTransactionChecked();
-                    } catch (SQLiteException ignore) {
-                        // The write failure is the reason the history load is not published.
-                    }
-                }
                 checkSQLException(e);
             } finally {
-                if (database != null && !historyBranch) {
+                if (database != null) {
                     database.commitTransaction();
                 }
                 if (state_messages_topics != null) {
@@ -19477,7 +19122,7 @@ public class MessagesStorage extends BaseController {
     }
 
     private void executeInStorageQueue(Runnable runnable) {
-        if (storageQueue.getHandler().getLooper() != Looper.myLooper()) {
+        if (Thread.currentThread() != storageQueue) {
             storageQueue.postRunnable(runnable);
         } else {
             runnable.run();
@@ -19555,12 +19200,12 @@ public class MessagesStorage extends BaseController {
         return database.queryFinalized(String.format(Locale.US, "SELECT data, seen, pin FROM profile_stories JOIN profile_stories_albums_links ON profile_stories.story_id = profile_stories_albums_links.story_id WHERE profile_stories.dialog_id = %d AND profile_stories_albums_links.dialog_id = %d  AND profile_stories_albums_links.album_id = %d AND profile_stories.type = %d ORDER BY profile_stories_albums_links.order_index ASC;", dialogId, dialogId, albumId, type));
     }
 
-    public boolean isMonoForum(long dialogId) {
+    private boolean isMonoForum(long dialogId) {
         // todo: inline
         return isForum(dialogId, FORUM_TYPE_DIRECT);
     }
 
-    public int getForumTypeFlags(long dialogId) {
+    private int getForumTypeFlags(long dialogId) {
         int value = dialogIsForumTyped.get(dialogId, -1);
         if (value == -1) {
             value = 0;
@@ -19595,7 +19240,7 @@ public class MessagesStorage extends BaseController {
             || action instanceof TLRPC.TL_messageActionPollDeleteAnswer;
     }
 
-    public boolean isForum(long dialogId, int type) {
+    private boolean isForum(long dialogId, int type) {
         int value = getForumTypeFlags(dialogId);
         return (value & type) != 0;
     }

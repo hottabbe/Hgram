@@ -185,7 +185,7 @@ public class AyuFilter {
         }
 
         synchronized (CACHE_LOCK) {
-            filterModels = ready;
+        filterModels = ready;
             filteredCache.clear();
         }
     }

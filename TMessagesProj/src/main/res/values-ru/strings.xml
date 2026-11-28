@@ -263,7 +263,7 @@
     <string name="RemindTodayAt">\'Отправить сегодня в\' HH:mm</string>
     <string name="RemindDayAt">\'Отправить\' d MMM \'в\' HH:mm</string>
     <string name="RemindDayYearAt">\'Напомнить\' d MMM yyyy \'в\' HH:mm</string>
-    <string name="HgramSettingsTitle">Настройки hgram</string>
+    <string name="HgramSettingsTitle">Настройки Hgram</string>
     <string name="HgramHeaderFeed">Лента</string>
     <string name="HgramHeaderChats">Чаты</string>
     <string name="HgramHeaderNetwork">Сеть и загрузки</string>
@@ -449,6 +449,9 @@
     <string name="HgramVoicePlaybackChannel">Воспроизведение голосового</string>
     <string name="HgramVoicePlaybackRunning">Воспроизведение из уведомления</string>
     <string name="HgramHeaderHaptics">Настройки вибрации</string>
+    <string name="HgramHighRefreshBoost">Максимальная частота обновления</string>
+    <string name="HgramHighRefreshBoostInfo">Повышать частоту экрана до максимума; может увеличить расход батареи.</string>
+    <string name="HgramHintHighRefreshBoost">Закрепляет максимальный совместимый режим экрана и разрешает анимациям работать на частоте дисплея. Выключено — стандартное поведение Android; может потребоваться повторное открытие экрана.</string>
     <string name="HgramHapticEnabled">Тактильный отклик</string>
     <string name="HgramHapticEnabledInfo">Настройка вибрации для каждого места</string>
     <string name="HgramHapticDisabled">Отключено</string>

@@ -319,7 +319,7 @@ public class MenuDrawable extends Drawable {
 
     public void setIconColor(int iconColor) {
         if (this.iconColor != iconColor) {
-            this.iconColor = iconColor;
+        this.iconColor = iconColor;
             invalidateSelf();
         }
     }
@@ -335,7 +335,7 @@ public class MenuDrawable extends Drawable {
 
     public void setBackColor(int backColor) {
         if (this.backColor != backColor) {
-            this.backColor = backColor;
+        this.backColor = backColor;
             invalidateSelf();
         }
     }

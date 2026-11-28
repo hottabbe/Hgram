@@ -103,6 +103,10 @@ class ContactsRemoteViewsFactory implements RemoteViewsService.RemoteViewsFactor
                 rv.setViewVisibility(a == 0 ? R.id.contacts_widget_item1 : R.id.contacts_widget_item2, View.VISIBLE);
 
                 Long id = dids.get(position * 2 + a);
+                if (HgramSecretSpace.isHidden(accountInstance.getCurrentAccount(), id)) {
+                    rv.setViewVisibility(a == 0 ? R.id.contacts_widget_item1 : R.id.contacts_widget_item2, View.INVISIBLE);
+                    continue;
+                }
                 String name;
 
                 TLRPC.FileLocation photoPath = null;
@@ -241,7 +245,7 @@ class ContactsRemoteViewsFactory implements RemoteViewsService.RemoteViewsFactor
         final int account = accountInstance.getCurrentAccount();
         for (int i = dids.size() - 1; i >= 0; i--) {
             final long dialogId = dids.get(i);
-            if (!HgramSecretSpace.isVisible(account, dialogId)) {
+            if (HgramSecretSpace.isHidden(account, dialogId)) {
                 dids.remove(i);
                 dialogs.remove(dialogId);
                 messages.remove(dialogId);

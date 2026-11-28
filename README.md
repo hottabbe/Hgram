@@ -1,216 +1,238 @@
-# Hgram
+# Nagram
 
-**Hgram** — неофициальный клиент Telegram для Android: форк [Nagram](https://github.com/NextAlone/Nagram),
-который, в свою очередь, основан на Telegram for Android и NekoX. Hgram добавляет собственные функции
-(суммаризация сообщений, склейка коротких сообщений, анти-подглядывание, офлайн-расшифровка голосовых
-и другое) и развивает приватность и повседневные мелочи интерфейса.
+Nagram is a third-party Telegram client based on [NekoX](https://web.archive.org/web/20240306062834/https://github.com/NekoX-Dev/NekoX) with some modifications.
 
-> **Актуальная версия:** 13.0.2 (сборка 1313) — 26 ноября 2026 г.
+- Official Site: <https://nagram.app>
+- Channel: <https://t.me/nagram_channel>
+- Assets: <https://t.me/nagram_assets>
+- Releases: <https://github.com/NextAlone/Nagram/releases>
+- Issues: <https://github.com/NextAlone/Nagram/issues>
+- Issues (Telegram): <https://t.me/na_gram_reports/18>
 
-- Релизы и APK: <https://github.com/hottabbe/Hgram/releases>
-- Канал обновлений: <https://t.me/hgram_updates>
-- Исходный код: <https://github.com/hottabbe/Hgram>
+## Branding
 
-Hgram не связан с Telegram Messenger LLP и не является официальным клиентом. Используйте на свой риск:
-сторонние клиенты могут привести к ограничениям аккаунта со стороны Telegram.
+Nagram's source code is licensed under GPLv3. The Nagram name and project
+identity belong to [@NextAlone](https://github.com/NextAlone); the Nagram
+application icon artwork is copyright © MaitungTM. These are separate brand
+assets. Modified, forked, and third-party distributions must use distinct
+branding and replace the Nagram brand assets. See [BRANDING.md](BRANDING.md)
+for the complete policy.
 
-## Установка
+## Additional feature over Nagram
 
-1. Скачайте APK из [последнего релиза](https://github.com/hottabbe/Hgram/releases/latest).
-2. Разрешите установку из неизвестных источников для файлового менеджера или браузера.
-3. Установите APK и войдите в свой аккаунт Telegram.
+1. Nice icon (copyright © MaitungTM)
+2. Combine message
+3. Editable text style 
+4. Forced copy
+5. Invert reply
+6. Quick reply in longClick menu (thanks to @blxueya)
+7. Undo and Redo
+8. Scrollable chat preview (thanks to TeleTux)
+9. Noise suppress and voice enhance (thanks to )
 
-Параметры текущей сборки:
+----
 
-| Параметр | Значение |
-|---|---|
-| Версия | 13.0.2 (1313) |
-| ABI | `arm64-v8a` (64-битный ARM) |
-| Размер APK | 69 831 794 байт (~66,6 МиБ) |
-| Минимальная версия Android | 6.0 (API 23) |
-| Целевая версия Android | 16 (API 36) |
+## NekoX Changes
 
-APK подписан ключом проекта, поэтому обновления ставятся поверх предыдущих версий Hgram. Поверх
-официального Telegram или других форков установка не пройдёт — потребуется удалить прежний клиент
-(история чатов при этом останется на сервере, локальный кеш будет потерян).
+- Most of Nekogram's features
+- Unlimited login accounts
+- **Proxy**
+    - Built-in VMess, Shadowsocks, SSR, Trojan-GFW proxies support (No longer maintained)
+    - Built-in public proxy (WebSocket relay via Cloudflare CDN), [documentation and for PC](https://github.com/arm64v8a/NekoXProxy)
+    - Proxy subscription support
+    - Ipv6 MTProxy support
+    - Able to parse all proxy subscription format: SIP008, ssr, v2rayN, vmess1, shit ios app formats, clash config and more
+    - Proxies import and export, remarks, speed measurement, sorting, delete unusable nodes, etc
+    - Scan the QR code (any link, can add a proxy)
+    - The ( vmess / vmess1 / ss / ssr / trojan ) proxy link in the message can be clicked
+    - Allow auto-disabling proxy when VPN is enabled
+    - Proxy automatic switcher
+    - Don't alert "Proxy unavailable" for non-current account
+- **Stickers**
+    - Custom [Emoji packs](https://web.archive.org/web/20221126140435/https://github.com/NekoX-Dev/NekoX/wiki/emoji)
+    - Add stickers without sticker pack
+    - Sticker set list backup / restore / share
+- **Internationalization**
+    - OpenCC Chinese Convert
+    - Full InstantView translation support
+    - Translation support for selected text on input and in messages
+    - Google Cloud Translate / Yandex.Translate support
+    - Force English emoji keywords to be loaded
+    - Persian calendar support
+- **Additional Options**
+    - Option to disable vibration
+    - Dialog sorting is optional "Unread and can be prioritized for reminding" etc
+    - Option to skip "regret within five seconds"
+    - Option to not send comment first when forwarding
+    - Option to use nekox chat input menu: replace record button with a menu which contains an switch to control link preview (enabled by default)
+    - Option to disable link preview by default: to prevent the server from knowing that the link is shared through Telegram.
+    - Option to ignore Android-only content restrictions (except for the Play Store version).
+    - Custom cache directory (supports external storage)
+    - Custom server (official, test DC)
+    - Option to block others from starting a secret chat with you
+    - Option to disable trending
+- **Additional Actions**
+    - Allow clicking on links in self profile
+    - Delete all messages in group
+    - Unblock all users support
+    - Login via QR code
+    - Scan and confirm the login QR code directly
+    - Allow clearing app data
+    - Proxies, groups, channels, sticker packs are able to be shared as QR codes
+    - Add "@Name" when long-pressing @user option
+    - Allow creating a group without inviting anyone
+    - Allow upgrading a group to a supergroup
+    - Mark dialogs as read using tab menu
+    - Enabled set auto delete timer option for private chats and private groups
+    - Support saving multiple selected messages to Saved Messages
+    - Support unpinning multiple selected messages
+    - View stats option for messages
+- **Optimization**
+    - Keep the original file name when downloading files
+    - View the data center you belong to when you don't have an avatar
+    - Enhanced notification service, optional version without Google Services
+    - Improved session dialog
+    - Improved link long click menu
+    - Improved hide messages from blocked users feature
+    - Don't process cleanup draft events after opening chat
+- **Others**
+    - OpenKeychain client (sign / verify / decrypt / import)
+    - Text replacer
+- **UI**
+    - Telegram X style menu for unpinning messages
+    - Built-in Material Design themes / Telegram X style icons
+- And more :)
 
-## Что внутри
+## API and Protocol documentation
 
-### Суммаризация сообщений
+Telegram API manuals: <https://core.telegram.org/api>
 
-- Кнопка «пересказать» у пузыря появляется, если в сообщении не меньше заданного числа слов.
-- Пересказ делает выбранная модель [OpenRouter](https://openrouter.ai/): по умолчанию бесплатная,
-  при желании можно включить платные модели — в списке видна цена за 1 млн токенов.
-- Настройки: **Hgram → Сообщения** — включение, порог появления кнопки, ключ OpenRouter, выбор модели
-  (список загружается по вашему ключу) и редактируемый системный промпт.
+MTProto protocol manuals: <https://core.telegram.org/mtproto>
 
-### Склеенные цепочки сообщений
+## Compilation Guide
 
-- Несколько коротких сообщений подряд рисуются одним пузырём с общей рамкой и градиентом у своих
-  сообщений; раскрытую цепочку можно свернуть обратно тапом по верхней части.
-- Три состояния галочек: не прочитано, частично прочитано, прочитано.
-- Это только отображение: идентификаторы, авторы и хранение сообщений не меняются.
+**NOTE: For Windows users, please consider using a Linux VM (such as WSL2) or dual booting.**
 
-### Приватность
+Environment:
 
-- **Анти-подглядывание** — жест «перевернуть телефон экраном вниз» прячет содержимое: список чатов,
-  шапку и текст чата, закреплённое сообщение, профиль и звонки. Есть настройка чувствительности,
-  уведомление и вибрация при срабатывании, а также «Показать на 5 секунд» из меню чата.
-- **Скрытое пространство** — чаты можно спрятать во второе пространство, вход в него — по отдельному
-  decoy-PIN; медиа-кеш скрытых чатов шифруется ключом Android Keystore, скрытые чаты не появляются
-  в поиске, счётчиках, уведомлениях, звонках и виджетах.
-- **Ghost mode** (наследие NekoX) — не отправлять «прочитано», online, прогресс загрузки и просмотр
-  историй, с разовым разрешением «прочитать» по запросу.
-- Пароль на каждый аккаунт, паник-код, скрытие аккаунта и самого раздела настроек.
-- OpenPGP-шифрование сообщений через OpenKeychain и regex-фильтры сообщений.
+- Linux distribution based on Debian or Arch Linux, or macOS
 
-### Уведомления
+- Optional: `ccache` in `PATH` speeds up rebuilding the native code.
 
-- Превью медиа в уведомлениях: корректные кадры GIF и видео, без обрезки, самая свежая картинка из серии.
-  Картинка берётся только из кеша — в сеть за превью приложение не ходит.
-- Группировка повторных уведомлений от одного отправителя, выбор стиля превью (системный или свой),
-  стабильные каналы уведомлений.
-- Сообщение из push сразу появляется в чате и списке — ещё до полной синхронизации, затем заменяется
-  настоящим без дубля.
-- Кнопки «Слушать» и «Текст» прямо в уведомлении голосового сообщения.
+  The third-party native libraries (FFmpeg, BoringSSL, libvpx, ...) are committed prebuilt under
+  **TMessagesProj/jni/prebuild/lib**; the `build_*.sh` scripts there, and the tools they need
+  (`go`, `yasm`, `make`, ...), are only for regenerating them.
+- Android SDK: `build-tools;33.0.0` `platforms;android-33` `ndk;27.2.12479018` `cmake;3.18.1` `cmake;3.22.1` (the default location is **$HOME/Android/SDK**, otherwise you need to specify **$ANDROID_HOME** for it)
 
-### Голосовые сообщения и расшифровка
+  It is recommended to use [Android Studio](https://developer.android.com/studio) to install, but you can also use `sdkmanager` command on distributions based on Debian:
 
-- Офлайн-расшифровка голосовых и видео-кружков: аудио не покидает устройство. Движки — Vosk (RU/EN),
-  sherpa-onnx (Zipformer RU) и GigaAM v3; модели скачиваются по запросу из настроек.
-- Расшифровка выполняется в отдельном процессе, поэтому большие модели не раздувают память основного.
-- Выравнивание громкости голосовых (компрессор + лимитер) без перекодирования файла.
+  ```shell
+  sudo apt install sdkmanager
+  sdkmanager --sdk_root $HOME/Android/SDK --install "build-tools;33.0.0" "platforms;android-33" "ndk;27.2.12479018" "cmake;3.18.1" "cmake;3.22.1"
+  ```
 
-### Распознавание текста на фото
+Build: 
 
-- Долгое нажатие на снимок в просмотрщике включает режим выделения: текст распознаётся на устройстве
-  и подсвечивается прямо на фото. Слово или строку можно расширить или сузить маркерами, «Копировать»
-  работает без отдельного окна с текстом.
-- Языки — русский и английский. Движок и языковые модели не входят в APK: при первом использовании
-  модели скачиваются по запросу (≈ 8 МБ), скачивание можно отменить и продолжить позже.
-- Настройка: **Hgram → Сообщения** — включение, статус моделей и кнопки «Скачать» / «Отменить» / «Удалить».
-- Защищённые фото (запрет пересылки, секретные чаты, защищённые аватары) не отдают текст в буфер обмена.
+1. Checkout submodules
 
-### Интерфейс и повседневные мелочи
+   ```shell
+   git submodule update --init --recursive
+   ```
 
-- Закрепление сообщения «поверх экрана» в списке чатов.
-- Компактные альбомы: стопка со свайпом и счётчиком.
-- Лента: свёртка похожих постов, скрытие рекламы и кликбейта, свои ключевые слова.
-- Единые настройки силы и длительности вибрации для переключателей, свайпов, анти-подглядывания и др.
-- Десять вариантов иконки приложения, стили вкладок, Material 3-шапка чата, liquid glass, Monet.
-- Ограничение анимаций до 60 fps и слабый режим сети для экономии заряда и трафика.
+   The build applies **TMessagesProj/jni/patches** to `tgcalls` itself. When an update moves the `tgcalls`
+   submodule, add `--force` so the patched files are reset before the new commit is checked out.
 
-### Производительность
+2. Disable signature check by removing the following lines in **TMessagesProj/jni/jni.c**:
+   ```c
+    if (verifySign(env) != JNI_OK) {
+        return JNI_ERR;
+    }
+   ```
 
-- Релизная сборка проходит R8 без обфускации: код и ресурсы ужимаются, APK — около 66,5 МиБ вместо 85,5 МиБ.
-- Нативный код собирается с полным LTO и `-O2`; холодный старт на тестовом устройстве ускорился примерно на 6 %.
-- Baseline profile и адаптивный кеш изображений уменьшают работу при запуске и прокрутке.
+3. Fill out `TELEGRAM_APP_ID` and `TELEGRAM_APP_HASH` in **local.properties** (from [Telegram Developer](https://my.telegram.org/auth))
 
-### Наследие NekoX/Nagram
+4. Replace **TMessagesProj/google-services.json** if you want FCM to work.
 
-Перевод сообщений (12 провайдеров, включая LLM через OpenAI, Gemini, DeepSeek, OpenRouter и другие),
-авто-перевод по чату, двойной тап по сообщению с настраиваемым действием, компактное меню сообщения,
-размер стикеров, свои стили текста, экспорт сессии (QR / Pyrogram / Telethon), вход по passkey,
-UnifiedPush, системные AI-сервисы HyperOS/ColorOS, импорт и экспорт настроек.
+5. Replace **release.keystore** with yours and fill out `ALIAS_NAME`, `KEYSTORE_PASS` and `ALIAS_PASS` in **local.properties**.
 
-### Настройки Hgram
+6. Build with Gradle (the native code is compiled as part of the build):
 
-Отдельный экран **Hgram settings** (вход из настроек Neko) с разделами «Чаты», «Лента», «Аудио»,
-«Транскрипция», «Приватность», «Сеть», «Прочее», поиском по строкам и сбросом только Hgram-настроек.
+   ```shell
+   ./gradlew assemble<Release/Debug>
+   ```
 
-## Сборка из исходников
+----
 
-Требования:
+## Compilation with GitHub Action
 
-- JDK 21 (подойдёт JetBrains Runtime 21, например `jbr-21`);
-- Android SDK: platform 36 и Build Tools 36.0.0;
-- Android NDK `29.0.14206865`, CMake `3.22.1`;
-- Git с поддержкой submodules и доступ в сеть для Gradle/Maven и моделей распознавания речи.
+1. Create your own `release.keystore` to replace `TMessagesProj/release.keystore`.
 
-Gradle wrapper сам скачает нужную версию Gradle.
+2. Prepare LOCAL_PROPERTIES
 
-```sh
-git clone --recurse-submodules https://github.com/hottabbe/Hgram.git
-cd Hgram
-git submodule update --init --recursive
+- KEYSTORE_PASS: from your keystore
+- ALIAS_NAME: from your keystore
+- ALIAS_PASS: from your keystore
+- TELEGRAM_APP_ID: from [Telegram Developer](https://my.telegram.org/auth)
+- TELEGRAM_APP_HASH: from [Telegram Developer](https://my.telegram.org/auth)
+
+```env
+KEYSTORE_PASS=123456
+ALIAS_NAME=key0
+ALIAS_PASS=123456
+TELEGRAM_APP_ID=123456
+TELEGRAM_APP_HASH=abcdefg
 ```
 
-Создайте в корне `local.properties` со своим путём к SDK и **своими** API-ключами Telegram
-(получаются на <https://my.telegram.org>):
+Then, use base64 to encode the above.
 
-```properties
-sdk.dir=/path/to/Android/Sdk
-TELEGRAM_APP_ID=your_app_id
-TELEGRAM_APP_HASH=your_app_hash
-```
+3. Add Repo Action Secrets
 
-`local.properties`, ключи API и хранилища подписи в репозиторий не коммитятся.
+- LOCAL_PROPERTIES: from step 2
+- HELPER_BOT_TOKEN: from telegram [@Botfather](https://t.me/Botfather), such as `1111:abcd`; the bot that keeps the in-app update metadata
+- NAGRAM_CHANNEL_BOT_TOKEN, NAGRAM_API_ID, NAGRAM_API_HASH: the bot that posts the builds to the channels, and the Telegram API credentials its Bot API server runs with
 
-Сборка релизного APK под arm64-v8a:
+   The channels are repository variables: NAGRAM_CHANNEL_ASSETS_CHAT_ID gets every build, NAGRAM_CHANNEL_CHAT_ID gets a copy of the releases. Nothing is posted while the token or the channels are not set. A release needs its notes in `docs/releases/<version code>.md`, with optional English notes in `<version code>.en.md`.
 
-```sh
-export JAVA_HOME=/path/to/jbr-21
-export PATH="$JAVA_HOME/bin:$PATH"
-./gradlew :TMessagesProj:assembleRelease -PnativeTarget=arm64-v8a
-```
+   The GitLab pipeline posts to its own channel instead, with the HELPER_BOT_TARGET CI/CD variable holding the chat id, such as `-1001234567890`.
 
-Отладочная сборка и быстрая проверка компиляции Java:
+4. Disable signature check by removing the following lines in **TMessagesProj/jni/jni.c**:
+   ```c
+    if (verifySign(env) != JNI_OK) {
+        return JNI_ERR;
+    }
+   ```
 
-```sh
-./gradlew :TMessagesProj:assembleDebug
-./gradlew :TMessagesProj:compileDebugJavaWithJavac
-```
+5. Run Release Build
 
-Для релиза нужен собственный keystore: не используйте подпись другого издателя и не публикуйте
-ключи. Готовые APK появляются в `TMessagesProj/build/outputs/apk/`.
+## FAQ
 
-## Структура проекта
+#### What is the differences between Nagram, NekoX and Nekogram?
 
-- `TMessagesProj/src/main/java/org/telegram/` — клиент Telegram и MTProto (`tgnet`);
-- `TMessagesProj/src/main/java/xyz/nextalone/nagram/hgram/` — функции Hgram;
-- `TMessagesProj/src/main/java/tw/nekomimi/nekogram/` — настройки и функции NekoX/Nagram;
-- `TMessagesProj/jni/` — нативные модули (включая подавление шума и распознавание речи);
-- `TMessagesProj/src/main/res/` — ресурсы и строки локализации.
+Developed by different developers, read the feature list above to understand the differences.
 
-## Лицензия и авторы
+#### I've encountered a bug!
 
-Проект распространяется по лицензии [GNU GPL v3](LICENSE), как и его upstream-проекты. При
-распространении изменённых сборок сохраняйте уведомления об авторских правах и текст лицензии.
+First, make sure you have the latest version installed (check the channel).
 
-Hgram основан на работе других проектов:
+Then, if the issue appears in the official Telegram client too, please submit it to the officials, (be careful not to show custom clients in the description and screenshots).
 
-- **Telegram for Android** — <https://github.com/DrKLO/Telegram> (Telegram Messenger LLP);
-- **Nagram** — <https://github.com/NextAlone/Nagram> ([@NextAlone](https://github.com/NextAlone));
-- **NekoX** — <https://github.com/NekoX-Dev/NekoX>.
+Then, submit it to our [bot](https://t.me/OrIssuesBot).
 
-Имя, логотипы и иконки Nagram — бренд-ассеты их владельцев (иконки — © MaitungTM). Hgram использует
-собственное имя и собственные иконки; см. [BRANDING.md](BRANDING.md). Упоминания upstream-проектов
-носят информационный характер и не означают их одобрения или поддержки Hgram.
+If you experience a *crash*, you also need to click on the version number at the bottom of the settings and select "Enable Log" and send it to us.
 
-Текст распознавания не покидает устройство и не сохраняется: результат только показывается и, по желанию,
-копируется в буфер обмена.
+## Localization
 
-### Сторонние компоненты OCR
+Nagram is forked from Telegram, thus most locales follows the translations of Telegram for Android, checkout <https://translations.telegram.org/en/android/>.
 
-Распознавание текста на фото использует [Tesseract4Android](https://github.com/adaptech-cz/Tesseract4Android)
-4.8.0 (Apache License 2.0) и языковые модели `rus`/`eng` из
-[tesseract-ocr/tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast) (Apache License 2.0).
+Is Nagram not in your language, or the translation is incorrect or incomplete? Get involved in the translations on our [Weblate](https://xtaolabs.crowdin.com/nagram).
 
-Документация предыдущих версий сохранена в [README.legacy.md](README.legacy.md),
-[README.Nagram.md](README.Nagram.md) и [README.NekoX.md](README.NekoX.md).
+[![Crowdin](https://badges.crowdin.net/e/156df3a631d257cc6b57301566d545fb/localized.svg)](https://xtaolabs.crowdin.com/nagram)
 
-## English summary
+## Thanks
 
-Hgram is an unofficial open-source Telegram client for Android, forked from Nagram (which builds on
-Telegram for Android and NekoX). Current release: **13.0.2 (1313)**, 26 November 2026, arm64-v8a,
-Android 6.0+. Highlights: on-device photo text recognition (long-press a photo, models downloaded on
-demand), OpenRouter-powered message summarization with selectable models and pricing, merged
-short-message chains, anti-peek masking triggered by flipping the phone, a hidden space with a decoy
-PIN and encrypted media cache, media previews in notifications, offline voice transcription
-(Vosk / sherpa-onnx / GigaAM), haptic effect types, reliable read receipts with ghost-mode recovery,
-photo viewer navigation across album boundaries, and the usual NekoX/Nagram customization.
-
-Downloads: <https://github.com/hottabbe/Hgram/releases> · Channel: <https://t.me/hgram_updates>
-
-Build with JDK 21: `./gradlew :TMessagesProj:assembleRelease -PnativeTarget=arm64-v8a`.
-Licensed under GPLv3. Not affiliated with Telegram Messenger LLP.
+- [NekoX](https://web.archive.org/web/20240306062834/https://github.com/NekoX-Dev/NekoX)
+- [Nekogram](https://gitlab.com/Nekogram/Nekogram)
+- [Pigeongram](https://gitlab.com/JasonKhew96/Nekogram)
+- [Nullgram](https://github.com/qwq233/Nullgram)
+- [TeleTux](https://github.com/TeleTux/TeleTux)
+- [OwlGram](https://github.com/OwlGramDev/OwlGram)

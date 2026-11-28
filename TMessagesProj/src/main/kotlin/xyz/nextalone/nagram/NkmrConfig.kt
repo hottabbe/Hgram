@@ -15,9 +15,9 @@ object NkmrConfig {
     private val memoryDefaults = ConcurrentHashMap<String, Any>()
 
     private val listenerWrappers = IdentityHashMap<
-            SharedPreferences.OnSharedPreferenceChangeListener,
-            SharedPreferences.OnSharedPreferenceChangeListener,
-            >()
+        SharedPreferences.OnSharedPreferenceChangeListener,
+        SharedPreferences.OnSharedPreferenceChangeListener,
+    >()
     private val userPreferences = ApplicationLoader.applicationContext.getSharedPreferences(
         USER_PREFERENCES_NAME,
         Context.MODE_PRIVATE,
@@ -62,9 +62,9 @@ object NkmrConfig {
             null -> NULL_SENTINEL
             is Set<*> -> HashSet(value)
             else -> value
-        }
+            }
         memoryDefaults[key] = stored
-    }
+            }
 
     private fun getRegisteredDefault(key: String): Any? {
         val mem = memoryDefaults[key]

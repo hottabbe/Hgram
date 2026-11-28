@@ -139,35 +139,6 @@ JNIEXPORT void Java_org_telegram_SQLite_SQLiteDatabase_commitTransaction(JNIEnv 
     sqlite3_exec(handle, "COMMIT", 0, 0, 0);
 }
 
-JNIEXPORT jint Java_org_telegram_SQLite_SQLiteDatabase_beginTransactionChecked(JNIEnv *env, jobject object, jlong sqliteHandle) {
-    sqlite3 *handle = (sqlite3 *) (intptr_t) sqliteHandle;
-    int errcode = sqlite3_exec(handle, "BEGIN", 0, 0, 0);
-    if (SQLITE_OK != errcode) {
-        throw_sqlite3_exception(env, handle, errcode);
-    }
-    return errcode;
-}
-
-JNIEXPORT jint Java_org_telegram_SQLite_SQLiteDatabase_commitTransactionChecked(JNIEnv *env, jobject object, jlong sqliteHandle) {
-    sqlite3 *handle = (sqlite3 *) (intptr_t) sqliteHandle;
-    int errcode = sqlite3_exec(handle, "COMMIT", 0, 0, 0);
-    if (SQLITE_OK != errcode) {
-        // A failed COMMIT leaves the transaction open; the Java side keeps inTransaction set and
-        // the caller rolls back explicitly instead of retrying the commit.
-        throw_sqlite3_exception(env, handle, errcode);
-    }
-    return errcode;
-}
-
-JNIEXPORT jint Java_org_telegram_SQLite_SQLiteDatabase_rollbackTransactionChecked(JNIEnv *env, jobject object, jlong sqliteHandle) {
-    sqlite3 *handle = (sqlite3 *) (intptr_t) sqliteHandle;
-    int errcode = sqlite3_exec(handle, "ROLLBACK", 0, 0, 0);
-    if (SQLITE_OK != errcode) {
-        throw_sqlite3_exception(env, handle, errcode);
-    }
-    return errcode;
-}
-
 JNIEXPORT jlong Java_org_telegram_SQLite_SQLiteDatabase_opendb(JNIEnv *env, jobject object, jstring fileName, jstring tempDir) {
     char const *fileNameStr = env->GetStringUTFChars(fileName, 0);
     char const *tempDirStr = env->GetStringUTFChars(tempDir, 0);

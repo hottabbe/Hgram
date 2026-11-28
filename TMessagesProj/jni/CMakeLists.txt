@@ -1,38 +1,23 @@
 cmake_minimum_required(VERSION 3.16)
 
-# Enable the signature-check bypass only for debug builds
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_compile_definitions(NAGRAM_DEBUG_BUILD)
-endif()
-
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Nagram: limit parallel compile/link jobs so the build does not exhaust RAM on the device
-# (background apps were being killed). Linking big shared libs is memory-hungry, so keep it serial.
-set(NAGRAM_COMPILE_JOBS 6 CACHE STRING "Parallel compile jobs (ninja pool)")
-set(NAGRAM_LINK_JOBS 1 CACHE STRING "Parallel link jobs (ninja pool)")
-set_property(GLOBAL APPEND PROPERTY JOB_POOLS nagram_compile=${NAGRAM_COMPILE_JOBS} nagram_link=${NAGRAM_LINK_JOBS})
-set(CMAKE_JOB_POOL_COMPILE nagram_compile)
-set(CMAKE_JOB_POOL_LINK nagram_link)
-
 set(CMAKE_CXX_FLAGS "-DANDROID")
 set(CMAKE_C_FLAGS "-w -std=c11 -DANDROID -D_LARGEFILE_SOURCE=1 -Wno-error=implicit-function-declaration")
 set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
-add_compile_options(
-        $<$<COMPILE_LANGUAGE:C,CXX>:-ffunction-sections>
-        $<$<COMPILE_LANGUAGE:C,CXX>:-fdata-sections>
-        $<$<COMPILE_LANGUAGE:C,CXX>:-fvisibility=hidden>
-        $<$<COMPILE_LANGUAGE:CXX>:-fvisibility-inlines-hidden>
-        $<$<COMPILE_LANGUAGE:C,CXX>:-flto=full>)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections -fvisibility=hidden -flto=full")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections -fvisibility=hidden -fvisibility-inlines-hidden -flto=full")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -flto=full -Wl,--gc-sections -Wl,--icf=safe -Wl,-Bsymbolic")
 
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    add_compile_options(-O0 -g)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O0 -g")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O0 -g")
 else()
-    # Optimization level comes from the build type (-O2 for RelWithDebInfo); no -O3/-Os soup here.
-    add_compile_options(-DNDEBUG -g1)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -Os -DNDEBUG")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -Os -DNDEBUG")
+    set(LINKER_FLAGS "${LINKER_FLAGS} -Wl,-exclude-libs,ALL -Wl,--gc-sections -Wl,--strip-all")
 endif()
 
 if (${ANDROID_ABI} STREQUAL "armeabi-v7a" OR ${ANDROID_ABI} STREQUAL "arm64-v8a")
@@ -122,8 +107,10 @@ set_target_properties(tde2e PROPERTIES IMPORTED_LOCATION ${CMAKE_HOME_DIRECTORY}
 add_library(tdutils STATIC IMPORTED)
 set_target_properties(tdutils PROPERTIES IMPORTED_LOCATION ${CMAKE_HOME_DIRECTORY}/prebuild/lib/${ANDROID_ABI}/libtdutils.a)
 
-add_library(prisma STATIC IMPORTED)
-set_target_properties(prisma PROPERTIES IMPORTED_LOCATION ${CMAKE_HOME_DIRECTORY}/prebuild/lib/${ANDROID_ABI}/libprisma.a)
+add_subdirectory(
+        prisma
+        ${CMAKE_CURRENT_BINARY_DIR}/prisma
+        EXCLUDE_FROM_ALL)
 
 #tgnet
 add_library(tgnet STATIC
@@ -148,8 +135,8 @@ add_library(tgnet STATIC
         tgnet/ProxyCheckInfo.cpp
         tgnet/Handshake.cpp
         tgnet/Config.cpp)
-target_compile_options(tgnet PRIVATE
-        -Wall -frtti -finline-functions -ffast-math -O2)
+target_compile_options(tgnet PUBLIC
+        -Wall -frtti -finline-functions -ffast-math -Oz)
 set_target_properties(tgnet PROPERTIES
         ANDROID_ARM_MODE arm)
 target_compile_definitions(tgnet PUBLIC
@@ -178,7 +165,7 @@ add_library(wallet_engine_cpp STATIC
 # Any new source that includes wallet_engine.hpp must also opt into C++20.
 target_compile_features(wallet_engine_cpp PRIVATE cxx_std_20)
 # Keep unused bindings discardable even when voip resets CMAKE_CXX_FLAGS below.
-target_compile_options(wallet_engine_cpp PRIVATE -ffunction-sections -fdata-sections -Os)
+target_compile_options(wallet_engine_cpp PRIVATE -ffunction-sections -fdata-sections)
 target_include_directories(wallet_engine_cpp PUBLIC ${WALLET_ENGINE_INCLUDE_DIR})
 target_link_libraries(wallet_engine_cpp PUBLIC wallet_engine dl m)
 
@@ -186,14 +173,13 @@ target_link_libraries(wallet_engine_cpp PUBLIC wallet_engine dl m)
 # An object library keeps its JNI entry points in the existing tmessages .so.
 add_library(wallet_engine_jni OBJECT wallet/WalletEngineBridge.cpp wallet/GramWalletAdapter.cpp)
 target_compile_features(wallet_engine_jni PRIVATE cxx_std_20)
-target_compile_options(wallet_engine_jni PRIVATE -Os)
 set_target_properties(wallet_engine_jni PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(wallet_engine_jni PRIVATE wallet_engine_cpp)
 
 #sqlite
 add_library(sqlite STATIC
         sqlite/sqlite3.c)
-target_compile_options(sqlite PRIVATE
+target_compile_options(sqlite PUBLIC
         -fno-strict-aliasing -Oz)
 set_target_properties(sqlite PROPERTIES
         ANDROID_ARM_MODE arm)
@@ -225,7 +211,6 @@ add_library(breakpad STATIC
         third_party/breakpad/src/common/linux/memory_mapped_file.cc
         third_party/breakpad/src/common/linux/safe_readlink.cc)
 set_target_properties(breakpad PROPERTIES ANDROID_ARM_MODE arm)
-target_compile_options(breakpad PRIVATE -Oz)
 set_property(SOURCE third_party/breakpad/src/common/android/breakpad_getcontext.S PROPERTY LANGUAGE C)
 target_include_directories(breakpad PUBLIC
         third_party/breakpad/src/common/android/include
@@ -261,22 +246,30 @@ add_library(${NATIVE_LIB} SHARED
         tests.cpp
 )
 
+# HTML widgets are libtwidget.so, apart from the client library: the isolated engine process loads only it
+# (WidgetEngineService), the client never does. What the client needs of the same code (the gesture policy, the CPU
+# filter pass; no widget code reaches either) is compiled into the client library (twidget_client_sources).
+include(twidget/twidget.cmake)
+add_library(twidget SHARED twidget/twidget-onload.cpp twidget/twidget-seccomp.cpp)
+twidget_target_sources(twidget)
+twidget_client_sources(${NATIVE_LIB})
+target_link_options(twidget PRIVATE "-Wl,-z,max-page-size=16384")
+target_link_options(twidget PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/twidget/exports.map")
+
 # Compile JNI directly into the shared library so archive extraction cannot drop its exports.
 set(PRISMA_BRIDGE_SOURCES
         "${CMAKE_CURRENT_SOURCE_DIR}/prisma/bridge/PrismaEngine.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/prisma/bridge/PrismaJni.cpp")
 target_sources(${NATIVE_LIB} PRIVATE ${PRISMA_BRIDGE_SOURCES})
 target_include_directories(${NATIVE_LIB} PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/prisma/bridge"
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/boost-regex/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/libprisma/libprisma")
+        "${CMAKE_CURRENT_SOURCE_DIR}/prisma/bridge")
 set_property(SOURCE ${PRISMA_BRIDGE_SOURCES} APPEND PROPERTY
-        COMPILE_OPTIONS -fexceptions -frtti -Os)
+        COMPILE_OPTIONS -fexceptions -frtti)
 set_property(SOURCE ${PRISMA_BRIDGE_SOURCES} APPEND PROPERTY
         COMPILE_DEFINITIONS BOOST_REGEX_STANDALONE)
 
-target_compile_options(${NATIVE_LIB} PRIVATE
-        -ffast-math -O2 -fno-strict-aliasing -fno-math-errno)
+target_compile_options(${NATIVE_LIB} PUBLIC
+        -ffast-math -Oz -funroll-loops -ffast-math -fno-strict-aliasing -fno-math-errno)
 
 target_compile_definitions(${NATIVE_LIB} PUBLIC
         BSD=1 NULL=0 SOCKLEN_T=socklen_t ANDROID_NDK DISABLE_IMPORTGL AVOID_TABLES ANDROID_TILE_BASED_DECODE __STDC_CONSTANT_MACROS ANDROID_ARMV6_IDCT OPUS_BUILD FIXED_POINT USE_ALLOCA restrict= __EMX__ LOCALE_NOT_USED HAVE_LRINT HAVE_LRINTF)
@@ -356,7 +349,5 @@ target_link_libraries(${NATIVE_LIB}
         breakpad)
 
 
-# AndroidNdkModules.cmake is missing from the installed NDK (r29); build cpufeatures directly
-# from the NDK sources (same as android_ndk_import_module_cpufeatures()).
-add_library(cpufeatures STATIC ${ANDROID_NDK}/sources/android/cpufeatures/cpu-features.c)
-target_include_directories(cpufeatures PUBLIC ${ANDROID_NDK}/sources/android/cpufeatures)
+include(AndroidNdkModules)
+android_ndk_import_module_cpufeatures()

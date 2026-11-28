@@ -8,6 +8,14 @@ import static org.junit.Assert.assertTrue;
 public class HgramSettingsSearchTest {
 
     @Test
+    public void highRefreshBoostIsSearchable() {
+        assertTrue(HgramSettingsSearch.matches(HgramSettingsSearch.ROW_HIGH_REFRESH_BOOST,
+                "refresh", null));
+        assertTrue(HgramSettingsSearch.matches(HgramSettingsSearch.ROW_HIGH_REFRESH_BOOST,
+                "частот", null));
+    }
+
+    @Test
     public void emptyQueryMatchesEverything() {
         assertTrue(HgramSettingsSearch.matches(HgramSettingsSearch.ROW_ANTI_PEEK, "", ""));
         assertTrue(HgramSettingsSearch.matches(HgramSettingsSearch.ROW_RESET_HGRAM_SETTINGS, "  ", ""));

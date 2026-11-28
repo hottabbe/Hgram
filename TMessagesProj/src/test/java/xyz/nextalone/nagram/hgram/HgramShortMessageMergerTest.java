@@ -278,26 +278,6 @@ public class HgramShortMessageMergerTest {
                 contentLeft, contentLeft + narrow.contentWidth, true, true, 24, narrow.labelWidth, inset), 0.01f);
     }
 
-    @Test public void dialogsClipTracksPanelsThroughActionModeAndFolderSwipe() {
-        assertEquals(0, HgramDialogsClip.clipTop(300f, 300f, 900));
-        assertEquals(200, HgramDialogsClip.clipTop(380f, 180f, 900));
-        assertEquals(140, HgramDialogsClip.clipTop(360f, 220f, 900));
-        assertEquals(0, HgramDialogsClip.clipTop(100f, 200f, 900));
-        assertEquals(900, HgramDialogsClip.clipTop(2000f, 100f, 900));
-        assertEquals(0, HgramDialogsClip.clipTop(200f, 100f, 0));
-        assertFalse(HgramDialogsClip.acceptsDown(99f, 100));
-        assertTrue(HgramDialogsClip.acceptsDown(100f, 100));
-        assertTrue(HgramDialogsClip.acceptsDown(150f, 100));
-
-        final HgramDialogsClip.Cache cache = new HgramDialogsClip.Cache();
-        assertTrue(cache.commit(120));
-        assertEquals(120, cache.clipTop);
-        assertFalse(cache.commit(120));
-        assertEquals(120, cache.clipTop);
-        assertTrue(cache.commit(0));
-        assertEquals(0, cache.clipTop);
-    }
-
     @Test public void paragraphShiftAndClampKeepRtlInsideCollapseRect() {
         assertEquals(-40f, HgramShortMessageMerger.paragraphShift(100f, 60f, true), 0.01f);
         assertEquals(0f, HgramShortMessageMerger.paragraphShift(60f, 60f, true), 0.01f);

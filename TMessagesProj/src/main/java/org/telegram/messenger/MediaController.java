@@ -97,6 +97,8 @@ import org.telegram.tgnet.OutputSerializedData;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_stories;
+import org.telegram.utils.recorder.audio.AudioRecordingSession;
+import org.telegram.utils.settings.SharedSettings;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
@@ -134,12 +136,12 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import tw.nekomimi.nekogram.NekoConfig;
 import tw.nekomimi.nekogram.NekoXConfig;
 import tw.nekomimi.nekogram.SaveToDownloadReceiver;
 import xyz.nextalone.nagram.NaConfig;
+import xyz.nextalone.nagram.helper.AudioEnhance;
 
 public class MediaController implements AudioManager.OnAudioFocusChangeListener, NotificationCenter.NotificationCenterDelegate, SensorEventListener {
 
@@ -526,6 +528,21 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
         public CropState cropState;
 
+        // Sending as a document uploads the original video without VideoEditedInfo, losing these edits
+        public boolean hasVideoEditsLostAsDocument() {
+            if (!isVideo) {
+                return false;
+            }
+            if (editedInfo != null && (editedInfo.muted || editedInfo.startTime > 0 || editedInfo.endTime > 0)) {
+                return true;
+            }
+            return cropState != null && !cropState.isEmpty()
+                || savedFilterState != null
+                || paintPath != null
+                || mediaEntities != null && !mediaEntities.isEmpty()
+                || coverPath != null;
+        }
+
         public String getPath() {
             return null;
         }
@@ -618,15 +635,80 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         public int gradientTopColor, gradientBottomColor;
 
         public BitmapDrawable thumb;
-        private boolean parsedXmp;
+        private volatile boolean parsedXmp;
         public boolean isLivePhoto;
+        private boolean loadingLivePhoto;
+        private ArrayList<Runnable> onLivePhotoLoaded;
+
+        private static DispatchQueue livePhotoQueue;
 
         @Override
         public boolean isLivePhoto() {
-            if (isVideo || parsedXmp) return isLivePhoto;
-            parsedXmp = true;
+            if (parsedXmp) return isLivePhoto;
+            synchronized (this) {
+                if (!parsedXmp) {
+                    if (!isVideo) {
+                        parseXmp();
+                    }
+                    parsedXmp = true;
+                }
+            }
+            return isLivePhoto;
+        }
+
+        public boolean isLivePhotoLoaded() {
+            return parsedXmp || isVideo && !loadingLivePhoto;
+        }
+
+        // UI thread only: returns true if isLivePhoto() won't block, otherwise parses it once on a background queue and calls onLoaded on the UI thread
+        public boolean loadLivePhoto(Runnable onLoaded) {
+            if (isLivePhotoLoaded()) return true;
+            if (onLoaded != null) {
+                if (onLivePhotoLoaded == null) {
+                    onLivePhotoLoaded = new ArrayList<>();
+                }
+                if (!onLivePhotoLoaded.contains(onLoaded)) {
+                    onLivePhotoLoaded.add(onLoaded);
+                }
+            }
+            if (!loadingLivePhoto) {
+                loadingLivePhoto = true;
+                if (livePhotoQueue == null) {
+                    livePhotoQueue = new DispatchQueue("livePhotoQueue");
+                }
+                livePhotoQueue.postRunnable(() -> {
+                    isLivePhoto();
+                    AndroidUtilities.runOnUIThread(() -> {
+                        loadingLivePhoto = false;
+                        final ArrayList<Runnable> callbacks = onLivePhotoLoaded;
+                        onLivePhotoLoaded = null;
+                        if (callbacks != null) {
+                            for (int i = 0; i < callbacks.size(); ++i) {
+                                callbacks.get(i).run();
+                            }
+                        }
+                    });
+                });
+            }
+            return false;
+        }
+
+        private void parseXmp() {
             final long start = System.currentTimeMillis();
+            HeifMotionPhoto heif = null;
             try {
+                heif = HeifMotionPhoto.parse(new File(path));
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+            if (heif != null) {
+                if (heif.isMotionPhoto()) {
+                    isVideo = true;
+                    isLivePhoto = true;
+                    livePhotoVideoOffset = heif.videoOffset;
+                    livePhotoTimestampUs = heif.timestampUs;
+                }
+            } else try {
                 final ExifInterface ei = new ExifInterface(new File(path));
                 final String xmp = ei.getAttribute(ExifInterface.TAG_XMP);
                 if (xmp != null) {
@@ -662,7 +744,6 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 isLivePhoto = false;
             }
             FileLog.d("parsed isLivePhoto()="+isLivePhoto+" in " + (System.currentTimeMillis() - start) + "ms");
-            return isLivePhoto;
         }
 
         public PhotoEntry(int bucketId, int imageId, long dateTaken, String path, int orientationOrDuration, boolean isVideo, int width, int height, long size) {
@@ -1019,14 +1100,6 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     public static ArrayList<AlbumEntry> allPhotoAlbums = new ArrayList<>();
     private static Runnable broadcastPhotosRunnable;
 
-    public static void clearMediaAlbums() {
-        allMediaAlbums = new ArrayList<>();
-        allPhotoAlbums = new ArrayList<>();
-        allMediaAlbumEntry = null;
-        allPhotosAlbumEntry = null;
-        allVideosAlbumEntry = null;
-    }
-
     public boolean isSilent = false;
     private boolean isPaused = false;
     private boolean wasPlayingAudioBeforePause = false;
@@ -1078,6 +1151,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     private boolean loadingPlaylist;
     private long playlistMergeDialogId;
     private int playlistClassGuid;
+    private long playlistTopicId;
     private int[] playlistMaxId = new int[]{Integer.MAX_VALUE, Integer.MAX_VALUE};
 
     private Runnable setLoadingRunnable = new Runnable() {
@@ -1090,13 +1164,8 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
     };
 
-    private volatile boolean audioRecorderPaused;
+    private boolean audioRecorderPaused;
     private AudioRecord audioRecorder;
-    private volatile boolean recordPauseRequested;
-    private final AtomicInteger recordSessionGeneration = new AtomicInteger();
-    private boolean recordPauseCleanupPending;
-    private volatile boolean recordResumePending;
-    private int recordResumeGeneration;
     public TLRPC.TL_document recordingAudio;
     private int recordingGuid = -1;
     private int recordingCurrentAccount;
@@ -1128,32 +1197,20 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     private boolean sendAfterDoneOnce;
     private long sendAfterDonePayStars;
 
+    private AudioRecorderV2Controller audioRecorderV2Controller;
+    private Runnable audioRecorderV2StartRunnable;
+    private boolean audioRecorderV2Active;
+    private boolean audioRecorderV2Stopping;
+    private boolean audioRecorderV2VoiceOnce;
+    private AudioRecordingSession.Result audioRecorderV2PendingResult;
+
     private Runnable recordStartRunnable;
-    private DispatchQueue recordQueue;
-    private DispatchQueue fileEncodingQueue;
-    private Runnable recordRunnable;
-
-    private final class RecordRunnable implements Runnable {
-        private final AudioRecord myRecorder;
-        private final int myGeneration;
-        private final File sessionAudioFile;
-
-        RecordRunnable(AudioRecord recorder, int generation, File audioFile) {
-            myRecorder = recorder;
-            myGeneration = generation;
-            sessionAudioFile = audioFile;
-        }
-
+    private DispatchQueue2 recordQueue;
+    private DispatchQueue2 fileEncodingQueue;
+    private Runnable recordRunnable = new Runnable() {
         @Override
         public void run() {
-            if (recordPauseRequested) {
-                return;
-            }
-            if (!isRecordSessionActive(myRecorder, myGeneration)) {
-                loseRecordSession(myRecorder, myGeneration, sessionAudioFile);
-                return;
-            }
-            if (audioRecorder == myRecorder) {
+            if (audioRecorder != null) {
                 ByteBuffer buffer;
                 if (!recordBuffers.isEmpty()) {
                     buffer = recordBuffers.get(0);
@@ -1163,16 +1220,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                     buffer.order(ByteOrder.nativeOrder());
                 }
                 buffer.rewind();
-                int len = myRecorder.read(buffer, buffer.capacity());
-                if (!isRecordSessionActive(myRecorder, myGeneration)) {
-                    recordBuffers.add(buffer);
-                    loseRecordSession(myRecorder, myGeneration, sessionAudioFile);
-                    return;
-                }
-                if (recordPauseRequested && len <= 0) {
-                    recordBuffers.add(buffer);
-                    return;
-                }
+                int len = audioRecorder.read(buffer, buffer.capacity());
                 if (len > 0) {
                     buffer.limit(len);
                     double sum = 0;
@@ -1215,11 +1263,6 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                     final double amplitude = Math.sqrt(sum / len / 2);
                     final ByteBuffer finalBuffer = buffer;
                     final boolean flush = len != buffer.capacity();
-                    if (!isRecordSessionActive(myRecorder, myGeneration)) {
-                        recordBuffers.add(finalBuffer);
-                        loseRecordSession(myRecorder, myGeneration, sessionAudioFile);
-                        return;
-                    }
                     fileEncodingQueue.postRunnable(() -> {
                         while (finalBuffer.hasRemaining()) {
                             int oldLimit = -1;
@@ -1243,23 +1286,8 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                         }
                         recordQueue.postRunnable(() -> recordBuffers.add(finalBuffer));
                     });
-                    final int account = recordingCurrentAccount;
-                    final int guid = recordingGuid;
-                    AndroidUtilities.runOnUIThread(() -> {
-                        if (audioRecorder != myRecorder || recordSessionGeneration.get() != myGeneration || recordingAudio == null) {
-                            return;
-                        }
-                        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.recordProgressChanged, guid, amplitude);
-                    });
-                    if (recordPauseRequested) {
-                        return;
-                    }
-                    if (!isRecordSessionActive(myRecorder, myGeneration)) {
-                        loseRecordSession(myRecorder, myGeneration, sessionAudioFile);
-                        return;
-                    }
-                    recordRunnable = this;
-                    recordQueue.postRunnable(this);
+                    recordQueue.postRunnable(recordRunnable);
+                    AndroidUtilities.runOnUIThread(() -> NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.recordProgressChanged, recordingGuid, amplitude));
                 } else {
                     recordBuffers.add(buffer);
                     if (sendAfterDone != 3 && sendAfterDone != 4) {
@@ -1268,131 +1296,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 }
             }
         }
-    }
-
-    private boolean isRecordSessionActive(AudioRecord recorder, int generation) {
-        return recorder != null && audioRecorder == recorder
-                && recordSessionGeneration.get() == generation && recordingAudio != null;
-    }
-
-    private void loseRecordSession(AudioRecord recorder, int generation, File sessionFile) {
-        final boolean ownsRecorder = audioRecorder == recorder;
-        if (ownsRecorder) {
-            audioRecorder = null;
-        }
-        if (recorder != null) {
-            try {
-                recorder.stop();
-            } catch (Exception e) {
-                FileLog.e(e);
-            }
-            try {
-                recorder.release();
-            } catch (Exception e) {
-                FileLog.e(e);
-            }
-        }
-        if (sessionFile != null && recordingAudioFile == sessionFile) {
-            recordingAudioFile = null;
-            postEncoderFileCleanup(sessionFile);
-        }
-        if (BuildVars.LOGS_ENABLED) {
-            FileLog.d("lose record session " + generation + " ownsRecorder=" + ownsRecorder);
-        }
-    }
-
-    private interface RecordStartCallback {
-        void onRecordStart(int sessionGeneration, boolean started);
-    }
-
-    /**
-     * Commit-старт native-энкодера. Поколение только читается: счётчик растёт монотонно
-     * при каждом намерении пользователя, поэтому устаревший запрос не может совпасть повторно.
-     * Порядок native-вызовов задаёт FIFO fileEncodingQueue.
-     */
-    private void postEncoderStart(final int requestGeneration, final String path, final RecordStartCallback callback) {
-        fileEncodingQueue.postRunnable(() -> {
-            boolean started = false;
-            if (requestGeneration == recordSessionGeneration.get()) {
-                try {
-                    started = startRecord(path, sampleRate) != 0;
-                } catch (Exception e) {
-                    FileLog.e(e);
-                }
-            }
-            final boolean startedResult = started;
-            recordQueue.postRunnable(() -> callback.onRecordStart(requestGeneration, startedResult));
-        });
-    }
-
-    private void stopEncoderNow() {
-        try {
-            stopRecord();
-        } catch (Exception e) {
-            FileLog.e(e);
-        }
-    }
-
-    private void postEncoderStop() {
-        fileEncodingQueue.postRunnable(this::stopEncoderNow);
-    }
-
-    private void postEncoderFileCleanup(final File... files) {
-        postEncoderFileCleanup(true, files);
-    }
-
-    private void postEncoderFileCleanup(final boolean delete, final File... files) {
-        fileEncodingQueue.postRunnable(() -> {
-            if (files == null) {
-                return;
-            }
-            for (File file : files) {
-                if (file == null || file.equals(recordingAudioFile) || file.equals(recordingPrevAudioFile)) {
-                    continue;
-                }
-                try {
-                    AutoDeleteMediaTask.unlockFile(file);
-                } catch (Exception e) {
-                    FileLog.e(e);
-                }
-                if (delete) {
-                    try {
-                        file.delete();
-                    } catch (Exception e) {
-                        FileLog.e(e);
-                    }
-                }
-            }
-        });
-    }
-
-    private boolean ownsStartedRecordEncoder(int generation, File audioFile, TLRPC.TL_document audioDocument) {
-        return generation == recordSessionGeneration.get()
-                && recordingAudio == audioDocument
-                && recordingAudioFile == audioFile
-                && audioRecorder == null;
-    }
-
-    private void discardStartSegment(final File audioFile, final TLRPC.TL_document audioDocument, final boolean stopEncoder) {
-        if (recordingAudio == audioDocument) {
-            recordingAudio = null;
-        }
-        if (recordingAudioFile == audioFile) {
-            recordingAudioFile = null;
-        }
-        if (recordingPrevAudioFile == audioFile) {
-            recordingPrevAudioFile = null;
-        }
-        if (stopEncoder) {
-            postEncoderStop();
-        }
-        postEncoderFileCleanup(audioFile);
-    }
-
-    private void postRecordRunnable(AudioRecord recorder, int generation) {
-        recordRunnable = new RecordRunnable(recorder, generation, recordingAudioFile);
-        recordQueue.postRunnable(recordRunnable);
-    }
+    };
 
     private float audioVolume;
     private ValueAnimator audioVolumeAnimator;
@@ -1612,9 +1516,9 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     public MediaController() {
-        recordQueue = new DispatchQueue("recordQueue");
+        recordQueue = new DispatchQueue2("recordQueue");
         recordQueue.setPriority(Thread.MAX_PRIORITY);
-        fileEncodingQueue = new DispatchQueue("fileEncodingQueue");
+        fileEncodingQueue = new DispatchQueue2("fileEncodingQueue");
         fileEncodingQueue.setPriority(Thread.MAX_PRIORITY);
 
         recordQueue.postRunnable(() -> {
@@ -1666,7 +1570,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                             if (state == TelephonyManager.CALL_STATE_RINGING) {
                                 if (isPlayingMessage(playingMessageObject) && !isMessagePaused()) {
                                     pauseMessage(playingMessageObject);
-                                } else if (recordStartRunnable != null || recordingAudio != null) {
+                                } else if (isRecordingAudio()) {
                                     stopRecording(2, false, 0, false, 0);
                                 }
                                 EmbedBottomSheet embedBottomSheet = EmbedBottomSheet.getInstance();
@@ -1903,6 +1807,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         playlistClassGuid = 0;
         playlistEndReached[0] = playlistEndReached[1] = false;
         playlistMergeDialogId = 0;
+        playlistTopicId = 0;
         playlistMaxId[0] = playlistMaxId[1] = Integer.MAX_VALUE;
         loadingPlaylist = false;
         playlistGlobalSearchParams = null;
@@ -2091,7 +1996,8 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             }
         } else if (id == NotificationCenter.musicDidLoad) {
             long did = (Long) args[0];
-            if (playingMessageObject != null && playingMessageObject.isMusic() && playingMessageObject.getDialogId() == did && !playingMessageObject.scheduled) {
+            long topicId = (Long) args[3];
+            if (playingMessageObject != null && playingMessageObject.isMusic() && playingMessageObject.getDialogId() == did && playlistTopicId == topicId && !playingMessageObject.scheduled) {
                 ArrayList<MessageObject> arrayListBegin = (ArrayList<MessageObject>) args[1];
                 ArrayList<MessageObject> arrayListEnd = (ArrayList<MessageObject>) args[2];
                 playlist.addAll(0, arrayListBegin);
@@ -2207,8 +2113,12 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
     }
 
-    protected boolean isRecordingAudio() {
-        return recordStartRunnable != null || recordingAudio != null;
+    public boolean isRecordingAudio() {
+        return recordStartRunnable != null || audioRecorderV2StartRunnable != null || recordingAudio != null;
+    }
+
+    public int getRecordingGuid() {
+        return recordingGuid;
     }
 
     private boolean isNearToSensor(float value) {
@@ -3046,10 +2956,9 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             }
             return;
         }
-        //TODO topics
         if (!playlistEndReached[0]) {
             loadingPlaylist = true;
-            AccountInstance.getInstance(playingMessageObject.currentAccount).getMediaDataController().loadMedia(playingMessageObject.getDialogId(), 50, playlistMaxId[0], 0, MediaDataController.MEDIA_MUSIC, 0, 1, playlistClassGuid, 0, null, null);
+            AccountInstance.getInstance(playingMessageObject.currentAccount).getMediaDataController().loadMedia(playingMessageObject.getDialogId(), 50, playlistMaxId[0], 0, MediaDataController.MEDIA_MUSIC, playlistTopicId, 1, playlistClassGuid, 0, null, null);
         } else if (playlistMergeDialogId != 0 && !playlistEndReached[1]) {
             loadingPlaylist = true;
             AccountInstance.getInstance(playingMessageObject.currentAccount).getMediaDataController().loadMedia(playlistMergeDialogId, 50, playlistMaxId[0], 0, MediaDataController.MEDIA_MUSIC, 0, 1, playlistClassGuid, 0, null, null);
@@ -3065,6 +2974,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     public boolean setPlaylist(ArrayList<MessageObject> messageObjects, MessageObject current, long mergeDialogId, boolean loadMusic, PlaylistGlobalSearchParams params) {
+        return setPlaylist(messageObjects, current, mergeDialogId, loadMusic, params, 0);
+    }
+
+    public boolean setPlaylist(ArrayList<MessageObject> messageObjects, MessageObject current, long mergeDialogId, boolean loadMusic, PlaylistGlobalSearchParams params, long topicId) {
         if (playingMessageObject == current) {
             int newIdx = playlist.indexOf(current);
             if (newIdx >= 0) {
@@ -3077,6 +2990,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         playMusicAgain = !playlist.isEmpty();
         clearPlaylist();
         playlistGlobalSearchParams = params;
+        playlistTopicId = topicId;
         boolean isSecretChat = !messageObjects.isEmpty() && DialogObject.isEncryptedDialog(messageObjects.get(0).getDialogId());
         int minId = Integer.MAX_VALUE;
         int maxId = Integer.MIN_VALUE;
@@ -3106,7 +3020,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             }
             if (loadMusic) {
                 if (playlistGlobalSearchParams == null) {
-                    MediaDataController.getInstance(current.currentAccount).loadMusic(current.getDialogId(), minId, maxId);
+                    MediaDataController.getInstance(current.currentAccount).loadMusic(current.getDialogId(), playlistTopicId, minId, maxId);
                 } else {
                     playlistClassGuid = ConnectionsManager.generateClassGuid();
                 }
@@ -3181,7 +3095,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             return;
         }
 
-        boolean last = traversePlaylist(currentPlayList, SharedConfig.playOrderReversed ? +1 : -1);
+        boolean last = traversePlaylist(currentPlayList, isPlaylistOrderReversed() ? +1 : -1);
         if (last && byStop && SharedConfig.repeatMode == 0 && !forceLoopCurrentPlaylist) {
             if (audioPlayer != null || videoPlayer != null) {
                 if (audioPlayer != null) {
@@ -3242,7 +3156,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             return;
         }
 
-        traversePlaylist(currentPlayList, SharedConfig.playOrderReversed ? -1 : 1);
+        traversePlaylist(currentPlayList, isPlaylistOrderReversed() ? -1 : 1);
         if (currentPlaylistNum >= currentPlayList.size()) {
             return;
         }
@@ -3250,6 +3164,11 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         playMessage(currentPlayList.get(currentPlaylistNum));
     }
     
+    // saved music lists are stored top to bottom, while chat playlists are stored oldest first
+    private boolean isPlaylistOrderReversed() {
+        return currentSavedMusicList != null ? !SharedConfig.playOrderReversed : SharedConfig.playOrderReversed;
+    }
+
     private boolean traversePlaylist(ArrayList<MessageObject> playlist, int direction) {
         boolean last = false;
         final int wasCurrentPlaylistNum = currentPlaylistNum;
@@ -3319,7 +3238,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             return;
         }
         int nextIndex;
-        if (SharedConfig.playOrderReversed) {
+        if (isPlaylistOrderReversed()) {
             nextIndex = currentPlaylistNum + 1;
             if (nextIndex >= currentPlayList.size()) {
                 nextIndex = 0;
@@ -4679,7 +4598,437 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         }
     }
 
+    public static boolean shouldUseAudioRecorderV2(int account) {
+        return SharedSettings.audioRecorderV2Enabled.isSet() ?
+            SharedSettings.audioRecorderV2Enabled.get() :
+            !MessagesController.getInstance(account).config.audioRecorderV2Disabled.get();
+    }
+
+    private void startRecordingV2(
+            int currentAccount,
+            long dialogId,
+            MessageObject replyToMsg,
+            MessageObject replyToTopMsg,
+            TL_stories.StoryItem replyStory,
+            int guid,
+            boolean paused,
+            SendMessageChatArguments sendMessageChatArguments,
+            long monoForumPeerId,
+            MessageSuggestionParams suggestionParams
+    ) {
+        audioRecorderV2Active = true;
+        audioRecorderV2Stopping = false;
+        audioRecorderV2VoiceOnce = false;
+        recordingCurrentAccount = currentAccount;
+        recordingGuid = guid;
+        recordDialogId = dialogId;
+        recordMonoForumPeerId = monoForumPeerId;
+        recordMonoForumSuggestionParams = suggestionParams;
+        recordTopicId = replyToTopMsg == null
+                ? 0
+                : MessageObject.getTopicId(currentAccount, replyToTopMsg.messageOwner, false);
+        recordReplyingMsg = replyToMsg;
+        recordReplyingTopMsg = replyToTopMsg;
+        recordReplyingStory = replyStory;
+        recordSendMessageChatArguments = sendMessageChatArguments;
+        recordingPrevAudioFile = null;
+        recordingAudioFile = null;
+        recordTimeCount = 0L;
+        writtenFrame = 0;
+        samplesCount = 0L;
+        sendAfterDone = 0;
+
+        audioRecorderV2StartRunnable = () -> {
+            audioRecorderV2StartRunnable = null;
+            if (!audioRecorderV2Active) return;
+            setBluetoothScoOn(true);
+
+            recordingAudio = new TLRPC.TL_document();
+            recordingAudio.file_reference = new byte[0];
+            recordingAudio.dc_id = Integer.MIN_VALUE;
+            recordingAudio.id = SharedConfig.getLastLocalId();
+            recordingAudio.user_id = UserConfig.getInstance(currentAccount).getClientUserId();
+            recordingAudio.mime_type = AudioRecordingSession.MIME_TYPE;
+            SharedConfig.saveConfig();
+
+            try {
+                audioRecorderV2Controller = new AudioRecorderV2Controller(
+                        ApplicationLoader.applicationContext,
+                        FileLoader.getDirectory(FileLoader.MEDIA_DIR_AUDIO),
+                        createAudioRecorderV2Listener()
+                );
+                if (!audioRecorderV2Controller.start()) {
+                    throw new IllegalStateException("Unable to start AudioRecorderV2");
+                }
+                if (BuildVars.LOGS_ENABLED) {
+                    FileLog.d("AudioRecorderV2 selected: account=" + currentAccount
+                            + ", dialog=" + dialogId
+                            + ", guid=" + guid);
+                }
+            } catch (Exception error) {
+                onAudioRecorderV2Error(error);
+            }
+        };
+        AndroidUtilities.runOnUIThread(audioRecorderV2StartRunnable, paused ? 500L : 50L);
+    }
+
+    private AudioRecorderV2Controller.Listener createAudioRecorderV2Listener() {
+        return new AudioRecorderV2Controller.Listener() {
+            @Override
+            public void onOutputStarted(File file) {
+                AutoDeleteMediaTask.lockFile(file);
+                recordingAudioFile = file;
+            }
+
+            @Override
+            public void onOutputInvalidated(File file) {
+                AutoDeleteMediaTask.unlockFile(file);
+                if (file.equals(recordingAudioFile)) {
+                    recordingAudioFile = null;
+                }
+            }
+
+            @Override
+            public void onRecordingStarted() {
+                recordStartTime = System.currentTimeMillis();
+                if (!audioRecorderV2Stopping) {
+                    NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(
+                            NotificationCenter.recordStarted,
+                            recordingGuid,
+                            true
+                    );
+                }
+            }
+
+            @Override
+            public void onRecordingResumed() {
+                requestRecordAudioFocus(true);
+                NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(
+                        NotificationCenter.recordResumed
+                );
+            }
+
+            @Override
+            public void onRecordingProgress(long durationMs, double amplitude) {
+                recordTimeCount = durationMs;
+                // The record button wave is tuned for the legacy amplitude, which is half of the RMS.
+                NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(
+                        NotificationCenter.recordProgressChanged,
+                        recordingGuid,
+                        amplitude / 2d
+                );
+            }
+
+            @Override
+            public void onPreviewReady(long durationMs, File file, byte[] waveform) {
+                recordingAudioFile = file;
+                recordTimeCount = durationMs;
+                updateAudioRecorderV2Document(file, durationMs, waveform);
+                MediaDataController.getInstance(recordingCurrentAccount).pushDraftVoiceMessage(
+                        recordDialogId,
+                        recordTopicId,
+                        MediaDataController.DraftVoice.of(
+                                MediaController.this,
+                                file.getAbsolutePath(),
+                                audioRecorderV2VoiceOnce,
+                                0f,
+                                1f
+                        )
+                );
+                NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(
+                        NotificationCenter.recordPaused
+                );
+                NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(
+                        NotificationCenter.audioDidSent,
+                        recordingGuid,
+                        recordingAudio,
+                        file.getAbsolutePath()
+                );
+                requestRecordAudioFocus(false);
+                setBluetoothScoOn(false);
+            }
+
+            @Override
+            public void onCompleted(AudioRecordingSession.Result result) {
+                completeAudioRecordingV2(result);
+            }
+
+            @Override
+            public void onRecordingTooShort(long durationMs) {
+                NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(
+                        NotificationCenter.audioRecordTooShort,
+                        recordingGuid,
+                        false,
+                        (int) durationMs
+                );
+                finishAudioRecorderV2Lifecycle(false);
+            }
+
+            @Override
+            public void onError(Exception error) {
+                onAudioRecorderV2Error(error);
+            }
+        };
+    }
+
+    private void updateAudioRecorderV2Document(
+            File file,
+            long durationMs,
+            byte[] waveform
+    ) {
+        if (recordingAudio == null) return;
+        recordingAudio.date = ConnectionsManager.getInstance(recordingCurrentAccount).getCurrentTime();
+        recordingAudio.size = (int) file.length();
+        TLRPC.TL_documentAttributeAudio attributeAudio = new TLRPC.TL_documentAttributeAudio();
+        attributeAudio.voice = true;
+        attributeAudio.waveform = waveform;
+        if (waveform != null) {
+            attributeAudio.flags |= 4;
+        }
+        attributeAudio.duration = durationMs / 1000.0;
+        recordingAudio.attributes.clear();
+        recordingAudio.attributes.add(attributeAudio);
+    }
+
+    private void completeAudioRecordingV2(AudioRecordingSession.Result result) {
+        File file = result.getFile();
+        recordingAudioFile = file;
+        recordTimeCount = result.getDurationMs();
+        updateAudioRecorderV2Document(file, result.getDurationMs(), result.getWaveform());
+        if (sendAfterDone == 3) {
+            // Scheduled sending keeps the file until the date picker calls stopRecording again,
+            // like legacy does for sendAfterDone == 3.
+            audioRecorderV2PendingResult = result;
+            if (audioRecorderV2Controller != null) {
+                audioRecorderV2Controller.release();
+                audioRecorderV2Controller = null;
+            }
+            requestRecordAudioFocus(false);
+            setBluetoothScoOn(false);
+            return;
+        }
+        MediaDataController.getInstance(recordingCurrentAccount).pushDraftVoiceMessage(
+                recordDialogId,
+                recordTopicId,
+                null
+        );
+
+        if (sendAfterDone == 1) {
+            SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(
+                    recordingAudio,
+                    null,
+                    file.getAbsolutePath(),
+                    recordDialogId,
+                    recordReplyingMsg,
+                    recordReplyingTopMsg,
+                    null,
+                    null,
+                    null,
+                    null,
+                    sendAfterDoneNotify,
+                    sendAfterDoneScheduleDate,
+                    0,
+                    sendAfterDoneOnce ? 0x7FFFFFFF : 0,
+                    null,
+                    null,
+                    false
+            );
+            params.monoForumPeer = recordMonoForumPeerId;
+            params.suggestionParams = recordMonoForumSuggestionParams;
+            params.replyToStoryItem = recordReplyingStory;
+            params.sendMessageChatArguments = recordSendMessageChatArguments;
+            params.payStars = sendAfterDonePayStars;
+            SendMessagesHelper.getInstance(recordingCurrentAccount).sendMessage(params);
+        }
+        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(
+                NotificationCenter.audioDidSent,
+                recordingGuid,
+                sendAfterDone == 2 ? recordingAudio : null,
+                sendAfterDone == 2 ? file.getAbsolutePath() : null
+        );
+        finishAudioRecorderV2Lifecycle(true);
+    }
+
+    private void onAudioRecorderV2Error(Exception error) {
+        FileLog.e("AudioRecorderV2 failed", error);
+        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(
+                NotificationCenter.recordStartError,
+                recordingGuid
+        );
+        finishAudioRecorderV2Lifecycle(false);
+    }
+
+    private void finishAudioRecorderV2Lifecycle(boolean keepOutput) {
+        requestRecordAudioFocus(false);
+        setBluetoothScoOn(false);
+        if (audioRecorderV2Controller != null) {
+            audioRecorderV2Controller.release();
+            audioRecorderV2Controller = null;
+        }
+        if (!keepOutput && recordingAudioFile != null) {
+            AutoDeleteMediaTask.unlockFile(recordingAudioFile);
+            recordingAudioFile.delete();
+        }
+        resetAudioRecorderV2State();
+        manualRecording = false;
+        raiseToEarRecord = false;
+        ignoreOnPause = false;
+    }
+
+    private void resetAudioRecorderV2State() {
+        recordingAudio = null;
+        recordingPrevAudioFile = null;
+        recordingAudioFile = null;
+        audioRecorderV2Active = false;
+        audioRecorderV2Stopping = false;
+        audioRecorderV2VoiceOnce = false;
+        audioRecorderV2PendingResult = null;
+        sendAfterDone = 0;
+    }
+
+    /**
+     * Makes room for another recording. A paused recording keeps its file for its voice draft,
+     * like legacy; an active capture is not interrupted.
+     */
+    private boolean releaseAudioRecorderV2ForNewRecording() {
+        if (audioRecorderV2PendingResult != null) {
+            File file = audioRecorderV2PendingResult.getFile();
+            AutoDeleteMediaTask.unlockFile(file);
+            file.delete();
+            resetAudioRecorderV2State();
+            return true;
+        }
+        AudioRecorderV2Controller controller = audioRecorderV2Controller;
+        if (controller == null || !controller.isPreviewing()) {
+            return false;
+        }
+        audioRecorderV2Controller = null;
+        if (!controller.detachPreviewOutput()) {
+            controller.release();
+        }
+        resetAudioRecorderV2State();
+        return true;
+    }
+
+    private void setSendAfterDone(int send, boolean notify, int scheduleDate, boolean once, long payStars) {
+        sendAfterDone = send;
+        sendAfterDoneNotify = notify;
+        sendAfterDoneScheduleDate = scheduleDate;
+        sendAfterDoneOnce = once;
+        sendAfterDonePayStars = payStars;
+    }
+
+    private void stopRecordingV2(
+            int send,
+            boolean notify,
+            int scheduleDate,
+            boolean once,
+            long payStars
+    ) {
+        if (audioRecorderV2PendingResult != null) {
+            // Answer of the schedule date picker for an already stopped recording.
+            AudioRecordingSession.Result result = audioRecorderV2PendingResult;
+            audioRecorderV2PendingResult = null;
+            if (send == 0) {
+                finishAudioRecorderV2Lifecycle(false);
+            } else {
+                setSendAfterDone(send, notify, scheduleDate, once, payStars);
+                completeAudioRecordingV2(result);
+            }
+            return;
+        }
+        if (audioRecorderV2Stopping) {
+            // Only the schedule date picker may change a stop that is still finishing; any other
+            // late stop (a call, lowering the phone) must not turn a send into a preview.
+            if (sendAfterDone == 3) {
+                setSendAfterDone(send, notify, scheduleDate, once, payStars);
+                if (send == 0) {
+                    if (audioRecorderV2Controller != null) {
+                        audioRecorderV2Controller.cancel();
+                    }
+                    finishAudioRecorderV2Lifecycle(false);
+                }
+            }
+            return;
+        }
+        if (send == 2 && audioRecorderV2Controller != null && audioRecorderV2Controller.isPreviewing()) {
+            // Leaving the chat or an incoming call keeps a paused recording and its draft, like legacy.
+            manualRecording = false;
+            raiseToEarRecord = false;
+            ignoreOnPause = false;
+            return;
+        }
+        if (audioRecorderV2StartRunnable != null) {
+            AndroidUtilities.cancelRunOnUIThread(audioRecorderV2StartRunnable);
+            audioRecorderV2StartRunnable = null;
+        }
+        audioRecorderV2Stopping = true;
+        setSendAfterDone(send, notify, scheduleDate, once, payStars);
+
+        if (audioRecorderV2Controller == null) {
+            finishAudioRecorderV2Lifecycle(false);
+        } else if (send == 0) {
+            audioRecorderV2Controller.cancel();
+            finishAudioRecorderV2Lifecycle(false);
+        } else {
+            audioRecorderV2Controller.finishWhenReady();
+        }
+        try {
+            feedbackView.performHapticFeedback(
+                    HapticFeedbackConstants.KEYBOARD_TAP,
+                    HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING
+            );
+        } catch (Exception ignore) {
+        }
+        // Posted later, like legacy: the caller resets its recording UI state right after
+        // stopRecording(), and a synchronous recordStopped would be handled as a cancel.
+        final int account = recordingCurrentAccount;
+        final int guid = recordingGuid;
+        AndroidUtilities.runOnUIThread(() -> NotificationCenter.getInstance(account).postNotificationName(
+                NotificationCenter.recordStopped,
+                guid,
+                send == 2 ? 1 : 0
+        ));
+    }
+
+    private boolean showAudioRecorderV2Draft(
+            MediaDataController.DraftVoice draft,
+            MessageObject replyToMsg,
+            MessageObject replyToTopMsg,
+            TL_stories.StoryItem replyStory,
+            int guid,
+            SendMessageChatArguments sendMessageChatArguments,
+            long monoForumPeerId,
+            MessageSuggestionParams suggestionParams
+    ) {
+        if (audioRecorderV2Controller == null
+                || !audioRecorderV2Controller.isPreviewing()
+                || recordingAudio == null
+                || recordingAudioFile == null
+                || draft.path == null
+                || !draft.path.equals(recordingAudioFile.getAbsolutePath())) {
+            return false;
+        }
+        recordingGuid = guid;
+        recordReplyingMsg = replyToMsg;
+        recordReplyingTopMsg = replyToTopMsg;
+        recordReplyingStory = replyStory;
+        recordSendMessageChatArguments = sendMessageChatArguments;
+        recordMonoForumPeerId = monoForumPeerId;
+        recordMonoForumSuggestionParams = suggestionParams;
+        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.recordPaused);
+        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.audioDidSent, recordingGuid, recordingAudio, recordingAudioFile.getAbsolutePath(), true, draft.left, draft.right);
+        return true;
+    }
+
     public void prepareResumedRecording(int currentAccount, MediaDataController.DraftVoice draft, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem replyStory, int guid, SendMessageChatArguments sendMessageChatArguments, long monoForumPeerId, MessageSuggestionParams suggestionParams) {
+        if (audioRecorderV2Active) {
+            // A paused V2 recording outlives the chat pause; show it again instead of rebuilding it.
+            if (showAudioRecorderV2Draft(draft, replyToMsg, replyToTopMsg, replyStory, guid, sendMessageChatArguments, monoForumPeerId, suggestionParams)
+                    || !releaseAudioRecorderV2ForNewRecording()) {
+                return;
+            }
+        }
         manualRecording = false;
         requestRecordAudioFocus(true);
         recordQueue.cancelRunnable(recordStartRunnable);
@@ -4744,6 +5093,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
 
             final TLRPC.TL_document audioToSend = recordingAudio;
             final File recordingAudioFileToSend = recordingAudioFile;
+            // Drafts written by the V2 recorder carry no recordSamples, so the file is the source of truth.
+            final byte[] fileWaveform = recordingAudioFileToSend.exists()
+                    ? getWaveform(recordingAudioFileToSend.getAbsolutePath())
+                    : null;
             AndroidUtilities.runOnUIThread(() -> {
                 boolean fileExist = recordingAudioFileToSend.exists();
                 if (!fileExist && BuildVars.DEBUG_VERSION) {
@@ -4753,7 +5106,9 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 audioToSend.size = (int) recordingAudioFileToSend.length();
                 TLRPC.TL_documentAttributeAudio attributeAudio = new TLRPC.TL_documentAttributeAudio();
                 attributeAudio.voice = true;
-                attributeAudio.waveform = getWaveform2(recordSamples, recordSamples.length);
+                attributeAudio.waveform = fileWaveform != null
+                        ? fileWaveform
+                        : getWaveform2(recordSamples, recordSamples.length);
                 if (attributeAudio.waveform != null) {
                     attributeAudio.flags |= 4;
                 }
@@ -4767,6 +5122,9 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     public boolean isRecordingPaused() {
+        if (audioRecorderV2Active) {
+            return audioRecorderV2Controller != null && audioRecorderV2Controller.isPreviewing();
+        }
         return audioRecorderPaused;
     }
 
@@ -4803,6 +5161,17 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     public void trimCurrentRecording(long startMs, long endMs, Runnable done) {
+        if (audioRecorderV2Active) {
+            if (audioRecorderV2Controller == null
+                    || !audioRecorderV2Controller.setTrimRange(startMs, endMs)) {
+                FileLog.d("AudioRecorderV2 trim rejected: " + startMs + ".." + endMs);
+            }
+            // done resumes recording, so it must run even when the range was rejected, like legacy.
+            if (done != null) {
+                AndroidUtilities.runOnUIThread(done);
+            }
+            return;
+        }
         if (recordingAudioFile == null) {
             if (done != null) {
                 AndroidUtilities.runOnUIThread(done);
@@ -4833,268 +5202,100 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     public void toggleRecordingPause(boolean voiceOnce) {
-        // Этот флаг выставляется с UI до постановки pause-задачи: активный RecordRunnable
-        // должен увидеть паузу сразу после возврата из блокирующего AudioRecord.read и
-        // выйти штатно, не считая сессию потерянной. Поколение здесь не меняем.
-        recordPauseRequested = !audioRecorderPaused;
+        if (audioRecorderV2Active) {
+            audioRecorderV2VoiceOnce = voiceOnce;
+            if (audioRecorderV2Controller != null) {
+                if (audioRecorderV2Controller.isPreviewing()) {
+                    requestRecordAudioFocus(true);
+                    setBluetoothScoOn(true);
+                }
+                audioRecorderV2Controller.togglePause();
+            }
+            return;
+        }
         recordQueue.postRunnable(() -> {
             if (recordingAudio == null || recordingAudioFile == null) {
                 return;
             }
             audioRecorderPaused = !audioRecorderPaused;
-            if (audioRecorderPaused) {
-                recordResumePending = false;
+            final boolean isPaused = audioRecorderPaused;
+            if (isPaused) {
                 if (audioRecorder == null) {
-                    // Старт ещё в полёте: флаг оставляем, callback старта отменит сегмент.
                     return;
                 }
-                recordPauseRequested = false;
-                final TLRPC.TL_document audioToSend = recordingAudio;
-                final File recordingAudioFileToSend = recordingAudioFile;
-                final File recordingPrevAudioFileToSend = recordingPrevAudioFile;
-                final int account = recordingCurrentAccount;
-                final long dialogId = recordDialogId;
-                final long topicId = recordTopicId;
-                final int guid = recordingGuid;
                 sendAfterDone = 4;
-                if (recordRunnable != null) {
-                    recordQueue.cancelRunnable(recordRunnable);
-                }
                 audioRecorder.stop();
                 audioRecorder.release();
                 audioRecorder = null;
-                recordPauseCleanupPending = true;
-                fileEncodingQueue.postRunnable(() -> {
-                    if (fileBuffer.position() > 0) {
-                        if (writeFrame(fileBuffer, fileBuffer.position()) != 0) {
-                            recordTimeCount += fileBuffer.position() / 2 / (sampleRate / 1000);
-                            writtenFrame++;
-                        } else {
-                            FileLog.e("writing tail frame failed");
-                        }
-                        fileBuffer.rewind();
-                    }
-                    stopEncoderNow();
-                    final File joinedFile = joinRecord(recordingPrevAudioFileToSend, recordingAudioFileToSend, audioToSend);
-                    if (audioToSend != null && joinedFile != null) {
-                        final long duration = recordTimeCount;
-                        AndroidUtilities.runOnUIThread(() -> {
-                            boolean fileExist = joinedFile.exists();
-                            if (!fileExist && BuildVars.DEBUG_VERSION) {
-                                FileLog.e(new RuntimeException("file not found :( recordTimeCount " + recordTimeCount + " writedFrames" + writtenFrame));
-                            }
-                            if (fileExist) {
-                                MediaDataController.getInstance(account).pushDraftVoiceMessage(dialogId, topicId, MediaDataController.DraftVoice.of(this, joinedFile.getAbsolutePath(), voiceOnce, 0f, 1f));
-                            }
-                            audioToSend.date = ConnectionsManager.getInstance(account).getCurrentTime();
-                            audioToSend.size = (int) joinedFile.length();
-                            TLRPC.TL_documentAttributeAudio attributeAudio = new TLRPC.TL_documentAttributeAudio();
-                            attributeAudio.voice = true;
-                            attributeAudio.waveform = getWaveform(joinedFile.getAbsolutePath());
-                            if (attributeAudio.waveform != null) {
-                                attributeAudio.flags |= 4;
-                            }
-                            attributeAudio.duration = duration / 1000.0;
-                            audioToSend.attributes.clear();
-                            audioToSend.attributes.add(attributeAudio);
-                            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.recordPaused);
-                            NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.audioDidSent, guid, audioToSend, joinedFile.getAbsolutePath());
-                            requestRecordAudioFocus(false);
-                        });
-                    }
-                    recordQueue.postRunnable(this::finishPauseCleanup);
-                });
-                // Токен фиксируется только после того, как сегмент дописан и FE-задача
-                // (tail write -> stop -> join) уже поставлена. Активный read-loop к этому
-                // моменту уже вышел по recordPauseRequested, поэтому его не инвалидируем.
-                recordSessionGeneration.incrementAndGet();
-            } else {
-                recordPauseRequested = false;
-                final int requestGeneration = recordSessionGeneration.get();
-                if (recordPauseCleanupPending || recordResumePending) {
-                    recordResumePending = true;
-                    recordResumeGeneration = requestGeneration;
-                    return;
-                }
-                if (audioRecorder != null) {
-                    return;
-                }
-                startResumedRecording(recordingAudioFile, recordingAudio, recordingCurrentAccount, recordingGuid, requestGeneration);
-            }
-        });
-    }
-
-    private void finishPauseCleanup() {
-        recordPauseCleanupPending = false;
-        if (!recordResumePending) {
-            return;
-        }
-        final int generation = recordResumeGeneration;
-        recordResumePending = false;
-        if (generation != recordSessionGeneration.get() || audioRecorderPaused || audioRecorder != null
-                || recordingAudio == null || recordingAudioFile == null) {
-            return;
-        }
-        startResumedRecording(recordingAudioFile, recordingAudio, recordingCurrentAccount, recordingGuid, generation);
-    }
-
-    private void startResumedRecording(final File prevAudioFile, final TLRPC.TL_document audioDocument,
-                                       final int account, final int guid, final int requestedGeneration) {
-        final int generation = requestedGeneration;
-        recordResumePending = false;
-        if (generation != recordSessionGeneration.get() || audioRecorderPaused || audioRecorder != null
-                || recordingAudio == null || recordingAudioFile == null
-                || prevAudioFile == null || audioDocument == null) {
-            return;
-        }
-        final File previousAudioFile = recordingAudioFile;
-        if (recordRunnable != null) {
-            recordQueue.cancelRunnable(recordRunnable);
-        }
-        final File currentAudioFile = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_AUDIO), System.currentTimeMillis() + "_" + FileLoader.getAttachFileName(audioDocument)) {
-            @Override
-            public boolean delete() {
-                if (BuildVars.LOGS_ENABLED) {
-                    FileLog.e("delete voice file (from resume)");
-                }
-                return super.delete();
-            }
-        };
-        recordingAudioFile = currentAudioFile;
-        postEncoderStart(generation, currentAudioFile.getPath(), (sessionGeneration, started) -> {
-            if (!started) {
-                final boolean ownsStartedEncoder = sessionGeneration == recordSessionGeneration.get()
-                        && recordingAudio == audioDocument && recordingAudioFile == currentAudioFile;
-                if (ownsStartedEncoder) {
-                    postEncoderStop();
-                }
-                if (recordingAudioFile == currentAudioFile) {
-                    recordingAudioFile = generation == recordSessionGeneration.get() && recordingAudio != null ? previousAudioFile : null;
-                }
-                postEncoderFileCleanup(previousAudioFile, currentAudioFile);
-                AndroidUtilities.runOnUIThread(() -> {
-                    recordStartRunnable = null;
-                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.recordStartError, guid);
-                });
-                if (BuildVars.LOGS_ENABLED) {
-                    FileLog.d("cant resume audio encoder");
-                }
-                return;
-            }
-            if (sessionGeneration != recordSessionGeneration.get() || audioRecorderPaused || recordingAudio == null
-                    || recordingAudioFile != currentAudioFile || audioRecorder != null) {
-                final boolean ownsStartedEncoder = sessionGeneration == recordSessionGeneration.get()
-                        && recordingAudio == audioDocument && recordingAudioFile == currentAudioFile && audioRecorder == null;
-                if (ownsStartedEncoder) {
-                    postEncoderStop();
-                }
-                if (recordingAudioFile == currentAudioFile) {
-                    recordingAudioFile = sessionGeneration == recordSessionGeneration.get() && recordingAudio != null ? previousAudioFile : null;
-                }
-                postEncoderFileCleanup(previousAudioFile, currentAudioFile);
-                return;
-            }
-            final AudioRecord recorder;
-            try {
-                recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                        recordBufferSize);
-            } catch (Exception e) {
-                FileLog.e(e);
-                final boolean ownsStartedEncoder = sessionGeneration == recordSessionGeneration.get()
-                        && recordingAudio == audioDocument && recordingAudioFile == currentAudioFile;
-                if (ownsStartedEncoder) {
-                    postEncoderStop();
-                }
-                if (recordingAudioFile == currentAudioFile) {
-                    recordingAudioFile = sessionGeneration == recordSessionGeneration.get() && recordingAudio != null ? previousAudioFile : null;
-                }
-                postEncoderFileCleanup(previousAudioFile, currentAudioFile);
-                AndroidUtilities.runOnUIThread(() -> {
-                    recordStartRunnable = null;
-                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.recordStartError, guid);
-                });
-                return;
-            }
-            recordingPrevAudioFile = prevAudioFile;
-            audioRecorder = recorder;
-            audioRecorderPaused = false;
-            recordStartTime = System.currentTimeMillis();
-            writtenFrame = 0;
-            samplesCount = 0;
-            fileBuffer.rewind();
-            try {
-                recorder.startRecording();
-            } catch (Exception e) {
-                FileLog.e(e);
-                if (audioRecorder == recorder) {
-                    audioRecorder = null;
-                }
-                try {
-                    recorder.release();
-                } catch (Exception e2) {
-                    FileLog.e(e2);
-                }
-                final boolean ownsStartedEncoder = sessionGeneration == recordSessionGeneration.get()
-                        && recordingAudio == audioDocument && recordingAudioFile == currentAudioFile;
-                if (ownsStartedEncoder) {
-                    postEncoderStop();
-                }
-                if (recordingAudioFile == currentAudioFile) {
-                    recordingAudioFile = sessionGeneration == recordSessionGeneration.get() && recordingAudio != null ? previousAudioFile : null;
-                }
-                postEncoderFileCleanup(previousAudioFile, currentAudioFile);
-                if (recordingPrevAudioFile == prevAudioFile) {
-                    recordingPrevAudioFile = null;
-                }
-                AndroidUtilities.runOnUIThread(() -> {
-                    recordStartRunnable = null;
-                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.recordStartError, guid);
-                });
-                return;
-            }
-            if (sessionGeneration != recordSessionGeneration.get() || recordingAudio == null || audioRecorder != recorder) {
-                // Компенсирующая отмена: cleanRecording() вызывается с UI-потока и может отменить
-                // сессию уже после проверок, но до запуска микрофона. Гасим только что созданный
-                // сегмент, чтобы не оставить активный AudioRecord без документа.
-                final boolean ownsStartedEncoder = sessionGeneration == recordSessionGeneration.get()
-                        && recordingAudio == audioDocument && recordingAudioFile == currentAudioFile;
-                if (audioRecorder == recorder) {
-                    audioRecorder = null;
-                }
-                try {
-                    recorder.stop();
-                } catch (Exception e) {
-                    FileLog.e(e);
-                }
-                try {
-                    recorder.release();
-                } catch (Exception e) {
-                    FileLog.e(e);
-                }
-                if (ownsStartedEncoder) {
-                    postEncoderStop();
-                }
-                if (recordingAudioFile == currentAudioFile) {
-                    recordingAudioFile = sessionGeneration == recordSessionGeneration.get() && recordingAudio != null ? previousAudioFile : null;
-                }
-                postEncoderFileCleanup(previousAudioFile, currentAudioFile);
-                if (recordingPrevAudioFile == prevAudioFile) {
-                    recordingPrevAudioFile = null;
-                }
-                if (recordingAudio == audioDocument) {
-                    recordingAudio = null;
-                }
-                recordResumePending = false;
-                return;
-            }
-            postRecordRunnable(recorder, sessionGeneration);
-            if (sessionGeneration == recordSessionGeneration.get()) {
-                AndroidUtilities.runOnUIThread(() -> {
-                    if (audioRecorder != recorder || sessionGeneration != recordSessionGeneration.get()) {
+                recordQueue.postRunnable(() -> {
+                    stopRecord();
+                    final TLRPC.TL_document audioToSend = recordingAudio;
+                    final File recordingAudioFileToSend = joinRecord(recordingPrevAudioFile, recordingAudioFile, audioToSend);
+                    if (audioToSend == null || recordingAudioFileToSend == null) {
                         return;
                     }
-                    requestRecordAudioFocus(true);
-                    NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.recordResumed);
+                    AndroidUtilities.runOnUIThread(() -> {
+                        boolean fileExist = recordingAudioFileToSend.exists();
+                        if (!fileExist && BuildVars.DEBUG_VERSION) {
+                            FileLog.e(new RuntimeException("file not found :( recordTimeCount " + recordTimeCount + " writedFrames" + writtenFrame));
+                        }
+                        if (fileExist) {
+                            MediaDataController.getInstance(recordingCurrentAccount).pushDraftVoiceMessage(recordDialogId, recordTopicId, MediaDataController.DraftVoice.of(this, recordingAudioFileToSend.getAbsolutePath(), voiceOnce, 0f, 1f));
+                        }
+                        audioToSend.date = ConnectionsManager.getInstance(recordingCurrentAccount).getCurrentTime();
+                        audioToSend.size = (int) recordingAudioFileToSend.length();
+                        TLRPC.TL_documentAttributeAudio attributeAudio = new TLRPC.TL_documentAttributeAudio();
+                        attributeAudio.voice = true;
+                        attributeAudio.waveform = getWaveform(recordingAudioFileToSend.getAbsolutePath());
+                        if (attributeAudio.waveform != null) {
+                            attributeAudio.flags |= 4;
+                        }
+                        attributeAudio.duration = recordTimeCount / 1000.0;
+                        audioToSend.attributes.clear();
+                        audioToSend.attributes.add(attributeAudio);
+                        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.recordPaused);
+                        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.audioDidSent, recordingGuid, audioToSend, recordingAudioFileToSend.getAbsolutePath());
+                        requestRecordAudioFocus(false);
+                    });
+                });
+            } else {
+                recordQueue.cancelRunnable(recordRunnable);
+                recordQueue.postRunnable(() -> {
+                    recordingPrevAudioFile = recordingAudioFile;
+                    recordingAudioFile = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_AUDIO), System.currentTimeMillis() + "_" + FileLoader.getAttachFileName(recordingAudio)) {
+                        @Override
+                        public boolean delete() {
+                            if (BuildVars.LOGS_ENABLED) {
+                                FileLog.e("delete voice file (from resume)");
+                            }
+                            return super.delete();
+                        }
+                    };
+                    if (startRecord(recordingAudioFile.getPath(), sampleRate) == 0) {
+                        AndroidUtilities.runOnUIThread(() -> {
+                            recordStartRunnable = null;
+                            NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.recordStartError, recordingGuid);
+                        });
+                        if (BuildVars.LOGS_ENABLED) {
+                            FileLog.d("cant resume audio encoder");
+                        }
+                        return;
+                    }
+
+                    AndroidUtilities.runOnUIThread(() -> {
+                        requestRecordAudioFocus(true);
+//                        MediaDataController.getInstance(recordingCurrentAccount).pushDraftVoiceMessage(recordDialogId, recordTopicId, null);
+//
+                        audioRecorder = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
+                        recordStartTime = System.currentTimeMillis();
+                        writtenFrame = 0;
+                        samplesCount = 0;
+                        fileBuffer.rewind();
+                        audioRecorder.startRecording();
+                        recordQueue.postRunnable(recordRunnable);
+
+                        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.recordResumed);
+                    });
                 });
             }
         });
@@ -5114,12 +5315,33 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             } catch (Exception ignore) {}
         }
 
-        recordPauseRequested = false;
-        final int requestGeneration = recordSessionGeneration.incrementAndGet();
+        if (audioRecorderV2Active && !releaseAudioRecorderV2ForNewRecording()) {
+            // Posted later, like legacy, so the caller has entered its recording state first.
+            AndroidUtilities.runOnUIThread(() -> NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStartError, guid));
+            return;
+        }
+        if (shouldUseAudioRecorderV2(currentAccount)) {
+            startRecordingV2(
+                    currentAccount,
+                    dialogId,
+                    replyToMsg,
+                    replyToTopMsg,
+                    replyStory,
+                    guid,
+                    paused,
+                    sendMessageChatArguments,
+                    monoForumPeerId,
+                    suggestionParams
+            );
+            return;
+        }
+        if (BuildVars.LOGS_ENABLED) {
+            FileLog.d("AudioRecorder legacy selected: account=" + currentAccount
+                    + ", dialog=" + dialogId
+                    + ", guid=" + guid);
+        }
+
         recordQueue.postRunnable(recordStartRunnable = () -> {
-            if (requestGeneration != recordSessionGeneration.get()) {
-                return;
-            }
             if (audioRecorder != null) {
                 AndroidUtilities.runOnUIThread(() -> {
                     recordStartRunnable = null;
@@ -5129,6 +5351,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             }
 
             setBluetoothScoOn(true);
+
 
             sendAfterDone = 0;
             recordingAudio = new TLRPC.TL_document();
@@ -5141,8 +5364,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
             recordingAudio.file_reference = new byte[0];
             SharedConfig.saveConfig();
 
-            final TLRPC.TL_document audioDocument = recordingAudio;
-            final File audioFile = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_AUDIO), System.currentTimeMillis() + "_" + FileLoader.getAttachFileName(audioDocument)) {
+            recordingAudioFile = new File(FileLoader.getDirectory(FileLoader.MEDIA_DIR_AUDIO), System.currentTimeMillis() + "_" + FileLoader.getAttachFileName(recordingAudio)) {
                 @Override
                 public boolean delete() {
                     if (BuildVars.LOGS_ENABLED) {
@@ -5151,31 +5373,13 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                     return super.delete();
                 }
             };
-            recordingAudioFile = audioFile;
             FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE).mkdirs();
             if (BuildVars.LOGS_ENABLED) {
-                FileLog.d("start recording internal " + audioFile.getPath() + " " + audioFile.exists());
+                FileLog.d("start recording internal " + recordingAudioFile.getPath() + " " + recordingAudioFile.exists());
             }
-            AutoDeleteMediaTask.lockFile(audioFile);
-
-            recordTimeCount = 0;
-            writtenFrame = 0;
-            samplesCount = 0;
-            recordDialogId = dialogId;
-            recordMonoForumPeerId = monoForumPeerId;
-            recordMonoForumSuggestionParams = suggestionParams;
-            recordTopicId = replyToTopMsg == null ? 0 : MessageObject.getTopicId(recordingCurrentAccount, replyToTopMsg.messageOwner, false);
-            recordingCurrentAccount = currentAccount;
-            recordReplyingMsg = replyToMsg;
-            recordReplyingTopMsg = replyToTopMsg;
-            recordReplyingStory = replyStory;
-            recordSendMessageChatArguments = sendMessageChatArguments;
-            fileBuffer.rewind();
-
-            postEncoderStart(requestGeneration, audioFile.getPath(), (sessionGeneration, started) -> {
-                if (!started) {
-                    discardStartSegment(audioFile, audioDocument, ownsStartedRecordEncoder(sessionGeneration, audioFile, audioDocument));
-                    setBluetoothScoOn(false);
+            AutoDeleteMediaTask.lockFile(recordingAudioFile);
+            try {
+                if (startRecord(recordingAudioFile.getPath(), sampleRate) == 0) {
                     AndroidUtilities.runOnUIThread(() -> {
                         recordStartRunnable = null;
                         NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStartError, guid);
@@ -5185,72 +5389,57 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                     }
                     return;
                 }
-                if (sessionGeneration != recordSessionGeneration.get() || recordingAudio != audioDocument
-                        || recordingAudioFile != audioFile || audioRecorder != null) {
-                    discardStartSegment(audioFile, audioDocument, ownsStartedRecordEncoder(sessionGeneration, audioFile, audioDocument));
-                    return;
-                }
-                if (recordPauseRequested) {
-                    // Пауза пришла, пока старт был в полёте: сегмент ещё не начат,
-                    // поэтому не поднимаем захват, а штатно отменяем старт.
-                    recordPauseRequested = false;
-                    audioRecorderPaused = false;
-                    discardStartSegment(audioFile, audioDocument, true);
-                    setBluetoothScoOn(false);
-                    AndroidUtilities.runOnUIThread(() -> {
-                        recordStartRunnable = null;
-                        NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStartError, guid);
-                    });
-                    return;
-                }
 
-                final AudioRecord startedRecorder;
-                try {
-                    startedRecorder = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                            recordBufferSize);
-                } catch (Exception e) {
-                    FileLog.e(e);
-                    discardStartSegment(audioFile, audioDocument, ownsStartedRecordEncoder(sessionGeneration, audioFile, audioDocument));
-                    setBluetoothScoOn(false);
-                    AndroidUtilities.runOnUIThread(() -> {
-                        recordStartRunnable = null;
-                        NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStartError, guid);
-                    });
-                    return;
-                }
                 audioRecorderPaused = false;
-                audioRecorder = startedRecorder;
+                audioRecorder = new AudioRecord(MediaRecorder.AudioSource.DEFAULT, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, recordBufferSize);
                 recordStartTime = System.currentTimeMillis();
+                recordTimeCount = 0;
+                writtenFrame = 0;
+                samplesCount = 0;
+                recordDialogId = dialogId;
+                recordMonoForumPeerId = monoForumPeerId;
+                recordMonoForumSuggestionParams = suggestionParams;
+                recordTopicId = replyToTopMsg == null ? 0 : MessageObject.getTopicId(recordingCurrentAccount, replyToTopMsg.messageOwner, false);
+                recordingCurrentAccount = currentAccount;
+                recordReplyingMsg = replyToMsg;
+                recordReplyingTopMsg = replyToTopMsg;
+                recordReplyingStory = replyStory;
+                recordSendMessageChatArguments = sendMessageChatArguments;
                 fileBuffer.rewind();
-                try {
-                    startedRecorder.startRecording();
-                } catch (Exception e) {
-                    FileLog.e(e);
-                    if (audioRecorder == startedRecorder) {
-                        audioRecorder = null;
-                    }
-                    try {
-                        startedRecorder.release();
-                    } catch (Exception e2) {
-                        FileLog.e(e2);
-                    }
-                    discardStartSegment(audioFile, audioDocument, ownsStartedRecordEncoder(sessionGeneration, audioFile, audioDocument));
-                    setBluetoothScoOn(false);
-                    AndroidUtilities.runOnUIThread(() -> {
-                        recordStartRunnable = null;
-                        NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStartError, guid);
-                    });
-                    return;
-                }
+                AudioEnhance.INSTANCE.initVoiceEnhance(audioRecorder);
 
-                postRecordRunnable(startedRecorder, sessionGeneration);
+                audioRecorder.startRecording();
+            } catch (Exception e) {
+                FileLog.e(e);
+                recordingAudio = null;
+                stopRecord();
+                AutoDeleteMediaTask.unlockFile(recordingAudioFile);
+                recordingAudioFile.delete();
+                recordingAudioFile = null;
+                if (recordingPrevAudioFile != null) {
+                    recordingPrevAudioFile.delete();
+                    recordingPrevAudioFile = null;
+                }
+                try {
+                    AudioEnhance.INSTANCE.releaseVoiceEnhance();
+                    audioRecorder.release();
+                    audioRecorder = null;
+                } catch (Exception e2) {
+                    FileLog.e(e2);
+                }
+                setBluetoothScoOn(false);
+
                 AndroidUtilities.runOnUIThread(() -> {
                     recordStartRunnable = null;
-                    if (audioRecorder != startedRecorder || recordSessionGeneration.get() != sessionGeneration || recordingAudio == null) {
-                        return;
-                    }
-                    NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStarted, guid, true);
+                    NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStartError, guid);
                 });
+                return;
+            }
+
+            recordQueue.postRunnable(recordRunnable);
+            AndroidUtilities.runOnUIThread(() -> {
+                recordStartRunnable = null;
+                NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.recordStarted, guid, true);
             });
         }, paused ? 500 : 50);
     }
@@ -5295,67 +5484,54 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
         });
     }
 
-    public void cleanRecording(final boolean delete) {
-        recordResumePending = false;
-        recordPauseRequested = false;
-        recordSessionGeneration.incrementAndGet();
+    public void cleanRecording(boolean delete) {
+        if (audioRecorderV2Active) {
+            if (audioRecorderV2StartRunnable != null) {
+                AndroidUtilities.cancelRunOnUIThread(audioRecorderV2StartRunnable);
+                audioRecorderV2StartRunnable = null;
+            }
+            boolean detachedPreview = false;
+            if (!delete && audioRecorderV2Controller != null) {
+                detachedPreview = audioRecorderV2Controller.detachPreviewOutput();
+            }
+            if (!detachedPreview && audioRecorderV2Controller != null) {
+                audioRecorderV2Controller.cancel();
+            }
+            if (detachedPreview && recordingAudioFile != null) {
+                AutoDeleteMediaTask.unlockFile(recordingAudioFile);
+            }
+            finishAudioRecorderV2Lifecycle(!delete);
+            return;
+        }
         recordingAudio = null;
-        final File audioFileToClean = recordingAudioFile;
-        final File prevAudioFileToClean = recordingPrevAudioFile;
+        AutoDeleteMediaTask.unlockFile(recordingAudioFile);
+        if (delete && recordingAudioFile != null) {
+            try {
+                recordingAudioFile.delete();
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        }
         recordingAudioFile = null;
+        if (delete && recordingPrevAudioFile != null) {
+            recordingPrevAudioFile.delete();
+        }
         recordingPrevAudioFile = null;
         manualRecording = false;
         raiseToEarRecord = false;
         ignoreOnPause = false;
-        // cleanRecording вызывается с UI-потока: гасим захват на recordQueue, а native-энкодер
-        // и файлы трогаем только в fileEncodingQueue после всех уже поставленных writeFrame.
-        // При delete == false энкодер не останавливаем: сразу после clean вызывается cropOpusFile,
-        // который использует тот же native singleton.
-        recordQueue.postRunnable(() -> {
-            final AudioRecord recorder = audioRecorder;
-            if (recorder != null) {
-                audioRecorder = null;
-                try {
-                    recorder.stop();
-                } catch (Exception e) {
-                    FileLog.e(e);
-                }
-                try {
-                    recorder.release();
-                } catch (Exception e) {
-                    FileLog.e(e);
-                }
-            }
-            if (delete) {
-                postEncoderStop();
-            }
-            postEncoderFileCleanup(delete, audioFileToClean, prevAudioFileToClean);
-        });
     }
 
     private void stopRecordingInternal(final int send, boolean notify, int scheduleDate, boolean once, long payStars) {
-        recordPauseRequested = false;
-        recordSessionGeneration.incrementAndGet();
-        recordResumePending = false;
         if (send != 0 && recordingAudioFile != null) {
             final TLRPC.TL_document audioToSend = recordingAudio;
-            final long dialogId = recordDialogId;
-            final long topicId = recordTopicId;
-            final int account = recordingCurrentAccount;
-            final int guid = recordingGuid;
-            final MessageObject replyToMsg = recordReplyingMsg;
-            final MessageObject replyToTopMsg = recordReplyingTopMsg;
-            final long monoForumPeer = recordMonoForumPeerId;
-            final MessageSuggestionParams suggestionParams = recordMonoForumSuggestionParams;
-            final TL_stories.StoryItem replyStory = recordReplyingStory;
-            final SendMessageChatArguments sendArguments = recordSendMessageChatArguments;
             final File recordingAudioFileToSend_ = recordingAudioFile;
             final File recordingPrevAudioFileToSend_ = recordingPrevAudioFile;
             if (BuildVars.LOGS_ENABLED) {
                 FileLog.d("stop recording internal filename " + (recordingAudioFile.getPath()));
             }
-            postEncoderStop();
             fileEncodingQueue.postRunnable(() -> {
+                stopRecord();
                 final File recordingAudioFileToSend = joinRecord(recordingPrevAudioFileToSend_, recordingAudioFileToSend_, audioToSend);
                 if (recordingAudioFileToSend == null) {
                     if (BuildVars.LOGS_ENABLED) {
@@ -5366,56 +5542,58 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 if (BuildVars.LOGS_ENABLED) {
                     FileLog.d("stop recording internal in queue " + (recordingAudioFileToSend.exists() + " " + recordingAudioFileToSend.length()));
                 }
-                final long finalDuration = recordTimeCount;
                 AndroidUtilities.runOnUIThread(() -> {
                     if (BuildVars.LOGS_ENABLED) {
-                        FileLog.d("stop recording internal " + (recordingAudioFileToSend.exists() + " " + recordingAudioFileToSend.length() + " " + " recordTimeCount " + recordTimeCount + " writedFrames" + writtenFrame));
+                        FileLog.d("stop recording internal " + (recordingAudioFileToSend == null ? "null" : recordingAudioFileToSend.exists() + " " + recordingAudioFileToSend.length() + " " + " recordTimeCount " + recordTimeCount + " writedFrames" + writtenFrame));
                     }
-                    boolean fileExist = recordingAudioFileToSend.exists();
+                    boolean fileExist = recordingAudioFileToSend != null && recordingAudioFileToSend.exists();
                     if (!fileExist && BuildVars.DEBUG_VERSION) {
                         FileLog.e(new RuntimeException("file not found :( recordTimeCount " + recordTimeCount + " writedFrames" + writtenFrame));
                     }
-                    MediaDataController.getInstance(account).pushDraftVoiceMessage(dialogId, topicId, null);
-                    audioToSend.date = ConnectionsManager.getInstance(account).getCurrentTime();
-                    audioToSend.size = (int) recordingAudioFileToSend.length();
+                    MediaDataController.getInstance(recordingCurrentAccount).pushDraftVoiceMessage(recordDialogId, recordTopicId, null);
+                    audioToSend.date = ConnectionsManager.getInstance(recordingCurrentAccount).getCurrentTime();
+                    audioToSend.size = recordingAudioFileToSend == null ? 0 : (int) recordingAudioFileToSend.length();
                     TLRPC.TL_documentAttributeAudio attributeAudio = new TLRPC.TL_documentAttributeAudio();
                     attributeAudio.voice = true;
                     attributeAudio.waveform = getWaveform(recordingAudioFileToSend.getAbsolutePath());
                     if (attributeAudio.waveform != null) {
                         attributeAudio.flags |= 4;
                     }
-                    long duration = finalDuration;
-                    attributeAudio.duration = finalDuration / 1000.0;
+                    long duration = recordTimeCount;
+                    attributeAudio.duration = recordTimeCount / 1000.0;
                     audioToSend.attributes.clear();
                     audioToSend.attributes.add(attributeAudio);
                     if (duration > 700) {
-                        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.beforeAudioDidSent, guid, send == 2 ? audioToSend : null, send == 2 ? recordingAudioFileToSend.getAbsolutePath() : null);
+                        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.beforeAudioDidSent, recordingGuid, send == 2 ? audioToSend : null, send == 2 ? recordingAudioFileToSend.getAbsolutePath() : null);
                         if (send == 1) {
-                            SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(audioToSend, null, recordingAudioFileToSend.getAbsolutePath(), dialogId, replyToMsg, replyToTopMsg, null, null, null, null, notify, scheduleDate, 0, once ? 0x7FFFFFFF : 0, null, null, false);
-                            params.monoForumPeer = monoForumPeer;
-                            params.suggestionParams = suggestionParams;
-                            params.replyToStoryItem = replyStory;
-                            params.sendMessageChatArguments = sendArguments;
+                            SendMessagesHelper.SendMessageParams params = SendMessagesHelper.SendMessageParams.of(audioToSend, null, recordingAudioFileToSend.getAbsolutePath(), recordDialogId, recordReplyingMsg, recordReplyingTopMsg, null, null, null, null, notify, scheduleDate, 0, once ? 0x7FFFFFFF : 0, null, null, false);
+                            params.monoForumPeer = recordMonoForumPeerId;
+                            params.suggestionParams = recordMonoForumSuggestionParams;
+                            params.replyToStoryItem = recordReplyingStory;
+                            params.sendMessageChatArguments = recordSendMessageChatArguments;
                             params.payStars = payStars;
-                            SendMessagesHelper.getInstance(account).sendMessage(params);
+                            SendMessagesHelper.getInstance(recordingCurrentAccount).sendMessage(params);
                         }
-                        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.audioDidSent, guid, send == 2 ? audioToSend : null, send == 2 ? recordingAudioFileToSend.getAbsolutePath() : null);
+                        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.audioDidSent, recordingGuid, send == 2 ? audioToSend : null, send == 2 ? recordingAudioFileToSend.getAbsolutePath() : null);
                     } else {
-                        NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.audioRecordTooShort, guid, false, (int) duration);
-                        AutoDeleteMediaTask.unlockFile(recordingAudioFileToSend);
-                        recordingAudioFileToSend.delete();
+                        NotificationCenter.getInstance(recordingCurrentAccount).postNotificationName(NotificationCenter.audioRecordTooShort, recordingGuid, false, (int) duration);
+                        if (recordingAudioFileToSend != null) {
+                            AutoDeleteMediaTask.unlockFile(recordingAudioFileToSend);
+                            recordingAudioFileToSend.delete();
+                        }
                     }
                     requestRecordAudioFocus(false);
                 });
             });
         } else {
-            final File audioFileToClean = recordingAudioFile;
-            recordingAudioFile = null;
-            postEncoderStop();
-            postEncoderFileCleanup(audioFileToClean);
+            AutoDeleteMediaTask.unlockFile(recordingAudioFile);
+            if (recordingAudioFile != null) {
+                recordingAudioFile.delete();
+            }
             requestRecordAudioFocus(false);
         }
         try {
+            AudioEnhance.INSTANCE.releaseVoiceEnhance();
             if (audioRecorder != null) {
                 audioRecorder.release();
                 audioRecorder = null;
@@ -5432,6 +5610,10 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
     }
 
     public void stopRecording(final int send, boolean notify, int scheduleDate, boolean once, long payStars) {
+        if (audioRecorderV2Active) {
+            stopRecordingV2(send, notify, scheduleDate, once, payStars);
+            return;
+        }
         if (recordStartRunnable != null) {
             recordQueue.cancelRunnable(recordStartRunnable);
             recordStartRunnable = null;
@@ -5443,9 +5625,6 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                 return;
             }
             if (audioRecorder == null) {
-                recordSessionGeneration.incrementAndGet();
-                recordResumePending = false;
-                postEncoderStop();
                 recordingAudio = null;
                 manualRecording = false;
                 raiseToEarRecord = false;
@@ -5466,9 +5645,7 @@ public class MediaController implements AudioManager.OnAudioFocusChangeListener,
                     if (BuildVars.LOGS_ENABLED) {
                         FileLog.e("delete voice file");
                     }
-                    final File failedAudioFile = recordingAudioFile;
-                    recordingAudioFile = null;
-                    postEncoderFileCleanup(failedAudioFile);
+                    recordingAudioFile.delete();
                 }
             }
             if (send == 0) {

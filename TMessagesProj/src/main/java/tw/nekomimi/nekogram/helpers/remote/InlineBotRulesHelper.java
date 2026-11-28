@@ -135,7 +135,7 @@ public class InlineBotRulesHelper extends BaseRemoteHelper {
         }
         loading = true;
         if (inlineBotRules.isEmpty()) {
-            loadInlineBotRules();
+        loadInlineBotRules();
         }
         if (needUpdate()) {
             load();

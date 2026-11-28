@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.6.0)
 
+set(CMAKE_CXX_FLAGS "-std=c++17 -DANDROID -g")
+
 #openh264 (prebuilt static library)
 add_library(openh264 STATIC IMPORTED)
 set_target_properties(openh264 PROPERTIES
@@ -20,7 +22,7 @@ add_library(rnnoise STATIC
         voip/rnnoise/src/rnn_reader.c
         voip/rnnoise/src/rnn_reader.c
         voip/rnnoise/src/rnn.c)
-target_compile_options(rnnoise PRIVATE
+target_compile_options(rnnoise PUBLIC
         -Wall -finline-functions -fno-strict-aliasing -O3 -frtti -Wno-unknown-pragmas -funroll-loops -fexceptions -fno-math-errno)
 set_target_properties(rnnoise PROPERTIES
         ANDROID_ARM_MODE arm)
@@ -101,7 +103,7 @@ add_library(tgcalls_tp STATIC
         third_party/usrsctplib/user_recv_thread.c
         third_party/usrsctplib/user_socket.c
 )
-target_compile_options(tgcalls_tp PRIVATE
+target_compile_options(tgcalls_tp PUBLIC
         -finline-functions -ffast-math -Os )
 set_target_properties(tgcalls_tp PROPERTIES
         ANDROID_ARM_MODE arm)
@@ -179,8 +181,7 @@ add_library(tgcalls STATIC
         tgcalls/tgcalls/v2/InstanceV2CompatImpl.cpp
         tgcalls/tgcalls/v2/InstanceV2Impl.cpp
         tgcalls/tgcalls/v2/InstanceV2ReferenceImpl.cpp
-        tgcalls/tgcalls/v2/MtProtoIceTransport.cpp
-        tgcalls/tgcalls/v2/MtProtoIceTransportTest.cpp
+        tgcalls/tgcalls/v2/MtProtoDtlsTransport.cpp
         tgcalls/tgcalls/v2/NativeNetworkingImpl.cpp
         tgcalls/tgcalls/v2/RawTcpSocket.cpp
         tgcalls/tgcalls/v2/ReflectorPort.cpp
@@ -1493,8 +1494,8 @@ add_library(tgcalls STATIC
         voip/third_party/crc32c/src/crc32c.cc
 #        voip/third_party/jni_zero/jni_zero.cc
 )
-target_compile_options(tgcalls PRIVATE
-        -Wall -finline-functions -ffast-math -O2)
+target_compile_options(tgcalls PUBLIC
+        -Wall -finline-functions -ffast-math)
 set_target_properties(tgcalls PROPERTIES
         ANDROID_ARM_MODE arm)
 target_compile_definitions(tgcalls PUBLIC
@@ -1682,8 +1683,8 @@ add_library(voipandroid STATIC
         voip/webrtc/sdk/android/src/jni/nv12_buffer.cc
         voip/org_telegram_messenger_voip_Instance.cpp
 )
-target_compile_options(voipandroid PRIVATE
-        -Wall -finline-functions -ffast-math -fexceptions -O2)
+target_compile_options(voipandroid PUBLIC
+        -Wall -finline-functions -ffast-math -fexceptions)
 set_target_properties(voipandroid PROPERTIES
         ANDROID_ARM_MODE arm)
 target_compile_definitions(voipandroid PUBLIC

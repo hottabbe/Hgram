@@ -30,6 +30,7 @@ public class HgramNotificationHyperosTest {
     public void setUp() {
         ApplicationLoader.applicationContext = ApplicationProvider.getApplicationContext();
         HgramConfig.reset();
+        HgramConfig.setNotificationImportanceBoostEnabled(true);
     }
 
     @After
@@ -64,6 +65,15 @@ public class HgramNotificationHyperosTest {
         assertTrue(source.isRecycled());
         assertFalse(prepared.isRecycled());
         prepared.recycle();
+    }
+
+    @Test
+    public void defaultOffKeepsImportance() {
+        HgramConfig.setNotificationImportanceBoostEnabled(false);
+        assertEquals(NotificationManager.IMPORTANCE_DEFAULT,
+                HgramNotificationChannels.effectiveImportance(
+                        NotificationManager.IMPORTANCE_DEFAULT, false, true));
+        HgramConfig.setNotificationImportanceBoostEnabled(true);
     }
 
     @Test

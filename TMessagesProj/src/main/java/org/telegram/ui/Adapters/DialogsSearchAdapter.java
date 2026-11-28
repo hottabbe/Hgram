@@ -53,6 +53,7 @@ import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.ActionBar.ThemeBind;
 import org.telegram.ui.Cells.DialogCell;
 import org.telegram.ui.Cells.GraySectionCell;
 import org.telegram.ui.Cells.HashtagSearchCell;
@@ -127,6 +128,8 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
     private boolean hgramSecretSpaceActive = HgramSecretSpace.isActive();
     public int publicPostsTotalCount;
     public int publicPostsLastRate;
+    public TLRPC.InputPeer publicPostsLastPeer;
+    public int publicPostsRawCount;
     public ArrayList<MessageObject> publicPosts = new ArrayList<>();
     public String publicPostsHashtag;
     private final ArrayList<ContactsController.Contact> searchContacts = new ArrayList<>();
@@ -325,7 +328,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
         } else if (obj instanceof TLRPC.Chat) {
             hgramDialogId = -((TLRPC.Chat) obj).id;
         } else if (obj instanceof TLRPC.EncryptedChat) {
-            hgramDialogId = -((TLRPC.EncryptedChat) obj).id;
+            hgramDialogId = DialogObject.makeEncryptedDialogId(((TLRPC.EncryptedChat) obj).id);
         } else if (obj instanceof MessageObject) {
             hgramDialogId = ((MessageObject) obj).getDialogId();
         }
@@ -1263,6 +1266,8 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
             searchResultHashtags.clear();
             publicPostsTotalCount = 0;
             publicPostsLastRate = 0;
+            publicPostsLastPeer = null;
+            publicPostsRawCount = 0;
             publicPostsHashtag = null;
             publicPosts.clear();
             searchAdapterHelper.mergeResults(null, null);
@@ -1304,6 +1309,8 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
             searchAdapterHelper.mergeResults(searchResult, filtered2RecentSearchObjects);
             publicPostsTotalCount = 0;
             publicPostsLastRate = 0;
+            publicPostsLastPeer = null;
+            publicPostsRawCount = 0;
             publicPostsHashtag = null;
             publicPosts.clear();
             if (needMessagesSearch != 2 && (query.startsWith("#") && query.length() == 1)) {
@@ -1428,11 +1435,17 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
                             }
                             publicPostsTotalCount = totalCount;
                             publicPostsLastRate = msgs.next_rate;
-                            publicPostsHashtag = finalHashtag;
                             MessagesController.getInstance(currentAccount).putUsers(msgs.users, false);
                             MessagesController.getInstance(currentAccount).putChats(msgs.chats, false);
+                            publicPostsLastPeer = msgs.messages.isEmpty() ? null
+                                    : MessagesController.getInstance(currentAccount).getInputPeer(msgs.messages.get(msgs.messages.size() - 1).peer_id);
+                            publicPostsRawCount = msgs.messages.size();
+                            publicPostsHashtag = finalHashtag;
                             for (int i = 0; i < msgs.messages.size(); ++i) {
                                 TLRPC.Message msg = msgs.messages.get(i);
+                                if (!HgramSecretSpace.isVisible(currentAccount, MessageObject.getDialogId(msg))) {
+                                    continue;
+                                }
                                 publicPosts.add(new MessageObject(currentAccount, msg, false, true));
                             }
                             if (delegate != null) {
@@ -1763,7 +1776,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
                         return super.onInterceptTouchEvent(e);
                     }
                 };
-                horizontalListView.setSelectorDrawableColor(Theme.getColor(Theme.key_listSelector));
+                ThemeBind.listSelectorColor(horizontalListView, Theme.key_listSelector);
                 horizontalListView.setTag(9);
                 horizontalListView.setItemAnimator(null);
                 horizontalListView.setLayoutAnimation(null);
@@ -1835,7 +1848,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
         switch (holder.getItemViewType()) {
             case VIEW_TYPE_PROFILE_CELL: {
                 ProfileSearchCell cell = (ProfileSearchCell) holder.itemView;
-                cell.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                ThemeBind.backgroundColor(cell, Theme.key_windowBackgroundWhite);
                 long oldDialogId = cell.getDialogId();
 
                 TLRPC.User user = null;
@@ -2257,7 +2270,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
             case VIEW_TYPE_DIALOG_CELL:
             case VIEW_TYPE_PUBLIC_POST: {
                 DialogCell cell = (DialogCell) holder.itemView;
-                cell.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                ThemeBind.backgroundColor(cell, Theme.key_windowBackgroundWhite);
                 cell.useSeparator = (position != getItemCount() - 1);
                 MessageObject messageObject = (MessageObject) getItem(position);
                 boolean isLocalForum = searchForumResultMessages.contains(messageObject);
@@ -2276,7 +2289,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
             }
             case VIEW_TYPE_HASHTAG_CELL: {
                 HashtagSearchCell cell = (HashtagSearchCell) holder.itemView;
-                cell.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
+                ThemeBind.backgroundColor(cell, Theme.key_windowBackgroundWhite);
                 cell.setText(searchResultHashtags.get(position - 1));
                 cell.setNeedDivider(position != searchResultHashtags.size());
                 break;
@@ -2546,7 +2559,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
 
             TextView titleView = new TextView(context);
             titleView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 17);
-            titleView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider));
+            ThemeBind.textColor(titleView, Theme.key_windowBackgroundWhiteBlackText, resourcesProvider);
             titleView.setTypeface(AndroidUtilities.bold());
             titleView.setText(LocaleController.getString(R.string.SearchMessagesFilterEmptyTitle));
             titleView.setGravity(Gravity.CENTER);
@@ -2554,7 +2567,7 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
 
             textView = new TextView(context);
             textView.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
-            textView.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider));
+            ThemeBind.textColor(textView, Theme.key_windowBackgroundWhiteBlackText, resourcesProvider);
             textView.setText(LocaleController.formatString(R.string.SearchMessagesFilterEmptyText, ""));
             textView.setGravity(Gravity.CENTER);
             addView(textView, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 14));
@@ -2563,8 +2576,8 @@ public class DialogsSearchAdapter extends RecyclerListView.SelectionAdapter {
             button.setPadding(dp(12), dp(4), dp(12), dp(4));
             button.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 14);
             button.setText(LocaleController.getString(R.string.SearchMessagesFilterEmptySearchAll));
-            button.setTextColor(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider));
-            button.setBackground(Theme.createSimpleSelectorRoundRectDrawable(6, 0, Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .15f)));
+            ThemeBind.textColor(button, Theme.key_featuredStickers_addButton, resourcesProvider);
+            ThemeBind.selectorBackground(button, Theme.createSimpleSelectorRoundRectDrawable(6, 0, Theme.multAlpha(Theme.getColor(Theme.key_featuredStickers_addButton, resourcesProvider), .15f)), null, ThemeBind.multAlpha(Theme.key_featuredStickers_addButton, .15f), resourcesProvider);
             button.setOnClickListener(v -> onClickAll.run());
             addView(button, LayoutHelper.createLinear(LayoutHelper.WRAP_CONTENT, LayoutHelper.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL, 0, 0, 0, 38));
         }

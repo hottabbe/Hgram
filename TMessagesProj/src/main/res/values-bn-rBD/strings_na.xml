@@ -19,7 +19,7 @@
     <string name="SendReactions">Send Reactions</string>
     <string name="ShowReactions">Show Reactions</string>
     <string name="CustomTitle">Custom Title</string>
-    <string name="CustomTitleHint">Leave blank to use Nagram</string>
+    <string name="CustomTitleHint">Leave blank to use Hgram</string>
     <string name="CodeSyntaxHighlight">Code syntax highlight</string>
     <string name="CreateMono">Create Monospace</string>
     <string name="CreateMonoLanguage">Code language</string>
@@ -39,8 +39,6 @@
     <string name="AutoReplaceRepeat">Auto Replace Repeat to Repeat As Copy</string>
     <string name="AppIconGoogle">Google</string>
     <string name="AppIconColorful">Colorful</string>
-    <string name="AppIconDarkGreen">Dark Green</string>
-    <string name="AppIconNeon">Neon</string>
     <string name="AppIconNiello">Niello</string>
     <string name="AppIconBlue">Blue</string>
     <string name="AppIconDarkBlue">Dark Blue</string>
@@ -100,7 +98,6 @@
     <string name="DisableSendReadStories">Disable Send Read Stories</string>
     <string name="HideFilterMuteAll">Hide filter mute all</string>
     <string name="UseLocalQuoteColor">Use local quote color</string>
-    <string name="ShowSquareAvatar">Show square avatar</string>
     <string name="DisableProfileAvatarBlur">Disable Profile Avatar Blur</string>
     <string name="DisableCustomWallpaperUser">Disable user custom wallpaper</string>
     <string name="DisableCustomWallpaperChannel">Disable channel custom wallpaper</string>
@@ -139,7 +136,6 @@
     <string name="SendMp4DocumentAsVideo">Send mp4 document as video</string>
     <string name="StickersChooseShortNameForStickerPack">Choose a short name for your pack.</string>
     <string name="StickersCopyStickerSet">Copy Sticker Set</string>
-    <string name="DisableChannelMuteButton">Disable channel mute button</string>
     <string name="DisablePreviewVideoSoundShortcut">Disable preview video sound shortcut</string>
     <string name="DisablePreviewVideoSoundShortcutNotice">Disable volume keys to enable preview video sound</string>
     <string name="DisableAutoWebLogin">Disable auto web login</string>

@@ -60,11 +60,11 @@ public class MessageCustomParamsHelper {
         toMessage.errorNewPriceStars = fromMessage.errorNewPriceStars;
         toMessage.translatedVoiceTranscription = fromMessage.translatedVoiceTranscription;
         if (!HgramSummarizer.isLocalSummaryMessage(fromMessage)) {
-            toMessage.summarizedOpen = fromMessage.summarizedOpen;
-            toMessage.summaryText = fromMessage.summaryText;
-            toMessage.translatedSummaryText = fromMessage.translatedSummaryText;
-            toMessage.translatedSummaryLanguage = fromMessage.translatedSummaryLanguage;
-        }
+        toMessage.summarizedOpen = fromMessage.summarizedOpen;
+        toMessage.summaryText = fromMessage.summaryText;
+        toMessage.translatedSummaryText = fromMessage.translatedSummaryText;
+        toMessage.translatedSummaryLanguage = fromMessage.translatedSummaryLanguage;
+    }
     }
 
 

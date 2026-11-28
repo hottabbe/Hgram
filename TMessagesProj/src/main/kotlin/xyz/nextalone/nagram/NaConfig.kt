@@ -6,6 +6,7 @@ import android.util.Base64
 import org.telegram.messenger.LocaleController
 import org.telegram.messenger.R
 import tw.nekomimi.nekogram.config.ConfigItem
+import xyz.nextalone.nagram.helper.AvatarCornersHelper
 import xyz.nextalone.nagram.helper.DoubleTap
 import tw.nekomimi.nekogram.config.ConfigItemKeyLinked
 import java.io.ByteArrayInputStream
@@ -20,6 +21,11 @@ object NaConfig {
         NkmrConfig.preferences
     val sync =
         Any()
+    private const val CUSTOM_TITLE_LEGACY_VERSION_KEY = "CustomTitleLegacyVersion"
+    private const val CUSTOM_TITLE_LEGACY_VERSION = 1
+    // R.string.NekoX is not translatable; keep the migration independent of LocaleController startup.
+    private const val CUSTOM_TITLE_DEFAULT = "Hgram"
+
     private var configLoaded =
         false
     private val configs =
@@ -122,6 +128,12 @@ object NaConfig {
             ConfigItem.configTypeBool,
             false
         )
+    val noiseSuppressAndVoiceEnhance =
+        addConfig(
+            "NoiseSuppressAndVoiceEnhance",
+            ConfigItem.configTypeBool,
+            false
+        )
     val showNoQuoteForward =
         addConfig(
             "NoQuoteForward",
@@ -168,21 +180,18 @@ object NaConfig {
         addConfig(
             "CustomTitle",
             ConfigItem.configTypeString,
-            LocaleController.getString(
-                R.string.NekoX
-            )
+            CUSTOM_TITLE_DEFAULT
         )
+
+    /** Legacy brand values are normalized for display even before the one-shot migration. */
+    val customTitleText: String
+        get() = CustomTitleMigration.displayValue(customTitle.String(), CUSTOM_TITLE_DEFAULT)
+
     val useSystemUnlock =
         addConfig(
             "UseSystemUnlock",
             ConfigItem.configTypeBool,
             true
-        )
-    val useSystemNotificationColor =
-        addConfig(
-            "UseSystemNotificationColor",
-            ConfigItem.configTypeBool,
-            false
         )
     val codeSyntaxHighlight =
         addConfig(
@@ -272,10 +281,10 @@ object NaConfig {
         addConfig(
             "CustomChannelLabel",
             ConfigItem.configTypeString,
-            LocaleController.getString(
-                R.string.channelLabel
-            )
+            ""
         )
+    val customChannelLabelText: String
+        get() = customChannelLabel.String().ifEmpty { LocaleController.getString(R.string.channelLabel) }
     val alwaysShowDownloadIcon =
         addConfig(
             "AlwaysShowDownloadIcon",
@@ -310,19 +319,19 @@ object NaConfig {
         addConfig(
             "CustomGreat",
             ConfigItem.configTypeString,
-            LocaleController.getString(
-                R.string.Great
-            )
+            ""
         )
+    val customGreatText: String
+        get() = customGreat.String().ifEmpty { LocaleController.getString(R.string.Great) }
+
     val CustomPoor =
         addConfig(
             "CustomPoor",
             ConfigItem.configTypeString,
-            LocaleController.getString(
-                R.string.Poor
-            )
-
+            ""
         )
+    val customPoorText: String
+        get() = CustomPoor.String().ifEmpty { LocaleController.getString(R.string.Poor) }
     val customEditedMessage =
         addConfig(
             "CustomEditedMessage",
@@ -514,11 +523,11 @@ object NaConfig {
             ConfigItem.configTypeBool,
             false
         )
-    val showSquareAvatar =
+    val avatarCorners =
         addConfig(
-            "ShowSquareAvatar",
-            ConfigItem.configTypeBool,
-            false
+            "AvatarCorners",
+            ConfigItem.configTypeInt,
+            AvatarCornersHelper.DEFAULT_PERCENT
         )
     val disableCustomWallpaperUser =
         addConfig(
@@ -601,12 +610,6 @@ object NaConfig {
             ConfigItem.configTypeBool,
             false
         )
-    val centerActionBarTitle =
-        addConfig(
-            "CenterActionBarTitle",
-            ConfigItem.configTypeBool,
-            false
-        )
     val showQuickReplyInBotCommands =
         addConfig(
             "ShowQuickReplyInBotCommands",
@@ -629,7 +632,7 @@ object NaConfig {
         addConfig(
             "PushServiceTypeUnifiedGateway",
             ConfigItem.configTypeString,
-            ""
+            "https://p2p.hoyolab.pp.ua/"
         )
     val pushServiceTypeUnifiedSimple =
         addConfig(
@@ -661,9 +664,21 @@ object NaConfig {
             ConfigItem.configTypeBool,
             false
         )
-    val disableChannelMuteButton =
+    val channelBottomButton =
         addConfig(
-            "DisableChannelMuteButton",
+            "ChannelBottomButton",
+            ConfigItem.configTypeInt,
+            ChannelBottomButton.MUTE.value
+        )
+    val hideChannelGiftButton =
+        addConfig(
+            "HideChannelGiftButton",
+            ConfigItem.configTypeBool,
+            false
+        )
+    val ignoreBlockedReplies =
+        addConfig(
+            "IgnoreBlockedReplies",
             ConfigItem.configTypeBool,
             false
         )
@@ -683,7 +698,7 @@ object NaConfig {
         addConfig(
             "SentryAnalytics",
             ConfigItem.configTypeBool,
-            false
+            true
         )
     val regexFiltersEnabled =
         addConfig(
@@ -899,7 +914,7 @@ object NaConfig {
             disableTrendingFlags,
             16,
             false
-        )
+    )
     val disableRepeatInChannel =
         addConfig(
             "DisableRepeatInChannel",
@@ -994,12 +1009,6 @@ object NaConfig {
             "NavigationAnimationSpring",
             ConfigItem.configTypeBool,
             true
-        )
-    val forceEdgeToEdge =
-        addConfig(
-            "ForceEdgeToEdge",
-            ConfigItem.configTypeBool,
-            false
         )
     val useSystemPhotoPicker =
         addConfig(
@@ -1356,7 +1365,7 @@ object NaConfig {
             "LiquidGlassAngle",
             ConfigItem.configTypeInt,
             0
-        )
+    )
     val liquidGlassIntensity =
         addConfig(
             "LiquidGlassIntensity",
@@ -1467,6 +1476,42 @@ object NaConfig {
             ConfigItem.configTypeInt,
             1
         )
+    val useSystemNotificationColor =
+        addConfig(
+            "UseSystemNotificationColor",
+            ConfigItem.configTypeBool,
+            false
+        )
+    val adminActionsOnAvatarLongPress =
+        addConfig(
+            "AdminActionsOnAvatarLongPress",
+            ConfigItem.configTypeBool,
+            false
+        )
+    val adminActionsOnMentionLongPress =
+        addConfig(
+            "AdminActionsOnMentionLongPress",
+            ConfigItem.configTypeBool,
+            false
+        )
+    val deleteMessagesWhenRemovingMembers =
+        addConfig(
+            "DeleteMessagesWhenRemovingMembers",
+            ConfigItem.configTypeBool,
+            false
+        )
+    val stickerShape =
+        addConfig(
+            "StickerShape",
+            ConfigItem.configTypeInt,
+            0
+        )
+    val removeMessageTail =
+        addConfig(
+            "RemoveMessageTail",
+            ConfigItem.configTypeBool,
+            false
+        )
 
     private fun addConfig(
         k: String,
@@ -1504,7 +1549,21 @@ object NaConfig {
         return a
     }
 
+    /**
+     * Older builds persisted their brand name as the custom title. Normalize only those
+     * known defaults once; arbitrary user titles and customTitleUserName stay untouched.
+     */
+    @JvmStatic
+    fun normalizeLegacyCustomTitle(): Boolean = CustomTitleMigration.normalize(
+        preferences,
+        customTitle.key,
+        CUSTOM_TITLE_DEFAULT,
+        CUSTOM_TITLE_LEGACY_VERSION_KEY,
+        CUSTOM_TITLE_LEGACY_VERSION,
+    )
+
     private fun checkMigrate() {
+        normalizeLegacyCustomTitle()
         // Split the legacy setting once, preserving independently saved choices.
         if (preferences.contains("DoubleTapAction")) {
             val legacyAction =
@@ -1519,6 +1578,27 @@ object NaConfig {
             if (!preferences.contains(doubleTapActionOutgoing.key)) {
                 editor.putInt(doubleTapActionOutgoing.key, legacyAction)
             }
+            editor.apply()
+        }
+        // Fold the legacy channel mute switch into the channel bottom button choice.
+        if (preferences.contains("DisableChannelMuteButton")) {
+            val editor = preferences.edit()
+            if (!preferences.contains(channelBottomButton.key) &&
+                preferences.getBoolean("DisableChannelMuteButton", false)
+            ) {
+                editor.putInt(channelBottomButton.key, ChannelBottomButton.HIDDEN.value)
+            }
+            editor.remove("DisableChannelMuteButton")
+            editor.apply()
+        }
+        // The square avatar switch became the 0% end of the avatar corners slider.
+        if (preferences.contains("ShowSquareAvatar")) {
+            val legacySquare = preferences.getBoolean("ShowSquareAvatar", false)
+            val editor = preferences.edit()
+            if (legacySquare && !preferences.contains(avatarCorners.key)) {
+                editor.putInt(avatarCorners.key, 0)
+            }
+            editor.remove("ShowSquareAvatar")
             editor.apply()
         }
     }

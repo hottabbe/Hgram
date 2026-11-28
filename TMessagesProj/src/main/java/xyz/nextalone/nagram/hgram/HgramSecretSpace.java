@@ -11,6 +11,7 @@ import org.telegram.messenger.UserConfig;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -240,7 +241,6 @@ public final class HgramSecretSpace {
                 current.remove(dialogId);
             }
             final Set<Long> updated = Collections.unmodifiableSet(current);
-            hiddenCache.put(Math.max(0, account), updated);
             boolean persisted = prefsOrTrue();
             final SharedPreferences prefs = preferences();
             if (prefs != null) {
@@ -259,10 +259,12 @@ public final class HgramSecretSpace {
                     + " ok=" + persisted);
             lastTogglePersisted = persisted;
             if (!persisted) {
-                // Do not leave a UI-visible state that will disappear on the next launch.
+                // Publish only after the transaction succeeds; readers must never observe a
+                // restore that is rolled back below.
                 hiddenCache.put(Math.max(0, account), previous);
-                return !hidden;
+                return previous.contains(dialogId);
             }
+            hiddenCache.put(Math.max(0, account), updated);
             return hidden;
         }
     }
@@ -335,6 +337,18 @@ public final class HgramSecretSpace {
      */
     public static boolean canOpenDialog(int account, long dialogId) {
         return dialogId == 0 || isVisible(account, dialogId);
+    }
+
+    /** Keeps only dialog ids that may be presented in the current workspace. */
+    public static void retainVisible(int account, List<Long> dialogIds) {
+        if (dialogIds == null) {
+            return;
+        }
+        for (Iterator<Long> it = dialogIds.iterator(); it.hasNext(); ) {
+            if (!canOpenDialog(account, it.next())) {
+                it.remove();
+            }
+        }
     }
 
     /** Test-only reset of the in-process cache/state. */

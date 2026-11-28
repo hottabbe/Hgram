@@ -197,7 +197,7 @@ public class WallpaperHelper extends BaseRemoteHelper {
         }
         loading = true;
         if (wallPaperInfo.isEmpty()) {
-            loadWallPaperInfo();
+        loadWallPaperInfo();
         }
         if (needUpdate()) {
             load();

@@ -137,7 +137,7 @@ public class PeerColorHelper extends BaseRemoteHelper {
         }
         loading = true;
         if (peerColorInfo.isEmpty()) {
-            loadPeerColorInfo();
+        loadPeerColorInfo();
         }
         if (needUpdate()) {
             load();

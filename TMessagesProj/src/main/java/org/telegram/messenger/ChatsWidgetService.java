@@ -99,6 +99,11 @@ class ChatsRemoteViewsFactory implements RemoteViewsService.RemoteViewsFactory {
             return rv;
         }
         Long id = dids.get(position);
+        if (HgramSecretSpace.isHidden(accountInstance.getCurrentAccount(), id)) {
+            RemoteViews hidden = new RemoteViews(mContext.getPackageName(), R.layout.widget_edititem);
+            hidden.setTextViewText(R.id.widget_edititem_text, "");
+            return hidden;
+        }
         String name = "";
 
         TLRPC.FileLocation photoPath = null;
@@ -341,10 +346,8 @@ class ChatsRemoteViewsFactory implements RemoteViewsService.RemoteViewsFactory {
             rv.setTextViewText(R.id.shortcut_widget_item_badge, String.format("%d", dialog.unread_count));
             rv.setViewVisibility(R.id.shortcut_widget_item_badge, View.VISIBLE);
             if (accountInstance.getMessagesController().isDialogMuted(dialog.id, 0)) {
-                rv.setBoolean(R.id.shortcut_widget_item_badge, "setEnabled", false);
                 rv.setInt(R.id.shortcut_widget_item_badge, "setBackgroundResource", R.drawable.widget_badge_muted_background);
             } else {
-                rv.setBoolean(R.id.shortcut_widget_item_badge, "setEnabled", true);
                 rv.setInt(R.id.shortcut_widget_item_badge, "setBackgroundResource", R.drawable.widget_badge_background);
             }
         } else {
@@ -398,8 +401,9 @@ class ChatsRemoteViewsFactory implements RemoteViewsService.RemoteViewsFactory {
         final int widgetAccount = accountInstance.getCurrentAccount();
         for (int i = dids.size() - 1; i >= 0; i--) {
             final long dialogId = dids.get(i);
-            if (!HgramSecretSpace.isVisible(widgetAccount, dialogId)) {
+            if (HgramSecretSpace.isHidden(widgetAccount, dialogId)) {
                 dids.remove(i);
+                dialogs.remove(dialogId);
                 messages.remove(dialogId);
             }
         }

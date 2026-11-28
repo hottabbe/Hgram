@@ -130,6 +130,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     static final int ROW_EXIF_CLEAR = 79;
     static final int ROW_OCR_LONG_PRESS = 80;
     static final int ROW_OCR_MODELS = 81;
+    static final int ROW_HIGH_REFRESH_BOOST = 82;
     private static final int ROW_DOWNLOAD_THREADS_INFO = 34;
     private static final int ROW_SHORT_MERGE = 35;
     private static final int ROW_SHORT_MERGE_INFO = 36;
@@ -143,7 +144,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     private static final int ROW_HEADER_RECOGNITION = 39;
     private static final int ROW_FEED_KEYWORDS = 41;
     static final int[] ROWS = {
-            ROW_HEADER_CHAT, ROW_SHORT_MERGE, ROW_PIN_TO_SCREEN,
+            ROW_HEADER_CHAT, ROW_SHORT_MERGE,
             ROW_SUMMARIZER_ENABLE, ROW_SUMMARIZER_TRIGGER, ROW_SUMMARIZER_KEY, ROW_SUMMARIZER_MODEL, ROW_SUMMARIZER_PROMPT,
             ROW_EXIF_CLEAN,
             ROW_EXIF_CLEAR,
@@ -155,6 +156,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             ROW_HEADER_PRIVACY, ROW_ANTI_PEEK, ROW_ALLOW_SCREENSHOTS, ROW_DECOY_PASSCODE,
             ROW_HEADER_NETWORK, ROW_WEAK_NETWORK, ROW_DOWNLOAD_THREADS, ROW_UPLOAD_THREADS, ROW_FAST_HANDOVER,
             ROW_HEADER_OTHER, ROW_NOTIF_MEDIA_STYLE, ROW_NOTIFICATION_DEBOUNCE, ROW_FRAME_THROTTLING,
+            ROW_HIGH_REFRESH_BOOST,
             ROW_HEADER_HAPTICS, ROW_HAPTIC_TOGGLE,
             ROW_HAPTIC_BASE, ROW_HAPTIC_BASE + 1, ROW_HAPTIC_BASE + 2, ROW_HAPTIC_BASE + 3,
             ROW_HAPTIC_BASE + 4, ROW_HAPTIC_BASE + 5, ROW_HAPTIC_BASE + 6, ROW_HAPTIC_BASE + 7,
@@ -197,12 +199,12 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
     }
 
     private static boolean isToggle(int id) {
-        return id == ROW_SHORT_MERGE || id == ROW_COMPACT_ALBUMS || id == ROW_PIN_TO_SCREEN
+        return id == ROW_SHORT_MERGE || id == ROW_COMPACT_ALBUMS
                 || id == ROW_SIMILAR_POST_DEDUPLICATION || id == ROW_CLEAN_FEED_FILTER || id == ROW_AUTO_LOUDNESS
                 || id == ROW_OFFLINE_TRANSCRIPTION || id == ROW_ALLOW_SCREENSHOTS
                 || id == ROW_FAST_HANDOVER || id == ROW_NOTIFICATION_DEBOUNCE || id == ROW_FRAME_THROTTLING
                 || id == ROW_HAPTIC_TOGGLE || id == ROW_SUMMARIZER_ENABLE || id == ROW_EXIF_CLEAN
-                || id == ROW_OCR_LONG_PRESS;
+                || id == ROW_OCR_LONG_PRESS || id == ROW_HIGH_REFRESH_BOOST;
     }
 
     private void bindToggle(TextCheckCell cell, int id, boolean divider) {
@@ -220,6 +222,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_FAST_HANDOVER: title = R.string.HgramFastNetworkHandover; description = R.string.HgramFastHandoverInfo; checked = HgramConfig.isFastNetworkHandoverEnabled(); break;
             case ROW_NOTIFICATION_DEBOUNCE: title = R.string.HgramNotificationDebounce; description = R.string.HgramNotificationDebounceInfo; checked = HgramConfig.isSmartNotificationDebounceEnabled(); break;
             case ROW_HAPTIC_TOGGLE: title = R.string.HgramHapticEnabled; description = R.string.HgramHapticEnabledInfo; checked = HgramConfig.isHapticEnabled(); break;
+            case ROW_HIGH_REFRESH_BOOST: title = R.string.HgramHighRefreshBoost; description = R.string.HgramHighRefreshBoostInfo; checked = HgramConfig.isHighRefreshBoostEnabled(); break;
             case ROW_SUMMARIZER_ENABLE: title = R.string.HgramSummarizerEnable; description = R.string.HgramSummarizerEnableInfo; checked = HgramConfig.isSummarizerEnabled(); break;
             case ROW_EXIF_CLEAN: title = R.string.HgramExifCleanTitle; description = R.string.HgramExifCleanInfo; checked = HgramConfig.isExifCleanupEnabled(); break;
             case ROW_OCR_LONG_PRESS: title = R.string.HgramOcrLongPressTitle; description = R.string.HgramOcrLongPressInfo; checked = HgramConfig.isOcrLongPressEnabled(); break;
@@ -294,13 +297,6 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             if (enabled && !hasAnyModelInstalled()) {
                 Toast.makeText(getParentActivity(), LocaleController.getString(R.string.HgramOfflineTranscriptionUnavailable), Toast.LENGTH_SHORT).show();
             }
-        } else if (position == ROW_PIN_TO_SCREEN) {
-            boolean enabled = !HgramConfig.isPinToScreenEnabled();
-            HgramConfig.setPinToScreenEnabled(enabled);
-            ((TextCheckCell) view).setChecked(enabled);
-            if (!enabled && LaunchActivity.instance != null) {
-                LaunchActivity.instance.clearHgramPinnedMessage();
-            }
         } else if (position == ROW_ANTI_PEEK) {
             showAntiPeekDialog();
         } else if (position == ROW_FRAME_THROTTLING) {
@@ -332,6 +328,15 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             ((TextCheckCell) view).setChecked(enabled);
             notifyRow(ROW_HAPTIC_TOGGLE);
             for (int i = 0; i < 15; i++) notifyRow(ROW_HAPTIC_BASE + i);
+        } else if (position == ROW_HIGH_REFRESH_BOOST) {
+            boolean enabled = !HgramConfig.isHighRefreshBoostEnabled();
+            HgramConfig.setHighRefreshBoostEnabled(enabled);
+            ((TextCheckCell) view).setChecked(enabled);
+            notifyRow(ROW_HIGH_REFRESH_BOOST);
+            if (LaunchActivity.instance != null) {
+                org.telegram.messenger.AndroidUtilities.setPreferredMaxRefreshRate(
+                        LaunchActivity.instance.getWindow());
+            }
         } else if (position >= ROW_HAPTIC_BASE && position < ROW_HAPTIC_BASE + 15) {
             if (!HgramHapticCapabilities.detect(getParentActivity()).canConfigureProfiles()) {
                 return;
@@ -707,6 +712,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_RESET_HGRAM_SETTINGS: return LocaleController.getString(R.string.HgramResetSettings);
             case ROW_HEADER_HAPTICS: return LocaleController.getString(R.string.HgramHeaderHaptics);
             case ROW_HAPTIC_TOGGLE: return LocaleController.getString(R.string.HgramHapticEnabled);
+            case ROW_HIGH_REFRESH_BOOST: return LocaleController.getString(R.string.HgramHighRefreshBoost);
             default:
                 if (row >= ROW_HAPTIC_BASE && row < ROW_HAPTIC_BASE + 15) {
                     return LocaleController.getString(hapticPlaceTitle(row - ROW_HAPTIC_BASE));
@@ -729,6 +735,7 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
             case ROW_NOTIFICATION_DEBOUNCE: return R.string.HgramNotificationDebounceInfo;
             case ROW_FRAME_THROTTLING: return R.string.HgramFrameThrottlingInfo;
             case ROW_HAPTIC_TOGGLE: return R.string.HgramHapticEnabledInfo;
+            case ROW_HIGH_REFRESH_BOOST: return R.string.HgramHighRefreshBoostInfo;
             case ROW_EXIF_CLEAN: return R.string.HgramExifCleanInfo;
             case ROW_OCR_LONG_PRESS: return R.string.HgramOcrLongPressInfo;
             default: return 0;
@@ -1359,10 +1366,9 @@ public class HgramSettingsActivity extends BaseNekoSettingsActivity {
                     final TextSettingsCell cell = (TextSettingsCell) holder.itemView;
                     final String title = LocaleController.getString(R.string.HgramOcrModelsTitle);
                     if (separator > 0 && separator + 3 < status.length()) {
-                        cell.setTextAndValueAction(title, status.substring(0, separator), status.substring(separator + 3), divider);
+                        cell.setTextAndValue(title, status, divider);
                     } else {
                         cell.setTextAndValue(title, status, divider);
-                        cell.setValueEllipsizeToHalf(true);
                     }
                     break;
                 }

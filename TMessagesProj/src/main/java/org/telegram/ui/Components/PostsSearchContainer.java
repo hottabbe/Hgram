@@ -43,6 +43,8 @@ import org.telegram.ui.Stars.StarsIntroActivity;
 import org.telegram.ui.Stories.DarkThemeResourceProvider;
 import org.telegram.ui.Stories.recorder.ButtonWithCounterView;
 
+import xyz.nextalone.nagram.hgram.HgramCursorHistory;
+
 import java.util.ArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -58,13 +60,18 @@ public class PostsSearchContainer extends FrameLayout {
     private final ArrayList<MessageObject> newsMessages = new ArrayList<MessageObject>();
     private int newsMessagesLastRate;
     private boolean newsMessagesEndReached;
+    private long newsRawCursorPeerDialogId;
+    private int newsRawCursorMessageId;
 
     private final ArrayList<MessageObject> messages = new ArrayList<MessageObject>();
     private int lastRate;
     private boolean endReached;
+    private long rawCursorPeerDialogId;
+    private int rawCursorMessageId;
 
     private boolean loading;
     private String lastQuery;
+    private final HgramCursorHistory cursorHistory = new HgramCursorHistory();
 
     private final FrameLayout emptyParentView;
     private final LinearLayout emptyView;
@@ -192,12 +199,61 @@ public class PostsSearchContainer extends FrameLayout {
         }
     }
 
+    /** Drops already loaded posts that became hidden after a workspace change. */
+    public void filterHidden() {
+        boolean changed = false;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if (!xyz.nextalone.nagram.hgram.HgramSecretSpace.isVisible(currentAccount, messages.get(i).getDialogId())) {
+                messages.remove(i);
+                changed = true;
+            }
+        }
+        for (int i = newsMessages.size() - 1; i >= 0; i--) {
+            if (!xyz.nextalone.nagram.hgram.HgramSecretSpace.isVisible(currentAccount, newsMessages.get(i).getDialogId())) {
+                newsMessages.remove(i);
+                changed = true;
+            }
+        }
+        if (changed) {
+            updateEmptyView();
+            if (listView.adapter != null) {
+                listView.adapter.update(true);
+            }
+        }
+    }
+
     private boolean isLoadingVisible() {
         for (int i = 0; i < listView.getChildCount(); ++i) {
             if (listView.getChildAt(i) instanceof FlickerLoadingView)
                 return true;
         }
         return false;
+    }
+
+    private long getWireCursorPeer(boolean news) {
+        final long rawPeer = news ? newsRawCursorPeerDialogId : rawCursorPeerDialogId;
+        final int rawId = news ? newsRawCursorMessageId : rawCursorMessageId;
+        if (rawPeer != 0 && rawId != 0) {
+            return rawPeer;
+        }
+        if ((news ? newsMessagesLastRate : lastRate) != 0) {
+            return 0;
+        }
+        final ArrayList<MessageObject> list = news ? newsMessages : messages;
+        return list.isEmpty() ? 0 : list.get(list.size() - 1).getDialogId();
+    }
+
+    private int getWireCursorMessageId(boolean news) {
+        final long rawPeer = news ? newsRawCursorPeerDialogId : rawCursorPeerDialogId;
+        final int rawId = news ? newsRawCursorMessageId : rawCursorMessageId;
+        if (rawPeer != 0 && rawId != 0) {
+            return rawId;
+        }
+        if ((news ? newsMessagesLastRate : lastRate) != 0) {
+            return 0;
+        }
+        final ArrayList<MessageObject> list = news ? newsMessages : messages;
+        return list.isEmpty() ? 0 : list.get(list.size() - 1).getRealId();
     }
 
     private void load(final boolean pay) {
@@ -214,7 +270,18 @@ public class PostsSearchContainer extends FrameLayout {
             return;
         }
 
+        final int requestQueryId = queryid;
+        final long requestWirePeer = getWireCursorPeer(news);
+        final int requestWireId = getWireCursorMessageId(news);
+        final int requestWireRate = news ? newsMessagesLastRate : lastRate;
+        if (!pay && cursorHistory.isRepeated(requestQueryId, news,
+                requestWirePeer, requestWireId, requestWireRate)) {
+            return;
+        }
+
         loading = true;
+        cursorHistory.mark(requestQueryId, news,
+                requestWirePeer, requestWireId, requestWireRate);
 
         final MessagesController messagesController = MessagesController.getInstance(currentAccount);
         final ConnectionsManager connectionsManager = ConnectionsManager.getInstance(currentAccount);
@@ -223,24 +290,15 @@ public class PostsSearchContainer extends FrameLayout {
         req.flags |= 2;
         req.query = lastQuery;
         req.limit = 30;
-        if (news) {
-            if (!newsMessages.isEmpty()) {
-                final MessageObject lastMessage = newsMessages.get(newsMessages.size() - 1);
-                req.offset_rate = newsMessagesLastRate;
-                req.offset_id = lastMessage.getRealId();
-                req.offset_peer = messagesController.getInputPeer(lastMessage.messageOwner.peer_id);
-            } else {
-                req.offset_peer = new TLRPC.TL_inputPeerEmpty();
-            }
+        if (requestWirePeer != 0 && requestWireId != 0) {
+            req.offset_rate = requestWireRate;
+            req.offset_id = requestWireId;
+            req.offset_peer = messagesController.getInputPeer(requestWirePeer);
+        } else if (requestWireRate != 0) {
+            req.offset_rate = requestWireRate;
+            req.offset_peer = new TLRPC.TL_inputPeerEmpty();
         } else {
-            if (!messages.isEmpty()) {
-                final MessageObject lastMessage = messages.get(messages.size() - 1);
-                req.offset_rate = lastRate;
-                req.offset_id = lastMessage.getRealId();
-                req.offset_peer = messagesController.getInputPeer(lastMessage.messageOwner.peer_id);
-            } else {
-                req.offset_peer = new TLRPC.TL_inputPeerEmpty();
-            }
+            req.offset_peer = new TLRPC.TL_inputPeerEmpty();
         }
         final long paying;
         if (pay && flood != null) {
@@ -251,8 +309,15 @@ public class PostsSearchContainer extends FrameLayout {
         }
 
         reqId = connectionsManager.sendRequest(req, (res, err) -> AndroidUtilities.runOnUIThread(() -> {
+            if (xyz.nextalone.nagram.hgram.HgramPaginationGate.isStale(requestQueryId, queryid)) {
+                return;
+            }
             reqId = -1;
             loading = false;
+            if (err != null) {
+                cursorHistory.forget(requestQueryId, news,
+                        requestWirePeer, requestWireId, requestWireRate);
+            }
             emptyButton.setLoading(false);
             if (res instanceof TLRPC.messages_Messages) {
                 final TLRPC.messages_Messages r = (TLRPC.messages_Messages) res;
@@ -265,8 +330,29 @@ public class PostsSearchContainer extends FrameLayout {
 
                 final ArrayList<MessageObject> messages = news ? newsMessages : this.messages;
                 final boolean firstMessages = messages.isEmpty();
+                final TLRPC.Message rawTail = r.messages.isEmpty() ? null : r.messages.get(r.messages.size() - 1);
+                if (rawTail != null) {
+                    if (news) {
+                        newsRawCursorPeerDialogId = MessageObject.getDialogId(rawTail);
+                        newsRawCursorMessageId = rawTail.id;
+                    } else {
+                        rawCursorPeerDialogId = MessageObject.getDialogId(rawTail);
+                        rawCursorMessageId = rawTail.id;
+                    }
+                } else {
+                    if (news) {
+                        newsRawCursorPeerDialogId = 0;
+                        newsRawCursorMessageId = 0;
+                    } else {
+                        rawCursorPeerDialogId = 0;
+                        rawCursorMessageId = 0;
+                    }
+                }
                 for (TLRPC.Message message : r.messages) {
                     final MessageObject msg = new MessageObject(currentAccount, message, false, false);
+                    if (!xyz.nextalone.nagram.hgram.HgramSecretSpace.isVisible(currentAccount, msg.getDialogId())) {
+                        continue;
+                    }
                     if (!news) {
                         msg.setQuery(req.query);
                     }
@@ -302,9 +388,24 @@ public class PostsSearchContainer extends FrameLayout {
                     listView.scrollToPosition(0);
                 }
                 listView.adapter.update(true);
-                if (!messages.isEmpty() && !(news ? newsMessagesEndReached : endReached)) {
+                final boolean cursorAdvanced = getWireCursorPeer(news) != requestWirePeer
+                        || getWireCursorMessageId(news) != requestWireId
+                        || (news ? newsMessagesLastRate : lastRate) != requestWireRate;
+                final boolean end = news ? newsMessagesEndReached : endReached;
+                if (!messages.isEmpty() && !end) {
                     AndroidUtilities.runOnUIThread(() -> {
-                        if (!(news ? newsMessages : messages).isEmpty() && (!listView.canScrollVertically(1) || isLoadingVisible())) {
+                        if (requestQueryId == queryid && !(news ? newsMessages : messages).isEmpty()
+                                && (!listView.canScrollVertically(1) || isLoadingVisible())
+                                && xyz.nextalone.nagram.hgram.HgramPaginationGate.shouldAutoLoad(cursorAdvanced, end, requestQueryId, queryid)) {
+                            load(false);
+                        }
+                    });
+                }
+                if (xyz.nextalone.nagram.hgram.HgramPaginationGate.shouldContinue(
+                        messages.isEmpty(), cursorAdvanced, end, requestQueryId, queryid)) {
+                    AndroidUtilities.runOnUIThread(() -> {
+                        if (requestQueryId == queryid
+                                && xyz.nextalone.nagram.hgram.HgramPaginationGate.shouldAutoLoad(cursorAdvanced, end, requestQueryId, queryid)) {
                             load(false);
                         }
                     });
@@ -369,21 +470,31 @@ public class PostsSearchContainer extends FrameLayout {
             return;
 
         cancel();
+        cancelFlood();
         lastQuery = q;
+        cursorHistory.reset();
         if (TextUtils.isEmpty(q)) {
             lastRate = 0;
+            rawCursorPeerDialogId = 0;
+            rawCursorMessageId = 0;
+            if (newsMessages.isEmpty()) {
+                newsMessagesLastRate = 0;
+                newsRawCursorPeerDialogId = 0;
+                newsRawCursorMessageId = 0;
+            }
             queryid++;
             endReached = false;
             messages.clear();
 
             load(false);
         } else {
-            loadFlood(q);
-
             lastRate = 0;
+            rawCursorPeerDialogId = 0;
+            rawCursorMessageId = 0;
             queryid++;
             endReached = false;
             messages.clear();
+            loadFlood(q);
         }
         updateEmptyView();
         listView.scrollToPosition(0);
@@ -393,6 +504,16 @@ public class PostsSearchContainer extends FrameLayout {
     private boolean floodLoading;
     private boolean wasEmptyOnFloodLoad;
     private int floodLoadingRequestId = -1;
+    private int floodRequestToken;
+
+    private void cancelFlood() {
+        floodRequestToken++;
+        if (floodLoadingRequestId >= 0) {
+            ConnectionsManager.getInstance(currentAccount).cancelRequest(floodLoadingRequestId, true);
+            floodLoadingRequestId = -1;
+        }
+        floodLoading = false;
+    }
 
     private void loadFlood(String query) {
         if (floodLoadingRequestId >= 0) {
@@ -403,13 +524,22 @@ public class PostsSearchContainer extends FrameLayout {
             wasEmptyOnFloodLoad = isEmpty && !(messages.isEmpty() && endReached);
         }
         floodLoading = true;
+        final int requestGeneration = queryid;
+        final String requestQuery = query;
+        final int requestToken = ++floodRequestToken;
         final TLRPC.TL_channels_checkSearchPostsFlood req = new TLRPC.TL_channels_checkSearchPostsFlood();
         if (!TextUtils.isEmpty(query)) {
             req.flags |= 1;
             req.query = query;
         }
         floodLoadingRequestId = ConnectionsManager.getInstance(currentAccount).sendRequest(req, (res, err) -> AndroidUtilities.runOnUIThread(() -> {
+            if (requestToken != floodRequestToken
+                    || xyz.nextalone.nagram.hgram.HgramPaginationGate.isStaleQuery(
+                            requestGeneration, queryid, requestQuery, lastQuery)) {
+                return;
+            }
             floodLoading = false;
+            floodLoadingRequestId = -1;
             if (res instanceof TLRPC.SearchPostsFlood) {
                 flood = (TLRPC.SearchPostsFlood) res;
                 if (flood.query_is_free) {
@@ -426,6 +556,7 @@ public class PostsSearchContainer extends FrameLayout {
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
+        filterHidden();
         if (flood == null) {
             loadFlood(null);
         }
@@ -454,6 +585,9 @@ public class PostsSearchContainer extends FrameLayout {
                 items.add(UItem.asGraySection(getString(R.string.SearchPostsHeaderNews)));
             }
             for (MessageObject msg : newsMessages) {
+                if (!xyz.nextalone.nagram.hgram.HgramSecretSpace.isVisible(currentAccount, msg.getDialogId())) {
+                    continue;
+                }
                 items.add(UItem.asSearchMessage(msg));
             }
         } else {
@@ -461,6 +595,9 @@ public class PostsSearchContainer extends FrameLayout {
                 items.add(UItem.asGraySection(getString(R.string.SearchPostsHeaderFound)));
             }
             for (MessageObject msg : messages) {
+                if (!xyz.nextalone.nagram.hgram.HgramSecretSpace.isVisible(currentAccount, msg.getDialogId())) {
+                    continue;
+                }
                 items.add(UItem.asSearchMessage(msg));
             }
         }
@@ -479,6 +616,9 @@ public class PostsSearchContainer extends FrameLayout {
     private void onItemClick(UItem item, View view, int position, float x, float y) {
         if (item.object instanceof MessageObject) {
             final MessageObject msg = (MessageObject) item.object;
+            if (!xyz.nextalone.nagram.hgram.HgramSecretSpace.canOpenDialog(currentAccount, msg.getDialogId())) {
+                return;
+            }
             Bundle args = new Bundle();
             if (msg.getDialogId() >= 0) {
                 args.putLong("user_id", msg.getDialogId());

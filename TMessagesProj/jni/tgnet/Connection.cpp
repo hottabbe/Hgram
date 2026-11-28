@@ -76,14 +76,8 @@ void Connection::onReceivedData(NativeByteBuffer *buffer) {
     if (connectionType == ConnectionTypeGeneric || connectionType == ConnectionTypeTemp || connectionType == ConnectionTypeGenericMedia) {
         receivedDataAmount += buffer->limit();
         if (receivedDataAmount >= 512 * 1024) {
-            // Shrinking back to the fast floor would make a slow link close healthy sockets
-            // again as soon as some data starts flowing.
-            int32_t minTimeout = ConnectionsManager::getInstance(currentDatacenter->instanceNum).networkSlow ? 10 : 4;
-            if (currentTimeout > minTimeout) {
+            if (currentTimeout > 4) {
                 currentTimeout -= 2;
-                if (currentTimeout < minTimeout) {
-                    currentTimeout = minTimeout;
-                }
                 setTimeout(currentTimeout);
             }
             receivedDataAmount = 0;
@@ -145,16 +139,9 @@ void Connection::onReceivedData(NativeByteBuffer *buffer) {
                     setTimeout(25);
                 }
             } else if (connectionType == ConnectionTypeDownload) {
-                if (ConnectionsManager::getInstance(currentDatacenter->instanceNum).networkSlow) {
-                    setTimeout(40);
-                } else {
-                    setTimeout(25);
-                }
+                setTimeout(25);
             } else {
-                // A narrow link with a high RTT needs more time even for a short response;
-                // killing the socket after 4 seconds only produces retry storms.
-                bool slow = ConnectionsManager::getInstance(currentDatacenter->instanceNum).networkSlow;
-                setTimeout(slow && currentTimeout < 10 ? 10 : currentTimeout);
+                setTimeout(currentTimeout);
             }
         }
         hasSomeDataSinceLastConnect = true;
@@ -396,11 +383,10 @@ void Connection::connect() {
             setTimeout(25);
         }
     } else {
-        bool slow = ConnectionsManager::getInstance(currentDatacenter->instanceNum).networkSlow;
         if (isTryingNextPort) {
-            setTimeout(slow ? 12 : 8);
+            setTimeout(8);
         } else {
-            setTimeout(slow ? 20 : 12);
+            setTimeout(12);
         }
     }
     connectionInProcess = false;
@@ -436,9 +422,7 @@ void Connection::setHasUsefullData() {
     if (!usefullData) {
         usefullDataReceiveTime = ConnectionsManager::getInstance(currentDatacenter->instanceNum).getCurrentTimeMonotonicMillis();
         usefullData = true;
-        // On a narrow link a 50 ms retry is pointless: the carrier drop and the RTT alone
-        // take longer, and the immediate retry only creates another failed handshake.
-        lastReconnectTimeout = ConnectionsManager::getInstance(currentDatacenter->instanceNum).networkSlow ? 500 : 50;
+        lastReconnectTimeout = 50;
     }
 }
 
@@ -678,13 +662,8 @@ void Connection::onDisconnectedInternal(int32_t reason, int32_t error) {
     if (LOGS_ENABLED) DEBUG_D("connection(%p, account%u, dc%u, type %d) disconnected with reason %d", this, currentDatacenter->instanceNum, currentDatacenter->getDatacenterId(), connectionType, reason);
     bool switchToNextPort = reason == 2 && wasConnected && (!hasSomeDataSinceLastConnect || currentDatacenter->isCustomPort(currentAddressFlags)) || forceNextPort;
     if (connectionType == ConnectionTypeGeneric || connectionType == ConnectionTypeTemp || connectionType == ConnectionTypeGenericMedia) {
-        bool slow = ConnectionsManager::getInstance(currentDatacenter->instanceNum).networkSlow;
-        uint32_t maxTimeout = slow ? 30 : 16;
-        if (wasConnected && reason == 2 && currentTimeout < maxTimeout) {
+        if (wasConnected && reason == 2 && currentTimeout < 16) {
             currentTimeout += 2;
-            if (currentTimeout > maxTimeout) {
-                currentTimeout = maxTimeout;
-            }
         }
     }
     generation++;
@@ -727,19 +706,10 @@ void Connection::onDisconnectedInternal(int32_t reason, int32_t error) {
         if (error == 0x68 || error == 0x71) {
             if (connectionType != ConnectionTypeProxy) {
                 waitForReconnectTimer = true;
-                uint32_t maxBackoff = ConnectionsManager::getInstance(currentDatacenter->instanceNum).networkSlow ? 2000 : 400;
-                // Every DC connection would otherwise retry at exactly the same moment after a
-                // network drop; a small jitter spreads the reconnect burst instead of letting
-                // all sockets collide on the freshly restored link.
-                uint32_t jitter = lastReconnectTimeout / 4;
-                uint32_t reconnectDelay = lastReconnectTimeout;
-                if (jitter > 0) {
-                    reconnectDelay += (uint32_t) (rand() % (jitter + 1));
-                }
-                reconnectTimer->setTimeout(reconnectDelay, false);
+                reconnectTimer->setTimeout(lastReconnectTimeout, false);
                 lastReconnectTimeout *= 2;
-                if (lastReconnectTimeout > maxBackoff) {
-                    lastReconnectTimeout = maxBackoff;
+                if (lastReconnectTimeout > 400) {
+                    lastReconnectTimeout = 400;
                 }
                 reconnectTimer->start();
             }

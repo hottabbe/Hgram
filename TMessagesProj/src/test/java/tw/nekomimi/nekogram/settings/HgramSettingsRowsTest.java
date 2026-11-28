@@ -16,6 +16,7 @@ public class HgramSettingsRowsTest {
         assertTrue(contains(rows, HgramSettingsActivity.ROW_VOSK_MODELS));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_EXIF_CLEAN));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_HAPTIC_TOGGLE));
+        assertTrue(contains(rows, HgramSettingsActivity.ROW_HIGH_REFRESH_BOOST));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_HAPTIC_BASE));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_HAPTIC_BASE + 14));
         assertTrue(contains(rows, HgramSettingsActivity.ROW_DOWNLOAD_THREADS));
@@ -97,15 +98,19 @@ public class HgramSettingsRowsTest {
     }
 
     @Test
-    public void summarizerLivesInChatAndCompactAlbumsOpensFeed() {
+    public void summarizerLivesInChatAndUnavailablePinIsAbsent() {
         int[] rows = HgramSettingsActivity.ROWS;
         int chat = indexOf(rows, HgramSettingsActivity.ROW_HEADER_CHAT);
-        int pin = indexOf(rows, HgramSettingsActivity.ROW_PIN_TO_SCREEN);
         int summarizer = indexOf(rows, HgramSettingsActivity.ROW_SUMMARIZER_ENABLE);
         int feed = indexOf(rows, HgramSettingsActivity.ROW_HEADER_FEED);
         int compact = indexOf(rows, HgramSettingsActivity.ROW_COMPACT_ALBUMS);
-        assertTrue(chat < pin && pin < summarizer && summarizer < feed);
+        assertTrue(chat < summarizer && summarizer < feed);
         assertEquals(feed + 1, compact);
+        assertEquals(-1, indexOf(rows, HgramSettingsActivity.ROW_PIN_TO_SCREEN));
+        assertFalse(contains(rows, HgramSettingsActivity.ROW_PIN_TO_SCREEN));
+        assertFalse(contains(
+                HgramSettingsActivity.buildSearchVisibleRows(searchKeep("vosk", true, "pin")),
+                HgramSettingsActivity.ROW_PIN_TO_SCREEN));
     }
 
     private static boolean contains(int[] rows, int id) {

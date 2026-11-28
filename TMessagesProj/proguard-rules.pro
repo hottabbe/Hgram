@@ -12,10 +12,15 @@
     public <init>();
 }
 
-# ML Kit and Firebase load models, providers and metadata reflectively. Keep only
-# these library trees; do not widen the keep to the rest of the application.
--keep class com.google.mlkit.** { *; }
--keep class com.google.firebase.** { *; }
+# Firebase/ML Kit/GMS AARs ship their own consumer rules. Only the reflective
+# ComponentRegistrar contract needs an explicit local rule.
+
+# AndroidX Startup instantiates initializers from manifest metadata by class name.
+-keep class androidx.startup.** { *; }
+-keep class * implements androidx.startup.Initializer { *; }
+-keepclassmembers class * implements androidx.startup.Initializer {
+    public <init>();
+}
 
 -keep @interface androidx.annotation.Keep
 -keep @androidx.annotation.Keep class * { *; }
@@ -24,7 +29,24 @@
 -keep class org.webrtc.* { *; }
 -keep class org.webrtc.audio.* { *; }
 -keep class org.webrtc.voiceengine.* { *; }
--keep class org.telegram.messenger.* { *; }
+# org.telegram.messenger: only the names that native code and reflection resolve at runtime.
+# Before changing these rules see TMessagesProj/proguard-checklist.md and run Tools/r8_keep_check.py.
+# Static JNI exports Java_org_telegram_messenger_<Class>_<method> (Utilities, Intro, MediaController, MrzRecognizer).
+-keepclasseswithmembers,includedescriptorclasses class org.telegram.messenger.* {
+    native <methods>;
+}
+# gifvideo.cpp: FindClass + GetMethodID, called from the native reader.
+-keep class org.telegram.messenger.AnimatedFileDrawableStream {
+    int read(int, int);
+    void cancel();
+    boolean isFinishedLoadingFile();
+    boolean isCanceled();
+    java.lang.String getFinishedFilePath();
+}
+# NotificationBadge.BADGERS holds class literals, instances are made with Class.newInstance().
+-keep class org.telegram.messenger.NotificationBadge$* implements org.telegram.messenger.NotificationBadge$Badger {
+    <init>();
+}
 -keep class org.telegram.messenger.camera.* { *; }
 -keep class org.telegram.messenger.secretmedia.* { *; }
 -keep class org.telegram.messenger.support.* { *; }
@@ -50,6 +72,16 @@
 # https://developers.google.com/ml-kit/known-issues#android_issues
 -keep class com.google.mlkit.nl.languageid.internal.LanguageIdentificationJni { *; }
 
+# WidgetSandbox: JNI_OnLoad uses RegisterNatives; backend methods are called by native workers.
+-keep class org.telegram.utils.twidget.WidgetSandboxNative { *; }
+# The client's share (filters, gesture arbiter) in the client library: static Java_* exports, resolved by name.
+-keepclasseswithmembers,includedescriptorclasses class org.telegram.utils.twidget.WidgetClientNative {
+    native <methods>;
+}
+-keep class org.telegram.utils.twidget.WidgetSandboxBackend { *; }
+# The isolated engine process's backend (WidgetEngineService): the same JNI callbacks.
+-keep class org.telegram.utils.twidget.WidgetEngineBackend { *; }
+
 # Huawei Services
 -keep class com.huawei.hianalytics.**{ *; }
 -keep class com.huawei.updatesdk.**{ *; }
@@ -69,17 +101,35 @@
 -dontwarn org.scilab.forge.jlatexmath.**
 
 # Use -keep to explicitly keep any other classes shrinking would remove
-#-dontoptimize
+# R8 keep rules cannot match <clinit>; without this, pure static field stores are
+# removed even though the class is kept. Optimization stays off, shrinking remains on.
+-dontoptimize
 -dontobfuscate
 
 # R8-GUARD-1: keep reflection/JNI/DI-sensitive application surface unchanged.
--keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*
--keep class org.telegram.ui.** { *; }
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 -keep class xyz.nextalone.** { *; }
 -keep class tw.nekomimi.** { *; }
--keep class com.exteragram.** { *; }
--keep class com.google.gson.** { *; }
--keep class io.objectbox.** { *; }
+
+# R8 drops pure static-field stores from <clinit>; keep rules cannot match <clinit>
+# (the rule is reported as matching nothing). HgramConfig therefore uses explicit
+# loaded flags instead of relying on -1 static defaults.
+
+# Gson models and ObjectBox entities live under tw/org.telegram and are kept
+# above; their library internals are covered by the AAR consumer rules.
+
+# Native methods may be resolved by name or registered from JNI.
+-keepclasseswithmembers class * {
+    native <methods>;
+}
+
+# values()/valueOf() are used by config serialization and runtime lookups.
+-keepclassmembers enum * {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+
+-keep class org.telegram.** { *; }
 
 -keep class org.openintents.openpgp.** { *; }
 
@@ -130,4 +180,3 @@
 -keep class * implements com.google.gson.TypeAdapterFactory
 -keep class * implements com.google.gson.JsonSerializer
 -keep class * implements com.google.gson.JsonDeserializer
--keep class xyz.nextalone.nagram.hgram.HgramRnnoise { *; }

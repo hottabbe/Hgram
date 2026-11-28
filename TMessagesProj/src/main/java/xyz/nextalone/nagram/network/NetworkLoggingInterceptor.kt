@@ -82,14 +82,14 @@ object NetworkLoggingInterceptor {
             if (redactBody) {
                 responseBody = "[REDACTED]"
             } else {
-                try {
-                    responseBody = response.bodyAsText()
-                    if (responseBody.length > 5000) {
-                        responseBody = responseBody.substring(0, 5000) + "\n... (truncated)"
-                    }
-                } catch (e: Exception) {
-                    responseBody = "Unable to read response body: ${e.message}"
+            try {
+                responseBody = response.bodyAsText()
+                if (responseBody.length > 5000) {
+                    responseBody = responseBody.substring(0, 5000) + "\n... (truncated)"
                 }
+            } catch (e: Exception) {
+                responseBody = "Unable to read response body: ${e.message}"
+            }
             }
 
             return response

@@ -40,6 +40,7 @@ final class HgramSettingsHints {
     static final int ROW_EXIF_CLEAR = 79;
     static final int ROW_OCR_LONG_PRESS = 80;
     static final int ROW_OCR_MODELS = 81;
+    static final int ROW_HIGH_REFRESH_BOOST = 82;
 
     private HgramSettingsHints() {
     }
@@ -70,6 +71,7 @@ final class HgramSettingsHints {
             case ROW_WEAK_NETWORK: return R.string.HgramHintWeakNetwork;
             case ROW_NOTIF_MEDIA_STYLE: return R.string.HgramHintNotifMediaStyle;
             case ROW_HAPTIC_TOGGLE: return R.string.HgramHintHapticEnabled;
+            case ROW_HIGH_REFRESH_BOOST: return R.string.HgramHintHighRefreshBoost;
             case ROW_SUMMARIZER_ENABLE:
             case ROW_SUMMARIZER_TRIGGER:
             case ROW_SUMMARIZER_KEY:

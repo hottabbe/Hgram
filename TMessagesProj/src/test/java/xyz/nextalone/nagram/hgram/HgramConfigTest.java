@@ -23,6 +23,12 @@ public class HgramConfigTest {
     }
 
     @Test
+    public void defaultsKeepUpstreamScreenshotAndNotificationBehavior() {
+        assertFalse(HgramConfig.isAllowScreenshotsEnabled());
+        assertFalse(HgramConfig.isNotificationImportanceBoostEnabled());
+    }
+
+    @Test
     public void resetAlsoLeavesPrivateMode() {
         HgramConfig.setAntiPeekGestureEnabled(true);
         HgramConfig.setAntiPeekActive(true);

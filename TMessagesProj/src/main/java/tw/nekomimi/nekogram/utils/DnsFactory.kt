@@ -137,8 +137,8 @@ object DnsFactory {
                         if (resolved.compareAndSet(false, true)) {
                             jobs.forEach { it.cancel() }
                             cont.resume(null)
-                        }
                     }
+                }
                     jobs.add(timeoutJob)
                 }
 

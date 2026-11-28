@@ -19,7 +19,6 @@ VERSION_NAME = read_env("VERSION_NAME")
 VERSION_CODE = read_env("VERSION_CODE")
 COMMIT_HASH = read_env("GITHUB_SHA")
 COMMIT_MESSAGE = read_env("COMMIT_MESSAGE")
-GITHUB_REPOSITORY = os.environ.get("GITHUB_REPOSITORY", "hottabbe/Hgram")
 
 APK_CHANNEL_ID = "@NekoXApks"
 UPDATE_CHANNEL_ID = "@NekogramX"
@@ -117,7 +116,7 @@ def sendRelease():
         entities.append(copy)
     text += admin_resp["text"]
     text += "\n\n"
-    text += addEntity(entities, text, "text_link", "GitHub Release", f"https://github.com/{GITHUB_REPOSITORY}/releases/tag/{VERSION_NAME}")
+    text += addEntity(entities, text, "text_link", "GitHub Release", f"https://github.com/NekoX-Dev/NekoX/releases/{VERSION_NAME}")
     text += " | "
     text += addEntity(entities, text, "text_link", "Apks", f'https://t.me/{APK_CHANNEL_ID.replace("@","")}/{apk_channel_first_id}')
     text += " | "
@@ -137,7 +136,7 @@ def sendCIRelease():
     apk = os.path.join(APK_FOLDER, apks[0])
     entities = []
     message = f"CI Build\n\n{COMMIT_MESSAGE}\n\n"
-    message += addEntity(entities, message, "text_link", COMMIT_HASH[0:8], f"https://github.com/{GITHUB_REPOSITORY}/commit/{COMMIT_HASH}")
+    message += addEntity(entities, message, "text_link", COMMIT_HASH[0:8], f"https://github.com/NekoX-Dev/NekoX/commit/{COMMIT_HASH}")
     sendDocument(user_id=CI_CHANNEL_ID, path = apk, message=message, )
 
 
@@ -162,3 +161,4 @@ if __name__ == '__main__':
         sendRelease()
     else:
         print("unknown mode")
+

@@ -306,13 +306,13 @@ class NetworkRequestBuilder(
                 onCompleteCallback?.invoke()
 
                 NetworkResponse(
-                    statusCode = responseCode,
-                    body = responseBody,
-                    bodyBytes = responseBodyBytes,
-                    headers = response.headers.entries().joinToString("\n") { "${it.key}: ${it.value.joinToString(", ")}" },
-                    responseTime = responseTime,
-                    isSuccess = response.status.isSuccess()
-                )
+                statusCode = responseCode,
+                body = responseBody,
+                bodyBytes = responseBodyBytes,
+                headers = response.headers.entries().joinToString("\n") { "${it.key}: ${it.value.joinToString(", ")}" },
+                responseTime = responseTime,
+                isSuccess = response.status.isSuccess()
+            )
             }
 
         } catch (e: HgramVoiceSummarizer.TransportBlockedException) {

@@ -1,12 +1,13 @@
+import java.nio.file.Paths
 
 apply plugin: "com.android.application"
-apply plugin: "com.android.legacy-kapt"
+apply plugin: "kotlin-android"
 apply plugin: "org.jetbrains.kotlin.plugin.serialization"
-// apply plugin: "io.sentry.android.gradle"
 apply plugin: "io.objectbox"
 
 apply plugin: 'org.telegram.build-plugin'
 apply plugin: 'org.telegram.build-app-plugin'
+apply plugin: 'xyz.nagram.auto-patch-plugin'
 apply plugin: 'idea'
 
 idea {
@@ -33,9 +34,11 @@ idea {
 }
 
 def verName = APP_VERSION_NAME
-def verCode = 1313
-// Opt-in R8 experiment; default release keeps minify/shrink disabled.
-def hgramR8 = project.hasProperty("hgramR8")
+def verCode = 1314
+// R8 is enabled for release by default; pass -PnoHgramR8 for an unminified diagnostic build.
+def hgramR8 = !project.hasProperty("noHgramR8")
+// Diagnostic only: makes the R8 release debuggable so Tester can attach jdb/run-as and dump threads.
+def hgramR8Debuggable = project.hasProperty("hgramR8Debuggable")
 
 
 def officialVer = APP_VERSION_NAME
@@ -67,9 +70,7 @@ configurations {
 def keystorePwd = null
 def alias = null
 def pwd = null
-def sentry_token = System.getenv("SENTRY_AUTH_TOKEN")
 def nagram_build_args = System.getenv("NAGRAM_BUILD_ARGS")
-def disableCMakeRelWithDebInfo = System.getenv("COMPILE_NATIVE") == null
 
 Properties properties
 def base64 = System.getenv("LOCAL_PROPERTIES")
@@ -81,33 +82,16 @@ if (base64 != null && !base64.isBlank()) {
     properties.load(project.rootProject.file("local.properties").newDataInputStream())
 }
 
-def keystoreFile = null
 if (properties != null) {
     keystorePwd = properties.getProperty("KEYSTORE_PASS")
     alias = properties.getProperty("ALIAS_NAME")
     pwd = properties.getProperty("ALIAS_PASS")
-    keystoreFile = properties.getProperty("KEYSTORE_FILE")
-    sentry_token = properties.getProperty("SENTRY_AUTH_TOKEN", sentry_token)
     nagram_build_args = properties.getProperty("NAGRAM_BUILD_ARGS", nagram_build_args)
 }
 
 keystorePwd = keystorePwd ?: System.getenv("KEYSTORE_PASS")
-alias = alias ?: System.getenv("ALIAS_NAME") ?: "key0"
-pwd = pwd ?: System.getenv("ALIAS_PASS") ?: keystorePwd
-keystoreFile = keystoreFile ?: System.getenv("KEYSTORE_FILE")
-
-File releaseStoreFile
-if (keystoreFile != null && !keystoreFile.isBlank()) {
-    releaseStoreFile = rootProject.file(keystoreFile).exists() ? rootProject.file(keystoreFile) : project.file(keystoreFile)
-} else if (rootProject.file("key.jks").exists()) {
-    releaseStoreFile = rootProject.file("key.jks")
-} else if (project.file("key.jks").exists()) {
-    releaseStoreFile = project.file("key.jks")
-} else {
-    releaseStoreFile = project.file("release.keystore")
-}
-
-def sentry_upload = sentry_token != null && !sentry_token.isEmpty()
+alias = alias ?: System.getenv("ALIAS_NAME")
+pwd = pwd ?: System.getenv("ALIAS_PASS")
 
 def targetTask = ""
 if (!gradle.startParameter.taskNames.isEmpty()) {
@@ -117,11 +101,14 @@ if (!gradle.startParameter.taskNames.isEmpty()) {
 }
 
 def nativeTarget = System.getenv("NATIVE_TARGET")
-if (nativeTarget == null) nativeTarget = project.findProperty("nativeTarget") ?: ""
+if (nativeTarget == null) nativeTarget = ""
+
+def isWindows = System.getProperties().getProperty("os.name").toUpperCase().indexOf("WINDOWS") != -1
 
 android {
-    compileSdk = 36
-    ndkVersion rootProject.ext.ndkVersion // 29.0.14206865
+    compileSdkVersion 36
+    buildToolsVersion '36.0.0'
+    ndkVersion rootProject.ext.ndkVersion // 27.2.12479018
 
     defaultConfig.applicationId = "org.hgram"
 
@@ -135,17 +122,11 @@ android {
             java {
                 srcDirs "src/main/java"
             }
-            jniLibs {
-                srcDir "src/main/libs"
-            }
         }
 
         release {
             java {
                 srcDirs "src/main/java"
-            }
-            jniLibs {
-                srcDir "src/main/libs"
             }
         }
     }
@@ -156,7 +137,7 @@ android {
         }
     }
 
-    lint {
+    lintOptions {
         disable 'MissingTranslation'
         disable 'ExtraTranslation'
         disable 'BlockedPrivateApi'
@@ -190,15 +171,15 @@ android {
     }
 
     defaultConfig {
-        minSdk = 23
+        minSdkVersion 23
         //noinspection ExpiredTargetSdkVersion,OldTargetApi
-        targetSdk = 36
+        targetSdkVersion 36
 
         versionName verName
         versionCode verCode
 
-        def appId = "11535358"
-        def appHash = "33d372962fadb01df47e6ceed4e33cd6"
+        def appId = "0"
+        def appHash = ""
 
         //obtain your own keys at https://core.telegram.org/api/obtaining_api_id
 
@@ -218,11 +199,17 @@ android {
             cmake {
                 version '3.22.1'
                 arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-23' //, '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON'
-                // Nagram: reuse compiled objects via ccache (if installed) so clean rebuilds don't recompile absl/webrtc/tgnet
-                if (new File('/usr/bin/ccache').exists() || new File('/usr/local/bin/ccache').exists()) {
-                    arguments '-DCMAKE_C_COMPILER_LAUNCHER=ccache', '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache'
+                System.getenv('PATH').split(File.pathSeparator).any { path ->
+                    var file = Paths.get("${path}${File.separator}ccache${if (isWindows) ".exe" else ""}").toFile()
+                    if (file.exists()) {
+                        println("Using ccache ${file.getAbsolutePath()} isWindows ${isWindows}")
+                        arguments += "-DCMAKE_C_COMPILER_LAUNCHER=${file.getAbsolutePath()}"
+                        arguments += "-DCMAKE_CXX_COMPILER_LAUNCHER=${file.getAbsolutePath()}"
+                        arguments += "-DANDROID_CCACHE=${file.getAbsolutePath()}"
+                        return true
+                    }
                 }
-                targets 'tmessages.49'
+                targets 'tmessages.49', 'twidget'
             }
         }
     }
@@ -231,6 +218,10 @@ android {
         language {
             enableSplit = false
         }
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_11.toString()
     }
 
     testOptions {
@@ -244,14 +235,10 @@ android {
 
     signingConfigs {
         release {
-            storeFile releaseStoreFile
-
-            if (keystorePwd && alias && pwd) {
-                storePassword keystorePwd
-                keyAlias alias
-                keyPassword pwd
-            }
-
+            storeFile project.file("release.keystore")
+            storePassword keystorePwd
+            keyAlias alias
+            keyPassword pwd
             enableV1Signing true
             enableV2Signing true
             enableV3Signing true
@@ -264,18 +251,11 @@ android {
             debuggable true
             jniDebuggable true
             multiDexEnabled true
-            signingConfig signingConfigs.debug
-
-            externalNativeBuild {
-                cmake {
-                    arguments "-DNAGRAM_DEBUG_BUILD=ON"
-                }
-            }
+            signingConfig signingConfigs.release
         }
 
-
         release {
-            debuggable false
+            debuggable hgramR8Debuggable
             jniDebuggable false
             minifyEnabled hgramR8
             shrinkResources hgramR8
@@ -286,168 +266,47 @@ android {
         }
     }
 
-    gradle.taskGraph.whenReady { graph ->
-        def releaseRequested = graph.allTasks.any { task ->
-            task.project == project &&
-                    task.name.toLowerCase().matches(".*(release).*") &&
-                    (task.name.startsWith("assemble") ||
-                            task.name.startsWith("bundle") ||
-                            task.name.startsWith("package"))
-        }
+    flavorDimensions "version"
 
-        if (releaseRequested && (!keystorePwd || !alias || !pwd)) {
-            throw new GradleException(
-                    "Release signing requires KEYSTORE_PASS, ALIAS_NAME and ALIAS_PASS"
-            )
-        }
-    }
-
-    flavorDimensions += "version"
-
-    packaging {
+    packagingOptions {
         jniLibs {
             excludes += ['/fabric/**', '/META-INF/native-image/**']
             useLegacyPackaging true
         }
         resources {
-            excludes += [
-                '/fabric/**', '/META-INF/*.version', '/META-INF/*.kotlin_module',
-                '/META-INF/native-image/**', '/builddef.lst', '/*.txt', '/DebugProbesKt.bin',
-                '/okhttp3/internal/publicsuffix/NOTICE', 'META-INF/INDEX.LIST',
-                'META-INF/LICENSE*', 'META-INF/NOTICE*', 'META-INF/DEPENDENCIES*',
-                'META-INF/AL2.0', 'META-INF/LGPL2.1', 'META-INF/*.md'
-            ]
+            excludes += ['/fabric/**', '/META-INF/*.version', '/META-INF/*.kotlin_module', '/META-INF/native-image/**', '/builddef.lst', '/*.txt', '/DebugProbesKt.bin', '/okhttp3/internal/publicsuffix/NOTICE']
+            excludes += ["META-INF/INDEX.LIST"]  // hutool
         }
-
-        def lib = "libtmessages.*.so"
-        pickFirst "lib/armeabi-v7a/$lib"
-        pickFirst "lib/arm64-v8a/$lib"
     }
 
     buildFeatures {
+        aidl true
         buildConfig true
     }
 
     tasks.configureEach { task ->
-        def prebuiltExists = project.file("src/main/libs").exists() && project.file("src/main/libs").listFiles()?.length > 0
-        if (prebuiltExists && ((task.name.endsWith("Ndk") || task.name.startsWith("generateJsonModel") || task.name.startsWith("externalNativeBuild"))) && !task.name.contains("Debug")) {
-            task.enabled = false
-        }
-        if (task.name.contains("uploadCrashlyticsMappingFile")) {
-            enabled = false
-        }
-        if (disableCMakeRelWithDebInfo && task.name.contains("CMakeRelWithDebInfo")) {
-            enabled = false
-        }
-    }
-
-    tasks.configureEach { task ->
-        if (task.name.startsWith("uploadCrashlyticsMappingFile")) {
-            task.enabled = false
-        } else if (task.name.contains("Crashlytics") && task.name.contains("NoGcm")) {
-            task.enabled = false
-        } else if (task.name.endsWith("GoogleServices") && task.name.contains("NoGcm")) {
+        if (task.name.endsWith("GoogleServices") && task.name.contains("NoGcm")) {
             task.enabled = false
         } else if (task.name.contains("buildCMakeDebug") && nagram_build_args != null && nagram_build_args.contains("skip_buildCMakeDebug")) {
             task.enabled = false
         }
     }
 
+    applicationVariants.configureEach { variant ->
+        variant.outputs.configureEach { output ->
+            String gramName = "Hgram"
+            String first = String.format("%s-v%s(%s)", gramName, versionName, versionCode)
+            String name = outputFileName.replace("TMessagesProj", first)
+            name = name.replace("-release", hgramR8Debuggable ? "-debuggable" : "")
+            outputFileName = name
+        }
+    }
+
     namespace "org.telegram.messenger"
 }
 
-def hgramNativeMarker = "signature verification skipped".getBytes("US-ASCII")
-
-def hgramContainsMarker = { File file, byte[] marker ->
-    def stream = new java.io.BufferedInputStream(new java.io.FileInputStream(file))
-    try {
-        byte[] buffer = new byte[64 * 1024]
-        int carry = 0
-        int read
-        boolean found = false
-        while (!found && (read = stream.read(buffer, carry, buffer.length - carry)) > 0) {
-            int total = carry + read
-            int limit = total - marker.length
-            for (int i = 0; i <= limit && !found; i++) {
-                boolean match = true
-                for (int j = 0; j < marker.length; j++) {
-                    if (buffer[i + j] != marker[j]) {
-                        match = false
-                        break
-                    }
-                }
-                found = match
-            }
-            if (!found) {
-                carry = Math.min(marker.length - 1, total)
-                System.arraycopy(buffer, total - carry, buffer, 0, carry)
-            }
-        }
-        return found
-    } finally {
-        stream.close()
-    }
-}
-
-def verifyHgramNativeRelease = tasks.register("verifyHgramNativeRelease") {
-    group = "verification"
-    description = "Fails release builds that package debug libtmessages prebuilts."
-    doLast {
-        File libsDir = project.file("src/main/libs")
-        if (!libsDir.exists()) {
-            logger.lifecycle("Hgram native guard: src/main/libs is absent, OK")
-            return
-        }
-        List<File> libs = project.fileTree(libsDir) { include "**/libtmessages*.so" }.files.toList()
-        if (libs.isEmpty()) {
-            logger.lifecycle("Hgram native guard: no libtmessages*.so, OK")
-            return
-        }
-        List<File> offenders = libs.findAll { hgramContainsMarker(it, hgramNativeMarker) }
-        if (!offenders.isEmpty()) {
-            throw new GradleException("Hgram native guard: debug prebuilt contains '" +
-                    "signature verification skipped" + "': " +
-                    offenders.collect { it.absolutePath }.join(", ") +
-                    ". Rebuild release native libraries with bin/libs/native.sh.")
-        }
-        logger.lifecycle("Hgram native guard: " + libs.size() + " release prebuilt(s), OK")
-    }
-}
-
-tasks.matching { it.name == "preReleaseBuild" || it.name == "mergeReleaseNativeLibs" }.configureEach {
-    dependsOn verifyHgramNativeRelease
-}
-
-androidComponents {
-    onVariants(selector().all()) { variant ->
-        variant.outputs.forEach { output ->
-            String gramName = "Hgram"
-            String first = String.format("%s-v%s(%s)", gramName, verName, verCode)
-            try {
-                if (output.hasProperty('outputFileName')) {
-                    def currentName = output.outputFileName instanceof org.gradle.api.provider.Property ? output.outputFileName.get() : output.outputFileName
-                    def name = currentName.replace("TMessagesProj", first).replace("-release", "")
-                    if (output.outputFileName instanceof org.gradle.api.provider.Property) {
-                        output.outputFileName.set(name)
-                    } else {
-                        output.outputFileName = name
-                    }
-                }
-            } catch (Exception ignored) {
-            }
-        }
-    }
-}
-
-def fcmVersion = "23.4.1"
-def crashlyticsVersion = "18.6.2"
-
 dependencies {
-    implementation 'com.github.adaptech-cz.Tesseract4Android:tesseract4android:4.8.0'
-    implementation 'androidx.fragment:fragment:1.8.9'
-    implementation 'androidx.profileinstaller:profileinstaller:1.4.1'
     implementation "androidx.core:core-ktx:1.16.0"
-    implementation "androidx.collection:collection:1.5.0"
     implementation "androidx.palette:palette-ktx:1.0.0"
     implementation "androidx.exifinterface:exifinterface:1.3.7"
     implementation "androidx.dynamicanimation:dynamicanimation:1.0.0"
@@ -455,6 +314,7 @@ dependencies {
     implementation "androidx.interpolator:interpolator:1.0.0"
     implementation 'androidx.biometric:biometric:1.1.0'
     implementation 'androidx.webkit:webkit:1.14.0'
+    implementation 'com.github.adaptech-cz.Tesseract4Android:tesseract4android:4.8.0'
     implementation 'com.alphacephei:vosk-android:0.3.75'
     implementation 'net.java.dev.jna:jna:5.16.0@aar'
     implementation fileTree(dir: 'lib', include: ['*.aar'])
@@ -475,8 +335,7 @@ dependencies {
 
     compileOnly 'org.checkerframework:checker-qual:2.5.2'
     compileOnly 'org.checkerframework:checker-compat-qual:2.5.0'
-    implementation "com.google.firebase:firebase-messaging:$fcmVersion"
-    // implementation "com.google.firebase:firebase-crashlytics:$crashlyticsVersion"
+
     implementation 'com.google.android.gms:play-services-maps:18.1.0'
     implementation 'com.google.android.gms:play-services-auth:20.4.0'
     implementation 'com.google.android.gms:play-services-vision:20.1.3'
@@ -496,8 +355,14 @@ dependencies {
     implementation 'com.google.android.gms:play-services-mlkit-subject-segmentation:16.0.0-beta1'
     implementation 'com.google.android.gms:play-services-mlkit-image-labeling:16.0.8'
 
+    // Pinned: firebase-pnv alone would pull credentials 1.5.0 (passkeys were built on 1.6.0-alpha04).
     implementation "androidx.credentials:credentials:1.6.0-alpha04"
     implementation "androidx.credentials:credentials-play-services-auth:1.6.0-alpha04"
+
+    // 34.19.0 is the last BoM for minSdk 23: BoM 35.x requires minSdk 24 (33.16.0 was the last for Android 5).
+    api platform('com.google.firebase:firebase-bom:34.19.0')
+    implementation 'com.google.firebase:firebase-messaging'
+    implementation "com.google.firebase:firebase-pnv"
 
     implementation "io.noties.markwon:core:4.6.2"
     implementation "io.noties.markwon:ext-strikethrough:4.6.2"
@@ -521,13 +386,10 @@ dependencies {
         exclude group: "com.google.crypto.tink", module: "tink-android"
     }
 
-    testImplementation "junit:junit:4.13.2"
-    testImplementation "androidx.test:core:1.5.0"
-    testImplementation "org.robolectric:robolectric:4.16.1"
-
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }
 dependencies {
+    implementation 'androidx.fragment:fragment:1.8.9'
     implementation "androidx.browser:browser:1.8.0"
     implementation "androidx.viewpager:viewpager:1.0.0"
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
@@ -561,7 +423,10 @@ dependencies {
     implementation "com.airbnb.android:lottie:6.4.1"
     // add for passkeys
     implementation "co.nstant.in:cbor:0.9"
+
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "androidx.test:core:1.5.0"
+    testImplementation "org.robolectric:robolectric:4.16.1"
 }
 
 apply plugin: "com.google.gms.google-services"
-// apply plugin: "com.google.firebase.crashlytics"

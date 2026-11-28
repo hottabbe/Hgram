@@ -17,6 +17,9 @@ public final class HgramNotificationChannels {
 
     public static int effectiveImportance(int importance, boolean silent,
                                           boolean promoteChatChannel) {
+        if (!HgramConfig.isNotificationImportanceBoostEnabled()) {
+            return importance;
+        }
         if (!silent && promoteChatChannel
                 && importance >= NotificationManager.IMPORTANCE_DEFAULT) {
             return Math.max(importance, NotificationManager.IMPORTANCE_HIGH);

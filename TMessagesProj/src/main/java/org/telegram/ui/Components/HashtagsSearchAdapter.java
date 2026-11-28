@@ -12,6 +12,7 @@ import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.Adapters.MessagesSearchAdapter;
 import org.telegram.ui.Stories.StoriesController;
+import xyz.nextalone.nagram.hgram.HgramSecretSpace;
 
 import java.util.ArrayList;
 
@@ -35,10 +36,14 @@ public class HashtagsSearchAdapter extends UniversalAdapter {
             items.add(MessagesSearchAdapter.StoriesView.Factory.asStoriesList(list));
         }
         hadStories = hasStories;
+        int visibleIndex = 0;
         for (int i = 0; i < messages.size(); ++i) {
-            items.add(UItem.asSearchMessage(1 + i, messages.get(i)));
+            final MessageObject message = messages.get(i);
+            if (HgramSecretSpace.isVisible(currentAccount, message.getDialogId())) {
+                items.add(UItem.asSearchMessage(1 + visibleIndex++, message));
+            }
         }
-        if (loading || !endReached) {
+        if (loading || !cursor.endReached()) {
             items.add(UItem.asFlicker(-2, FlickerLoadingView.DIALOG_TYPE));
             items.add(UItem.asFlicker(-3, FlickerLoadingView.DIALOG_TYPE));
             items.add(UItem.asFlicker(-4, FlickerLoadingView.DIALOG_TYPE));
@@ -53,21 +58,23 @@ public class HashtagsSearchAdapter extends UniversalAdapter {
     protected boolean loading;
     private int searchId = 0;
     private int reqId = -1;
-    private boolean endReached;
-    private int totalCount;
+    private final xyz.nextalone.nagram.hgram.HgramHashtagCursor cursor = new xyz.nextalone.nagram.hgram.HgramHashtagCursor();
     private String lastQuery;
     private String hashtagQuery;
-    private int lastRate;
     private Runnable searchRunnable;
 
-    public void setInitialData(String hashtag, ArrayList<MessageObject> messages, int messagesLastRate, int totalCount) {
+    public void setInitialData(String hashtag, ArrayList<MessageObject> messages, int messagesLastRate, int totalCount, TLRPC.InputPeer rawTail, int rawCount) {
         if (TextUtils.equals(hashtag, hashtagQuery)) return;
         cancel();
         this.messages.clear();
-        this.messages.addAll(messages);
-        this.totalCount = totalCount;
-        endReached = totalCount > messages.size();
-        this.lastRate = messagesLastRate;
+        for (MessageObject message : messages) {
+            if (HgramSecretSpace.isVisible(currentAccount, message.getDialogId())) {
+                this.messages.add(message);
+            }
+        }
+        cursor.initialize(rawTail != null ? rawTail : messages.isEmpty() ? null
+                        : MessagesController.getInstance(currentAccount).getInputPeer(messages.get(messages.size() - 1).messageOwner.peer_id),
+                messagesLastRate, rawCount > 0 ? rawCount : messages.size(), totalCount);
         hashtagQuery = hashtag;
         update(true);
     }
@@ -79,8 +86,7 @@ public class HashtagsSearchAdapter extends UniversalAdapter {
         final String hashtag = getHashtag(query, cashtag);
         if (!TextUtils.equals(this.hashtagQuery, hashtag)) {
             messages.clear();
-            endReached = false;
-            totalCount = 0;
+            cursor.reset();
             cancel();
         } else if (loading) {
             return;
@@ -105,10 +111,9 @@ public class HashtagsSearchAdapter extends UniversalAdapter {
             req.flags |= 1;
             req.hashtag = this.hashtagQuery = hashtag;
             req.limit = 10;
-            if (!messages.isEmpty()) {
-                MessageObject lastMessage = messages.get(messages.size() - 1);
-                req.offset_rate = lastRate;
-                req.offset_peer = MessagesController.getInstance(currentAccount).getInputPeer(lastMessage.messageOwner.peer_id);
+            if (cursor.offsetPeer() != null) {
+                req.offset_rate = cursor.offsetRate();
+                req.offset_peer = cursor.offsetPeer();
             } else {
                 req.offset_peer = new TLRPC.TL_inputPeerEmpty();
             }
@@ -120,25 +125,32 @@ public class HashtagsSearchAdapter extends UniversalAdapter {
                 loading = false;
                 if (res instanceof TLRPC.messages_Messages) {
                     TLRPC.messages_Messages msgs = (TLRPC.messages_Messages) res;
+                    int totalCount = 0;
                     if (msgs instanceof TLRPC.TL_messages_messages) {
                         totalCount = ((TLRPC.TL_messages_messages) msgs).messages.size();
                     } else if (msgs instanceof TLRPC.TL_messages_messagesSlice) {
                         totalCount = ((TLRPC.TL_messages_messagesSlice) msgs).count;
                     }
-                    lastRate = msgs.next_rate;
                     MessagesController.getInstance(currentAccount).putUsers(msgs.users, false);
                     MessagesController.getInstance(currentAccount).putChats(msgs.chats, false);
-                    for (int i = 0; i < msgs.messages.size(); ++i) {
+                    final int received = msgs.messages.size();
+                    final TLRPC.InputPeer tailPeer = received > 0
+                            ? MessagesController.getInstance(currentAccount).getInputPeer(msgs.messages.get(received - 1).peer_id)
+                            : null;
+                    for (int i = 0; i < received; ++i) {
                         final TLRPC.Message msg = msgs.messages.get(i);
                         final MessageObject messageObject = new MessageObject(currentAccount, msg, false, true);
+                        if (!HgramSecretSpace.isVisible(currentAccount, messageObject.getDialogId())) {
+                            continue;
+                        }
                         messageObject.setQuery(finalQuery);
                         messages.add(messageObject);
                     }
-                    endReached = messages.size() >= totalCount;
+                    // Pagination follows the raw server page/cursor, not the filtered list size.
+                    cursor.received(tailPeer, msgs.next_rate, received, totalCount, 10);
                     checkBottom();
                 } else {
-                    endReached = true;
-                    totalCount = messages.size();
+                    cursor.failed();
                 }
                 update(true);
                 if (wasEmpty) {
@@ -163,6 +175,27 @@ public class HashtagsSearchAdapter extends UniversalAdapter {
         return tquery.substring(1);
     }
 
+    /** Drops already displayed posts that became hidden after a workspace change. */
+    public void filterHidden() {
+        boolean changed = false;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if (!HgramSecretSpace.isVisible(currentAccount, messages.get(i).getDialogId())) {
+                messages.remove(i);
+                changed = true;
+            }
+        }
+        if (list != null) {
+            final int storiesBefore = list.getLoadedCount();
+            list.filterHidden();
+            if (list.getLoadedCount() != storiesBefore) {
+                changed = true;
+            }
+        }
+        if (changed) {
+            update(true);
+        }
+    }
+
     public void cancel() {
         if (list != null) {
             list.cancel();
@@ -180,7 +213,7 @@ public class HashtagsSearchAdapter extends UniversalAdapter {
 
     public void checkBottom() {
         if (!TextUtils.isEmpty(lastQuery)) {
-            if (!endReached && !loading && seesLoading()) {
+            if (!cursor.endReached() && !loading && seesLoading()) {
                 search(lastQuery);
             }
         }

@@ -58,6 +58,21 @@ public class StoriesViewPager extends ViewPager {
     private int selectedPositionInPage;
     private int updateVisibleItemPosition = -1;
 
+    private final ArrayList<PeerStoriesView> cachedViews = new ArrayList<>();
+
+    /** The pager is dropped when the story viewer window closes: release what its pages registered globally */
+    public void onDestroy() {
+        for (int i = 0; i < getChildCount(); i++) {
+            final View child = getChildAt(i);
+            if (child instanceof PageLayout && ((PageLayout) child).peerStoryView != null) {
+                ((PageLayout) child).peerStoryView.onDestroy();
+            }
+        }
+        for (int i = 0; i < cachedViews.size(); i++) {
+            cachedViews.get(i).onDestroy();
+        }
+    }
+
     public StoriesViewPager(int account, @NonNull Context context, StoryViewer storyViewer, Theme.ResourcesProvider resourcesProvider) {
         super(context);
         this.currentAccount = account;
@@ -71,8 +86,6 @@ public class StoriesViewPager extends ViewPager {
                 }
                 return dialogs.size();
             }
-
-            private final ArrayList<PeerStoriesView> cachedViews = new ArrayList<>();
 
             @NonNull
             @Override
@@ -261,31 +274,83 @@ public class StoriesViewPager extends ViewPager {
     }
 
     public void setDays(long dialogId, ArrayList<ArrayList<Integer>> days, int currentAccount) {
+        final int selectedStoryId = getCurrentPageStoryId();
+        final boolean hasSelectedStory = selectedStoryId >= 0;
         if (this.daysDialogId == dialogId && eqA(this.days, days) && this.currentAccount == currentAccount) {
             return;
         }
         final boolean appendOnly = this.daysDialogId == dialogId && this.currentAccount == currentAccount && isPrefix(this.days, days);
         this.daysDialogId = dialogId;
-        this.days = days;
+        this.days = copyDays(days);
         this.currentAccount = currentAccount;
         if (appendOnly && pagerAdapter != null) {
             pagerAdapter.notifyDataSetChanged();
             updateDelegate = true;
             return;
         }
+        if (this.days == null || this.days.isEmpty()) {
+            setAdapter(null);
+            setAdapter(pagerAdapter);
+            if (storyViewer.storiesList instanceof StoriesController.SearchStoriesList) {
+                storyViewer.closeForHiddenSearchStory();
+            } else {
+                storyViewer.close(false);
+            }
+            return;
+        }
         setAdapter(null);
         setAdapter(pagerAdapter);
-        int position;
-        for (position = 0; position < days.size(); ++position) {
-            if (days.get(position).contains(storyViewer.dayStoryId)) {
-                break;
+        final int targetStoryId = xyz.nextalone.nagram.hgram.HgramStoriesSelection.targetStoryId(selectedStoryId, storyViewer.dayStoryId);
+        int position = xyz.nextalone.nagram.hgram.HgramStoriesSelection.findDayPosition(this.days, targetStoryId);
+        if (position < 0) {
+            if (storyViewer.storiesList instanceof StoriesController.SearchStoriesList) {
+                storyViewer.closeForHiddenSearchStory();
+                return;
             }
+            position = Math.max(0, this.days.size() - 1);
+        }
+        if (hasSelectedStory || targetStoryId != 0) {
+            storyViewer.dayStoryId = targetStoryId;
         }
         if (storyViewer.reversed) {
-            position = days.size() - 1 - position;
+            position = this.days.size() - 1 - position;
         }
         setCurrentItem(position);
         updateDelegate = true;
+    }
+
+    private static ArrayList<ArrayList<Integer>> copyDays(ArrayList<ArrayList<Integer>> days) {
+        if (days == null) {
+            return null;
+        }
+        final ArrayList<ArrayList<Integer>> copy = new ArrayList<>(days.size());
+        for (int i = 0; i < days.size(); i++) {
+            copy.add(days.get(i) == null ? null : new ArrayList<>(days.get(i)));
+        }
+        return copy;
+    }
+
+    public long getCurrentPageDialogId() {
+        final int current = getCurrentItem();
+        for (int i = 0; i < getChildCount(); i++) {
+            final View child = getChildAt(i);
+            if (child instanceof PageLayout && (Integer) child.getTag() == current) {
+                return ((PageLayout) child).dialogId;
+            }
+        }
+        return 0;
+    }
+
+    public int getCurrentPageStoryId() {
+        final PeerStoriesView peerStoriesView = getCurrentPeerView();
+        if (peerStoriesView != null && peerStoriesView.currentStory != null
+                && peerStoriesView.currentStory.storyItem != null) {
+            if (storyViewer.storiesList instanceof StoriesController.SearchStoriesList) {
+                return peerStoriesView.currentStory.storyItem.messageId;
+            }
+            return peerStoriesView.currentStory.storyItem.id;
+        }
+        return -1;
     }
 
     private static boolean isPrefix(ArrayList<ArrayList<Integer>> a, ArrayList<ArrayList<Integer>> b) {

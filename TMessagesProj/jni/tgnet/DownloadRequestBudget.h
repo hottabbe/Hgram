@@ -8,16 +8,7 @@
 // retries and DC migration cannot leak reservations.
 class DownloadRequestBudget {
 public:
-    explicit DownloadRequestBudget(bool premium, bool slow) : limit(limitFor(premium, slow)) {
-    }
-
-    // On a narrow link a 2 MB reservation equals tens of seconds of queued data; every
-    // additional chunk then sits in the socket buffers and delays message traffic.
-    static uint32_t limitFor(bool premium, bool slow) {
-        if (slow) {
-            return (premium ? 1024u : 256u) * 1024;
-        }
-        return (premium ? 16u : 2u) * 1024 * 1024;
+    explicit DownloadRequestBudget(bool premium) : limit((premium ? 16u : 2u) * 1024 * 1024) {
     }
 
     void account(uint32_t dc, bool small, uint32_t bytes) {

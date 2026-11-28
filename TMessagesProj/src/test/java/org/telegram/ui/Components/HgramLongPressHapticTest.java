@@ -60,6 +60,8 @@ public class HgramLongPressHapticTest {
         assertTrue(RecyclerListView.shouldPlayAutoLongPressHaptic(false));
         assertFalse(RecyclerListView.shouldPlayAutoLongPressHaptic(true));
 
+        HgramConfig.setHapticEnabled(true);
+
         // Dialog row menu, a preview that actually opened and a selection toggle each play
         // exactly one response through the production Hgram expression.
         assertSingleLongPress();

@@ -1551,9 +1551,6 @@ public class PushListenerController {
                                     messageObject.isLiveStoryPush = loc_key.equals("STORY_LIVE");
                                     messageObject.isStoryMentionPush = loc_key.equals("MESSAGE_STORY_MENTION");
                                     messageObject.isStoryPushHidden = loc_key.equals("STORY_HIDDEN_AUTHOR");
-                                    // PUSH-CHAT-1: async, never blocks countDownLatch; notifications keep
-                                    // their own FCM object and are processed below unchanged.
-                                    PushChatSync.onPushMessage(currentAccount, messageObject);
                                     ArrayList<MessageObject> arrayList = new ArrayList<>();
                                     arrayList.add(messageObject);
                                     canRelease = false;

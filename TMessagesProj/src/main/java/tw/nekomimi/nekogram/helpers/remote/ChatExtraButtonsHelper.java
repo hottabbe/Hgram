@@ -145,7 +145,7 @@ public class ChatExtraButtonsHelper extends BaseRemoteHelper {
         }
         loading = true;
         if (buttons.isEmpty()) {
-            loadPagePreviewRules();
+        loadPagePreviewRules();
         }
         if (needUpdate()) {
             load();
